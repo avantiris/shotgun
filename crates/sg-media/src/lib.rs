@@ -6,6 +6,9 @@
 //! threads; every call takes a [`Cancel`] and returns the tool's stderr on
 //! failure. In-process decoding for playback is added in M3.
 
+pub mod analysis;
+#[cfg(test)]
+mod analysis_testdata;
 pub mod decode;
 pub mod derive;
 pub mod peaks;

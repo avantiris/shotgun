@@ -3336,6 +3336,7 @@ dependencies = [
  "ffmpeg-next",
  "libc",
  "log",
+ "rustfft",
  "serde",
  "serde_json",
  "sg-core",
