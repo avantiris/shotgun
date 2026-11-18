@@ -385,6 +385,10 @@ fn bench_seek(path: &Path, threads: i32, skip_nonref: bool, max_dim: u32) -> any
     let mut frame = 37i64;
     for _ in 0..60 {
         frame = (frame * 7919 + 1031) % frames;
+        // SG_SEEK_GAP_MS: idle time between seeks, as when a person clicks around.
+        if let Some(gap) = std::env::var("SG_SEEK_GAP_MS").ok().and_then(|g| g.parse().ok()) {
+            std::thread::sleep(Duration::from_millis(gap));
+        }
         let t = Instant::now();
         decoder.frame(frame)?;
         samples.push(t.elapsed().as_nanos() as u64);

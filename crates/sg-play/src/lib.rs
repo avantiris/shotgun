@@ -28,9 +28,6 @@ pub use sg_audio::{AudioError, Backend, DEFAULT_QUANTUM, Stats as AudioStats};
 const TEXTURE_BUDGET: u64 = 768 << 20;
 /// Frames decoded ahead of the playhead during playback.
 const READ_AHEAD: i64 = 6;
-/// A paused frame is replaced by the full-quality picture after this pause
-/// in scrubbing, so that dragging the playhead does not start slow seeks.
-const SETTLE: Duration = Duration::from_millis(120);
 
 enum Command {
     Project {
@@ -120,7 +117,6 @@ impl Player {
             seek_started: None,
             full_started: None,
             play_started: None,
-            last_move: Instant::now(),
             last_played: None,
         };
         let thread =
@@ -232,8 +228,6 @@ struct State {
     seek_started: Option<Instant>,
     full_started: Option<Instant>,
     play_started: Option<Instant>,
-    /// When the playhead last moved while paused.
-    last_move: Instant,
     last_played: Option<i64>,
 }
 
@@ -318,7 +312,6 @@ impl State {
         let frame = self.frame_of(samples);
         self.set_frame(frame);
         self.shared.playing.store(false, Ordering::Relaxed);
-        self.last_move = Instant::now();
         // Nothing is asked of the decoders beyond this frame any more.
         self.pool.new_epoch();
     }
@@ -328,7 +321,6 @@ impl State {
         self.set_frame(frame);
         self.seek_started = Some(Instant::now());
         self.full_started = self.seek_started;
-        self.last_move = Instant::now();
         if self.playing {
             self.last_played = None;
             self.audio.play(self.samples_of(self.frame));
@@ -417,7 +409,10 @@ impl State {
         }
         let layers = plan(&project, &sequence, self.frame);
         // While playing or scrubbing: proxies. Once the playhead rests: full quality.
-        let settled = !self.playing && self.last_move.elapsed() >= SETTLE;
+        // Paused: ask for the full-quality picture at once. A newer seek makes
+        // the request obsolete before a worker starts on it, so dragging the
+        // playhead costs at most one decode in flight.
+        let paused = !self.playing;
         let mut waiting = false;
         let mut keys = Vec::with_capacity(layers.len());
         let mut exact = true;
@@ -425,7 +420,7 @@ impl State {
             let Some(asset) = project.assets.get(&layer.asset) else { continue };
             let proxy = FrameKey { asset: layer.asset, quality: Quality::Proxy, frame: layer.source_frame };
             let full = FrameKey { quality: Quality::Full, ..proxy };
-            if settled && !self.cache.contains(&full) {
+            if paused && !self.cache.contains(&full) {
                 self.pool.request(full, &root, asset);
                 waiting = true;
             }
@@ -483,13 +478,13 @@ impl State {
                         push_sample(&mut s.seek_ms, (now - t).as_secs_f32() * 1000.0);
                     }
                     if let Some(t) = full {
-                        push_sample(&mut s.full_ms, (now - t - SETTLE.min(now - t)).as_secs_f32() * 1000.0);
+                        push_sample(&mut s.full_ms, (now - t).as_secs_f32() * 1000.0);
                     }
                 });
             }
             (self.notify)();
         }
-        waiting || (!self.playing && !settled && !layers.is_empty())
+        waiting
     }
 
     fn run(&mut self, commands: Receiver<Command>, results: Receiver<Decoded>) {
@@ -528,7 +523,17 @@ impl State {
                         if let Ok(decoded) = decoded {
                             self.pool.answered(&decoded.key);
                             match decoded.frame {
-                                Ok(frame) => self.cache.insert(&self.device, &self.queue, decoded.key, &frame),
+                                Ok(frame) => {
+                                    let t = Instant::now();
+                                    self.cache.insert(&self.device, &self.queue, decoded.key, &frame);
+                                    log::debug!(
+                                        "{:?} frame {} arrived {:.1} ms after the seek, upload {:.1} ms",
+                                        decoded.key.quality,
+                                        decoded.key.frame,
+                                        self.seek_started.or(self.full_started).map_or(-1.0, |s| (t - s).as_secs_f32() * 1000.0),
+                                        t.elapsed().as_secs_f32() * 1000.0
+                                    );
+                                }
                                 Err(e) => {
                                     log::warn!("decode failed: {e}");
                                     self.stats(|s| s.decode_error = Some(e));
