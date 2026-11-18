@@ -23,7 +23,7 @@ measured and logged in `docs/perf-log.md`, and a commit is made.
 | M2 (done) | Import: drag-drop, file picker, paste link/file/image, yt-dlp, probe, hash, thumbnails, peaks, conform, proxy; asset panel | asset-usable budget |
 | M3 (done) | Playback: decode pool, GPU viewer, audio engine on PipeWire, A/V sync, scrubbing, frame cache | scrub/play budgets, audio latency numbers |
 | M4 (done) | Timeline: multi-track, split/trim/ripple/move/snap, selection, markers, undo/redo, autosave, git auto-commits + checkpoints | 50k-clip UI budget |
-| M5 | Compositing: transform, crop, opacity, speed, titles, keyframes (classic + live record), basic audio fades/gain | realtime with layers |
+| M5 (done) | Compositing: transform, crop, opacity, speed, titles, keyframes (classic + live record), basic audio fades/gain | realtime with layers |
 | M6 | Export: 16:9 master, 9:16 with reframe, compressed share copy, GIF to clipboard; export panel + repeat-last | export speed, output verified by probing the file |
 
 Status:
@@ -69,6 +69,20 @@ Status:
   not know stays in `assets/` instead of moving to the trash. Not verifiable
   without a person: every mouse gesture on the timeline (they are covered by
   tests of the planning code and by scripted key actions, not by real input).
+
+- **M5 done 2026-11-18** (commit `0128fda`). The three-layer realtime budget
+  is met at proxy quality only (`docs/perf-log.md`). Built: position,
+  scale, rotation, opacity (all keyframeable, linear interpolation), crop,
+  speed, titles, clip volume, audio fades, live record of motion. Not built:
+  easing curves, scale and rotate handles in the viewer (dragging moves;
+  scale and rotation are inspector fields), picture fades (the fade fields
+  act on sound only), keyframes for volume (the value at the clip start is
+  used), time-stretch (a speed change resamples, so pitch follows speed),
+  title fonts other than the built-in one, a keyframe lane in the timeline.
+  A clip's length does not change when its speed does. Splitting a clip
+  copies no properties to the right half. Not verifiable without a person:
+  dragging in the viewer and live record (real pointer input), and how any
+  of it looks in motion.
 
 Then the user tests and gives feedback. Feedback is triaged into fixes before
 stage 2 starts.

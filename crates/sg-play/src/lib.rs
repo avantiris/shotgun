@@ -498,7 +498,7 @@ impl State {
             // Clone the views first: `get` records the use for eviction order.
             // The rotation comes with the decoded file, so a proxy that was
             // written upright is not turned a second time.
-            let views: Vec<(wgpu::TextureView, (u32, u32), i32, usize, bool)> = chosen
+            let views: Vec<Drawable> = chosen
                 .iter()
                 .filter_map(|(key, index)| match key {
                     LayerKey::Frame(key) => {
@@ -632,3 +632,7 @@ enum LayerKey {
     Frame(FrameKey),
     Title(TitleKey),
 }
+
+/// A texture ready to draw: view, size, file rotation, the layer it
+/// belongs to, and whether it is a title (drawn at its pixel size).
+type Drawable = (wgpu::TextureView, (u32, u32), i32, usize, bool);

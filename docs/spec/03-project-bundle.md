@@ -208,3 +208,9 @@ one runs `git restore --source=<commit>` on `project.toml`, `sequences/` and
 reopened from its files, which starts a new undo history (the old journal is
 kept as a backup). Not built: commits before/after export (M6) and after an
 import batch.
+
+As built in M5: clip properties (placement, crop, opacity, speed, volume,
+fades, keyframes, title text) are stored per track as lines
+`props <clip id> <one-line JSON>` after the track's clips, sorted by clip id.
+A title is a clip whose asset id is all zeros and whose properties carry the
+text.

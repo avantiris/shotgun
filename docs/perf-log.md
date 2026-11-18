@@ -163,3 +163,32 @@ Not measured:
 - A project with thousands of distinct, long labels.
 - Git: commit time of the auto-commit was not re-measured in the app; S5
   measured 12 ms idle and 29 to 43 ms under load for the same commands.
+
+## 2026-11-18, M5, commit 0128fda
+
+Command: `nix develop --command bash scripts/bench-m5.sh`.
+Machine state: load average 7.7 (1 min) at the start; the user was watching a
+video and a release build had just finished. App hidden, sound into the null
+backend.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Realtime playback, 3 simultaneous 4K60 HEVC layers (8-bit, 10-bit, 1 s GOP), 3 x 10 s | 1797 frames composited, 0 late or skipped | 0 dropped | pass, **at proxy quality** |
+| Play start with three layers | 2.9 to 3.4 ms (n=3) | 80 ms | pass |
+
+What this does and does not show:
+
+- The three layers play from their 540p all-intra proxies, decoded in
+  software and uploaded. That is the adaptive preview the architecture
+  allows; it is not three 4K decodes. Full-resolution realtime playback needs
+  the zero-copy VAAPI import of spike S1, which is still not built.
+- "Late" is counted by the preview engine (a frame composited without its
+  exact picture, or after skipping a frame number). Frames the compositor
+  presented late or dropped on the way to the monitor are not visible to it;
+  the app was hidden.
+- No colour chain exists yet (M9), so "+ colour chain" of the budget line is
+  not covered.
+
+Not measured: compositing cost per layer on the GPU, playback with keyframed
+transforms on every layer, title rasterisation time (done once per text and
+size on the render thread).

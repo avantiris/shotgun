@@ -45,6 +45,8 @@ nix develop --command bash scripts/bench-m1.sh        # M1 budgets
 nix develop --command bash scripts/bench-m2.sh        # M2: 1 GB drop usable
 nix develop --command bash scripts/bench-m3.sh        # M3: scrub, play start, audio
 nix develop --command bash scripts/bench-m4.sh        # M4: UI frame time, 10 to 500 000 clips
+nix develop --command bash scripts/bench-m5.sh        # M5: three 4K60 layers playing
+nix develop --command bash scripts/check.sh           # fmt + clippy + tests; run before every commit
 ```
 
 The binary is `shotgun` (`$CARGO_TARGET_DIR/release/shotgun --help`).

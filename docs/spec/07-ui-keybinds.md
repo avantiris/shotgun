@@ -42,7 +42,7 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Click clip | select it with its partner (picture + sound of one take); Shift adds, Alt selects it alone |
 | Drag clip | move (snaps; hold Alt to disable snapping) |
 | Drag clip edge | trim (Ctrl = ripple) |
-| Drag in viewer | move selected layer; corner = scale; outside corner = rotate |
+| Drag in viewer | move the selected clip's picture (M5; scale and rotation are inspector fields for now) |
 | Right click | context menu for the thing under the cursor |
 
 ## Keys (left hand, bound by physical position)
@@ -87,8 +87,8 @@ Animation and creation
 |-----|--------|
 | F | add / update keyframe for the selected layer at the playhead |
 | Shift + F | remove keyframe at playhead |
-| R | live record: plays, and mouse drags in the viewer are recorded as motion |
-| T | add title at playhead |
+| R | live record: plays; drag the selected clip's picture in the viewer and the motion is recorded as keyframes. R again or pause ends it |
+| T | add a 3 s title at the playhead, on the topmost video track that is free there (a new track if none is) |
 | B | add transition on the nearest cut (whip-pan by default) |
 
 Panels and output

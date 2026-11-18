@@ -1060,6 +1060,21 @@ impl Timeline {
     }
 }
 
+impl Timeline {
+    /// The clip the inspector and the viewer act on: the first selected one.
+    pub fn primary(&self, sequence: &Sequence) -> Option<(Arc<Track>, Clip)> {
+        let sel = self.selection.first()?;
+        let track = sequence.track(sel.track)?;
+        let clip = track.clips.get(sel.start).filter(|c| c.id == sel.id)?;
+        Some((track.clone(), clip))
+    }
+
+    /// Selects one clip by position, alone.
+    pub fn select_only(&mut self, track: TrackId, clip: &Clip) {
+        self.selection = vec![Sel { track, start: clip.start, id: clip.id }];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sg_core::{AssetId, AssetKind, AudioInfo, Source, VideoInfo};
@@ -1266,20 +1281,5 @@ mod tests {
         timeline.plan_trim(&session, &seq, &view, 150.0, timeline.selection[0], Edge::Start, true, false);
         session.apply(Op::Batch(timeline.pending.take().unwrap()), None).unwrap();
         assert_eq!(layout(&session), (vec![(0, 450), (450, 600)], vec![(0, 450), (450, 600)]));
-    }
-}
-
-impl Timeline {
-    /// The clip the inspector and the viewer act on: the first selected one.
-    pub fn primary(&self, sequence: &Sequence) -> Option<(Arc<Track>, Clip)> {
-        let sel = self.selection.first()?;
-        let track = sequence.track(sel.track)?;
-        let clip = track.clips.get(sel.start).filter(|c| c.id == sel.id)?;
-        Some((track.clone(), clip))
-    }
-
-    /// Selects one clip by position, alone.
-    pub fn select_only(&mut self, track: TrackId, clip: &Clip) {
-        self.selection = vec![Sel { track, start: clip.start, id: clip.id }];
     }
 }
