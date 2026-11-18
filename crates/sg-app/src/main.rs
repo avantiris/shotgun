@@ -131,6 +131,7 @@ struct App {
     /// The viewer texture as registered with the UI renderer, and the
     /// player's output generation it belongs to.
     viewer_texture: Option<(egui::TextureId, u64)>,
+    angles_texture: Option<(egui::TextureId, u64)>,
     /// The snapshot the player was last given.
     synced: Option<(PathBuf, std::sync::Arc<sg_core::Project>)>,
     /// Scratch for the level meters read each frame.
@@ -459,6 +460,20 @@ impl App {
             None => gfx.register_texture(&view),
         };
         self.viewer_texture = Some((texture, generation));
+        // The camera-angle monitor is a second texture, there only while the
+        // sequence has camera tracks.
+        let angles = player.angles().map(|(view, generation, count, cols, rows)| {
+            let texture = match self.angles_texture {
+                Some((id, seen)) if seen == generation => id,
+                Some((id, _)) => {
+                    gfx.replace_texture(id, &view);
+                    id
+                }
+                None => gfx.register_texture(&view),
+            };
+            self.angles_texture = Some((texture, generation));
+            sg_ui::AnglesView { texture, count, cols, rows }
+        });
         ViewerState {
             texture: Some(texture),
             frame: player.frame(),
@@ -466,6 +481,7 @@ impl App {
             stats: player_lines(player),
             master_meter: player.take_meters(&mut self.meters),
             meters: self.meters.clone(),
+            angles,
         }
     }
 
@@ -816,6 +832,7 @@ fn main() -> anyhow::Result<()> {
         wl: None,
         player: None,
         viewer_texture: None,
+        angles_texture: None,
         synced: None,
         meters: vec![0.0; sg_play::MAX_METERS],
         export_cancel: None,

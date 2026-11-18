@@ -66,6 +66,10 @@ into a grid of these, sorted by last opened, with a poster frame each.
   6. proxy
   7. analysis (colour statistics, audio fingerprint for sync): M7/M9
   Steps 1 to 4 run on three light workers, 5 and 6 on one transcode worker.
+- Analysis (M7): `analysis/<id>.beats` holds tempo and beat positions of an
+  asset as JSON, made the first time the asset is used as the song. Sync
+  positions are not stored: the result of a sync is the place of the take
+  on the timeline.
 - Derived files live in `.shotgun/cache/` under the asset id: `thumb/<id>.rgba`
   (320x180 raw RGBA poster), `conform/<id>.wav`, `peaks/<id>.pk`,
   `conform/<id>.scan` (verdict of the frame-rate scan: this is where

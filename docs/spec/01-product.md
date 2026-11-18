@@ -117,6 +117,13 @@ What must be true **now** so this is an extension and not a rewrite:
   last seconds.
 - `OPEN` Full-quality seek into long-GOP originals: proxy-first display
   (planned) versus an intra mezzanine of originals (S1, see 04).
+- `OPEN` (M7): sync by camera sound and the beat grid are verified on
+  synthetic recordings only (S6). They need the user's real takes: a song
+  and a few phone or camera recordings of a performance to it.
+- `OPEN` (M7): a camera whose clock differs from the song's drifts out of
+  sync towards the ends of a long take (300 ppm: 27 ms after 90 s). The
+  difference is measured and shown; correcting it is not built. Decide
+  whether it matters on real takes.
 - `OPEN` Shot-match quality on the user's real footage can only be judged with
   that footage; algorithm is validated in stage 2 with clips the user provides.
 - `PROPOSED` Everything in `07-ui-keybinds.md` (layout and key map).

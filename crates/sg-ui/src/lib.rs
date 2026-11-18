@@ -37,6 +37,7 @@ pub use crate::keymap::{Action, Scope};
 use crate::library::{Library, LibraryRequest};
 pub use crate::perf::Perf;
 pub use crate::session::Session;
+pub use crate::stage::AnglesView;
 pub use crate::stage::{Transport, ViewerState};
 
 /// Work the UI asks the application to do off the UI thread.
@@ -268,6 +269,7 @@ impl Shell {
                     Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
                     Some(EditorRequest::Export) => self.act(Action::Export, &mut commands),
                     Some(EditorRequest::Tempo(tempo)) => self.set_tempo(tempo),
+                    Some(EditorRequest::Angle(angle)) => self.switch_angle(angle + 1),
                     Some(EditorRequest::SyncAll) => self.sync_takes(true, &mut commands),
                     Some(EditorRequest::ClearSong) => {
                         if let Some(session) = &mut self.session {

@@ -16,6 +16,8 @@ pub struct ViewerState {
     /// Peak level per audio track since the last frame (linear), and of the mix.
     pub meters: Vec<f32>,
     pub master_meter: f32,
+    /// The camera angles side by side, while the sequence has camera tracks.
+    pub angles: Option<AnglesView>,
     /// Lines for the performance overlay.
     pub stats: Vec<String>,
 }
@@ -50,25 +52,60 @@ fn sequence_end(sequence: &Sequence) -> i64 {
 
 /// Draws the viewer. Returns how far the picture was dragged this frame, in
 /// frame widths and heights.
-pub fn viewer(ui: &mut egui::Ui, sequence: &Sequence, view: &ViewerState, recording: bool) -> Option<egui::Vec2> {
+/// The texture of the camera-angle monitor and how it is laid out.
+#[derive(Clone, Copy)]
+pub struct AnglesView {
+    pub texture: egui::TextureId,
+    pub count: usize,
+    pub cols: u32,
+    pub rows: u32,
+}
+
+/// What happened in the viewer this frame.
+#[derive(Default)]
+pub struct ViewerEvents {
+    /// The picture was dragged by this much, in fractions of the frame.
+    pub dragged: Option<egui::Vec2>,
+    /// A camera angle was clicked (0 is the first).
+    pub angle: Option<usize>,
+}
+
+/// The viewer: the programme picture with the transport line below it and,
+/// when the sequence has camera angles, those side by side underneath.
+/// `live` is the angle the programme shows at the playhead.
+pub fn viewer(
+    ui: &mut egui::Ui,
+    sequence: &Sequence,
+    view: &ViewerState,
+    recording: bool,
+    live: Option<usize>,
+) -> ViewerEvents {
     const BAR_H: f32 = 22.0;
+    let mut events = ViewerEvents::default();
     let available = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(available, Sense::drag());
-    let picture_area = Rect::from_min_max(available.min, pos2(available.max.x, available.max.y - BAR_H));
     let aspect = sequence.width as f32 / sequence.height.max(1) as f32;
+    // The angles take a strip at the bottom: one row of them about a
+    // quarter of the height, never more than half.
+    let strip = view.angles.map_or(0.0, |a| {
+        let row = (available.height() * 0.26).clamp(70.0, 190.0);
+        (row * a.rows as f32).min(available.height() * 0.5) + 8.0
+    });
+    let picture_area = Rect::from_min_max(available.min, pos2(available.max.x, available.max.y - BAR_H - strip));
     let size = if picture_area.width() / picture_area.height().max(1.0) > aspect {
         vec2(picture_area.height() * aspect, picture_area.height())
     } else {
         vec2(picture_area.width(), picture_area.width() / aspect)
     };
     let rect = Rect::from_center_size(picture_area.center(), size);
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
+    let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     painter.rect_filled(rect, 0.0, Color32::BLACK);
     if let Some(texture) = view.texture {
-        painter.image(texture, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        painter.image(texture, rect, whole, Color32::WHITE);
     }
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::LINE), StrokeKind::Outside);
-    let y = available.max.y - BAR_H / 2.0;
+    let y = picture_area.bottom() + BAR_H / 2.0;
     let state = if view.playing { "playing" } else { "paused" };
     let text =
         format!("{}  /  {}", timecode(view.frame, sequence.rate), timecode(sequence_end(sequence), sequence.rate));
@@ -83,9 +120,40 @@ pub fn viewer(ui: &mut egui::Ui, sequence: &Sequence, view: &ViewerState, record
             theme::ERROR,
         );
     }
+    if let Some(angles) = view.angles {
+        let area = Rect::from_min_max(pos2(available.min.x, available.max.y - strip + 8.0), available.max);
+        let grid_aspect = aspect * angles.cols as f32 / angles.rows as f32;
+        let grid_size = if area.width() / area.height().max(1.0) > grid_aspect {
+            vec2(area.height() * grid_aspect, area.height())
+        } else {
+            vec2(area.width(), area.width() / grid_aspect)
+        };
+        let grid = Rect::from_center_size(area.center(), grid_size);
+        painter.rect_filled(grid, 0.0, Color32::BLACK);
+        painter.image(angles.texture, grid, whole, Color32::WHITE);
+        let cell = vec2(grid.width() / angles.cols as f32, grid.height() / angles.rows as f32);
+        for n in 0..angles.count {
+            let (col, row) = (n as u32 % angles.cols, n as u32 / angles.cols);
+            let at = Rect::from_min_size(grid.min + vec2(col as f32 * cell.x, row as f32 * cell.y), cell);
+            let on_air = live == Some(n);
+            let tag = Rect::from_min_size(at.min + vec2(4.0, 4.0), vec2(20.0, 18.0));
+            painter.rect_filled(tag, 3.0, if on_air { theme::ACCENT } else { theme::BG.gamma_multiply(0.85) });
+            let colour = if on_air { theme::BG } else { theme::TEXT };
+            painter.text(tag.center(), Align2::CENTER_CENTER, format!("{}", n + 1), FontId::proportional(12.0), colour);
+            let stroke = if on_air { Stroke::new(2.0, theme::ACCENT) } else { Stroke::new(1.0, theme::LINE) };
+            painter.rect_stroke(at, 0.0, stroke, StrokeKind::Inside);
+            // A click on an angle cuts to it, like its number key.
+            let hit = ui.interact(at, ui.scope_id().with(("angle", n)), Sense::click());
+            if hit.on_hover_text(format!("Cut to camera {} here (key {})", n + 1, n + 1)).clicked() {
+                events.angle = Some(n);
+            }
+        }
+    }
     let delta = response.drag_delta();
-    (response.dragged() && delta != egui::Vec2::ZERO)
-        .then(|| vec2(delta.x / size.x.max(1.0), delta.y / size.y.max(1.0)))
+    let inside = response.interact_pointer_pos().is_some_and(|p| p.y < picture_area.bottom());
+    events.dragged = (response.dragged() && inside && delta != egui::Vec2::ZERO)
+        .then(|| vec2(delta.x / size.x.max(1.0), delta.y / size.y.max(1.0)));
+    events
 }
 
 #[cfg(test)]

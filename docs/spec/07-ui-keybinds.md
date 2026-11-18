@@ -50,7 +50,9 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Right click on the timeline | add a video or audio track, remove the empty track under the pointer |
 | Right click on a clip | remove its sound and keep the picture, or the reverse; delete it |
 | Shift while dragging an asset onto a track | place only the part that belongs there (the sound on an audio track, the picture on a video track) |
-| Right click on an asset | place it, or only its sound or picture, at the playhead; remove it from the project |
+| Right click on an asset | place it, or only its sound or picture, at the playhead; use it as the song; sync it (or all takes) to the song; remove it from the project |
+| `shown` / `hidden` next to a video track name | take the track out of the picture: a camera angle to cut from |
+| `M` / `S` next to an audio track name | mute, solo |
 
 ## Keys (left hand, bound by physical position)
 
@@ -102,7 +104,7 @@ Panels and output
 
 | Key | Action |
 |-----|--------|
-| 1 / 2 / 3 / 4 | focus Assets / Viewer / Inspector / Timeline (during live multicam: switch angle) |
+| 1 to 9 | cut the programme to camera angle 1 to 9 at the playhead, also while playing; a click on an angle in the monitor under the viewer does the same. (Focusing panels by number is not built.) |
 | Ctrl + Q | add asset (opens link/file popover) |
 | Del | remove the selected asset from the project |
 | Ctrl + E | export panel; Ctrl + Shift + E repeats the last export |

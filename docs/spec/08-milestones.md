@@ -111,10 +111,37 @@ stage 2 starts.
 
 | M | Scope |
 |---|-------|
-| M7 | Auto-sync takes to the song, beat detection + grid + snap, live multicam switching |
+| M7 (done) | Auto-sync takes to the song, beat detection + grid + snap, live multicam switching |
 | M8 | Whip-pan transition engine (+ slide/zoom variants) |
 | M9 | Scenarios, match stage, look chain modules, presets, A/B |
 | M10 | Speed ramps, stabilisation, background render cache, 10-bit masters |
+
+Status:
+
+- **Feedback rounds 2 and 3 (2026-11-18/19)**, between the stages: drag and
+  drop onto the timeline, track buttons, sound-only import and placement,
+  waveforms, the mixer with noise reduction, button padding
+  (`docs/feedback/`).
+
+- **M7 done 2026-11-19** (commits `56efe99` spike S6, `7c8971e`, and the
+  angle monitor after it). Built: a song per sequence with detected beats as
+  a grid to snap to (tempo can be halved or doubled); takes found in the song
+  by their camera sound and laid in time on hidden camera tracks; a monitor
+  showing all angles at the playhead; keys 1 to 9 or a click cut the
+  programme track to an angle, also during playback. Design decisions taken
+  without the user (night run), all `PROPOSED`: camera angles are ordinary
+  video tracks marked hidden, the programme is the visible track above
+  them, a cut overwrites the programme from the playhead to the end of the
+  take; the camera sound of a synced take is not put on the timeline; takes
+  whose match is not clear are not placed at all. Not built: correcting a
+  clock difference between camera and song (measured and reported; the take
+  is exact at its middle), choosing the first beat of the bar, syncing a
+  take by hand when the automatic match fails (it can be dragged, with the
+  waveform of its sound as a guide only if that sound is placed), a
+  tempo-changing grid editor. **Not verified with real footage**: every
+  number comes from synthetic recordings (`docs/spikes/s6-sync-beats.md`).
+  Not verifiable without a person: cutting live by ear and eye, and whether
+  the cuts land where they were meant.
 
 ## Stage 3: DAW
 

@@ -20,6 +20,8 @@ pub enum EditorRequest {
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
     SetSize(u32, u32),
+    /// Cut to this camera angle (0 is the first) at the playhead.
+    Angle(usize),
     Tempo(i8),
     SyncAll,
     ClearSong,
@@ -99,11 +101,25 @@ impl Editor {
             });
         });
         let recording = self.clip_panel.recording;
-        let dragged = egui::CentralPanel::default()
+        // The angle the programme shows at the playhead, to mark it in the monitor.
+        let live = crate::session::program_row(sequence)
+            .and_then(|row| sequence.tracks[row].clips.at(view.frame))
+            .and_then(|on_air| {
+                crate::session::angle_rows(sequence).iter().position(|row| {
+                    sequence.tracks[*row]
+                        .clips
+                        .at(view.frame)
+                        .is_some_and(|c| c.asset == on_air.asset && c.src_in - c.start == on_air.src_in - on_air.start)
+                })
+            });
+        let events = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(12.0))
-            .show(ui, |ui| stage::viewer(ui, sequence, view, recording))
+            .show(ui, |ui| stage::viewer(ui, sequence, view, recording, live))
             .inner;
-        if let (Some(delta), Some(target)) = (dragged, &target) {
+        if let Some(angle) = events.angle {
+            request = Some(EditorRequest::Angle(angle));
+        }
+        if let (Some(delta), Some(target)) = (events.dragged, &target) {
             self.clip_panel.viewer_drag(session, sequence, target, delta, view.playing, error);
         }
         request

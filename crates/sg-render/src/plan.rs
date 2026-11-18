@@ -26,36 +26,33 @@ pub struct PlanLayer {
 /// The layers visible at `frame` of `sequence`, bottom first. Costs one
 /// O(log n) lookup per video track.
 pub fn plan(project: &Project, sequence: &Sequence, frame: i64) -> Vec<PlanLayer> {
-    let mut layers = Vec::new();
     // Tracks are stored top first; draw order is bottom first.
     // Hidden tracks hold camera angles for the programme track to draw on.
-    for track in sequence.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video && !t.mix.hidden) {
-        let Some(clip) = track.clips.at(frame) else { continue };
-        let props = track.props_of(clip.id).cloned();
-        let at = frame - clip.start;
-        if props.as_ref().is_some_and(|p| p.title.is_some()) {
-            layers.push(PlanLayer { clip: clip.id, source: Source::Title, at, props });
-            continue;
-        }
-        let Some(video) = project.assets.get(&clip.asset).and_then(|a| a.video.as_ref()) else { continue };
-        let source_frame = if video.is_still() {
-            0
-        } else {
-            // Position in the source in sequence frames (speed applied),
-            // converted to the asset's rate: floor(n * asset_rate / sequence_rate).
-            let n = (clip.src_in + props.as_ref().map_or(at, |p| p.source_offset(at))) as i128;
-            let num = n * video.rate.num() as i128 * sequence.rate.den() as i128;
-            let den = video.rate.den() as i128 * sequence.rate.num() as i128;
-            (num.div_euclid(den) as i64).clamp(0, video.frames - 1)
-        };
-        layers.push(PlanLayer {
-            clip: clip.id,
-            source: Source::Asset { asset: clip.asset, frame: source_frame },
-            at,
-            props,
-        });
+    let shown = sequence.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video && !t.mix.hidden);
+    shown.filter_map(|track| plan_track(project, sequence, track, frame)).collect()
+}
+
+/// What one video track shows at `frame`, hidden or not: the programme
+/// asks only for shown tracks, the angle monitor for the hidden ones.
+pub fn plan_track(project: &Project, sequence: &Sequence, track: &sg_core::Track, frame: i64) -> Option<PlanLayer> {
+    let clip = track.clips.at(frame)?;
+    let props = track.props_of(clip.id).cloned();
+    let at = frame - clip.start;
+    if props.as_ref().is_some_and(|p| p.title.is_some()) {
+        return Some(PlanLayer { clip: clip.id, source: Source::Title, at, props });
     }
-    layers
+    let video = project.assets.get(&clip.asset).and_then(|a| a.video.as_ref())?;
+    let source_frame = if video.is_still() {
+        0
+    } else {
+        // Position in the source in sequence frames (speed applied),
+        // converted to the asset's rate: floor(n * asset_rate / sequence_rate).
+        let n = (clip.src_in + props.as_ref().map_or(at, |p| p.source_offset(at))) as i128;
+        let num = n * video.rate.num() as i128 * sequence.rate.den() as i128;
+        let den = video.rate.den() as i128 * sequence.rate.num() as i128;
+        (num.div_euclid(den) as i64).clamp(0, video.frames - 1)
+    };
+    Some(PlanLayer { clip: clip.id, source: Source::Asset { asset: clip.asset, frame: source_frame }, at, props })
 }
 
 /// Length of the sequence in frames: the end of its last clip. Audio

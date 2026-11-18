@@ -19,7 +19,7 @@ use crossbeam_channel::{Receiver, Sender};
 use sg_audio::{ClipSpan, Engine, Mix, SAMPLE_RATE, TrackMix};
 use sg_core::{AssetId, ClipProps, Project, Sequence, TrackKind};
 use sg_project::cache;
-use sg_render::{Compositor, LayerDraw, Source, plan, sequence_frames};
+use sg_render::{Compositor, LayerDraw, Source, plan, plan_track, sequence_frames};
 
 use crate::frames::{Decoded, FrameKey, Pool, Quality, TextureCache};
 
@@ -29,6 +29,10 @@ pub use sg_audio::{AudioError, Backend, DEFAULT_QUANTUM, MAX_METERS, Stats as Au
 const TEXTURE_BUDGET: u64 = 768 << 20;
 /// Frames decoded ahead of the playhead during playback.
 const READ_AHEAD: i64 = 6;
+/// Height of one picture of the camera-angle monitor, in pixels.
+const MONITOR_CELL_H: u32 = 270;
+/// Angles the monitor shows at most (the keys 1 to 9).
+const MONITOR_MAX: usize = 9;
 
 enum Command {
     Project {
@@ -71,6 +75,10 @@ struct Shared {
     output_generation: AtomicU64,
     output: Mutex<wgpu::TextureView>,
     stats: Mutex<PlayStats>,
+    monitor: Mutex<wgpu::TextureView>,
+    monitor_generation: AtomicU64,
+    /// Angles shown, columns and rows, packed 16 bits each; 0 when there are none.
+    monitor_grid: AtomicU64,
 }
 
 pub struct Player {
@@ -92,6 +100,7 @@ impl Player {
         let audio = Engine::start(backend)?;
         let meters = audio.meters();
         let compositor = Compositor::new(device.clone(), queue.clone(), 1920, 1080);
+        let monitor = Compositor::new(device.clone(), queue.clone(), MONITOR_CELL_H * 16 / 9, MONITOR_CELL_H);
         let shared = Arc::new(Shared {
             frame: AtomicI64::new(0),
             playing: AtomicBool::new(false),
@@ -99,6 +108,9 @@ impl Player {
             output_generation: AtomicU64::new(1),
             output: Mutex::new(compositor.output_view().clone()),
             stats: Mutex::default(),
+            monitor: Mutex::new(monitor.output_view().clone()),
+            monitor_generation: AtomicU64::new(1),
+            monitor_grid: AtomicU64::new(0),
         });
         let (commands, command_rx) = crossbeam_channel::unbounded();
         let (result_tx, result_rx) = crossbeam_channel::unbounded();
@@ -117,6 +129,9 @@ impl Player {
             frame: 0,
             playing: false,
             rendered: None,
+            monitor,
+            monitor_grid: (0, 1, 1),
+            monitor_rendered: None,
             titles: HashMap::new(),
             seek_started: None,
             full_started: None,
@@ -195,6 +210,20 @@ impl Player {
         self.meters.take(tracks)
     }
 
+    /// The camera-angle monitor, if the sequence has hidden camera tracks:
+    /// its texture, a number that changes when the texture is replaced, and
+    /// how many angles it shows in how many columns and rows.
+    pub fn angles(&self) -> Option<(wgpu::TextureView, u64, usize, u32, u32)> {
+        let grid = self.shared.monitor_grid.load(Ordering::Relaxed);
+        let (count, cols, rows) =
+            ((grid & 0xFFFF) as usize, (grid >> 16 & 0xFFFF) as u32, (grid >> 32 & 0xFFFF) as u32);
+        if count == 0 {
+            return None;
+        }
+        let view = self.shared.monitor.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        Some((view, self.shared.monitor_generation.load(Ordering::Relaxed), count, cols, rows))
+    }
+
     pub fn stats(&self) -> PlayStats {
         self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
@@ -235,6 +264,11 @@ struct State {
     playing: bool,
     /// What the output texture currently shows.
     rendered: Option<(i64, Vec<LayerKey>)>,
+    /// The camera angles side by side, for choosing between them.
+    monitor: Compositor,
+    /// Angles shown, columns and rows of the monitor.
+    monitor_grid: (usize, u32, u32),
+    monitor_rendered: Option<(i64, Vec<Option<FrameKey>>)>,
     /// Rasterised titles.
     titles: HashMap<TitleKey, (wgpu::TextureView, (u32, u32))>,
     seek_started: Option<Instant>,
@@ -531,6 +565,98 @@ impl State {
                     }
                 });
             }
+            (self.notify)();
+        }
+        let monitor_waiting = self.update_monitor(&root, &project, &sequence);
+        waiting || monitor_waiting
+    }
+
+    /// Renders the camera angles (the hidden video tracks) at the playhead
+    /// side by side, from proxies. Besides showing what there is to cut
+    /// to, this keeps every angle decoded, so a cut to it is on screen at
+    /// once. Returns whether a picture is still being decoded for it.
+    fn update_monitor(&mut self, root: &std::path::Path, project: &Arc<Project>, sequence: &Arc<Sequence>) -> bool {
+        let angles: Vec<&Arc<sg_core::Track>> =
+            sequence.tracks.iter().filter(|t| t.kind == TrackKind::Video && t.mix.hidden).take(MONITOR_MAX).collect();
+        let count = angles.len();
+        if count == 0 {
+            if self.monitor_grid.0 != 0 {
+                self.monitor_grid = (0, 1, 1);
+                self.shared.monitor_grid.store(0, Ordering::Relaxed);
+                self.monitor_rendered = None;
+                (self.notify)();
+            }
+            return false;
+        }
+        // Up to three in a row, more in a square.
+        let cols = if count <= 3 { count as u32 } else { (count as f32).sqrt().ceil() as u32 };
+        let rows = (count as u32).div_ceil(cols);
+        let cell = ((MONITOR_CELL_H * sequence.width / sequence.height.max(1)).clamp(64, 1024) / 2 * 2, MONITOR_CELL_H);
+        if self.monitor_grid != (count, cols, rows) || self.monitor.size() != (cols * cell.0, rows * cell.1) {
+            self.monitor.resize(cols * cell.0, rows * cell.1);
+            *self.shared.monitor.lock().unwrap_or_else(PoisonError::into_inner) = self.monitor.output_view().clone();
+            self.shared.monitor_generation.fetch_add(1, Ordering::Relaxed);
+            self.monitor_grid = (count, cols, rows);
+            self.shared.monitor_grid.store(count as u64 | (cols as u64) << 16 | (rows as u64) << 32, Ordering::Relaxed);
+            self.monitor_rendered = None;
+        }
+        let mut waiting = false;
+        let mut picks: Vec<Option<FrameKey>> = Vec::with_capacity(count);
+        for track in &angles {
+            let source = plan_track(project, sequence, track, self.frame).map(|layer| layer.source);
+            let Some(Source::Asset { asset: asset_id, frame }) = source else {
+                picks.push(None);
+                continue;
+            };
+            let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame };
+            if self.cache.contains(&key) {
+                picks.push(Some(key));
+            } else {
+                if let Some(asset) = project.assets.get(&asset_id) {
+                    self.pool.request(key, root, asset);
+                    waiting = true;
+                }
+                picks.push(self.cache.nearest_before(asset_id, frame));
+            }
+        }
+        if self.playing {
+            for ahead in 1..=READ_AHEAD {
+                for track in &angles {
+                    let source = plan_track(project, sequence, track, self.frame + ahead).map(|layer| layer.source);
+                    let Some(Source::Asset { asset: asset_id, frame }) = source else { continue };
+                    let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame };
+                    if let (false, Some(asset)) = (self.cache.contains(&key), project.assets.get(&asset_id)) {
+                        self.pool.request(key, root, asset);
+                    }
+                }
+            }
+        }
+        if self.monitor_rendered.as_ref() != Some(&(self.frame, picks.clone())) {
+            let (width, height) = ((cols * cell.0) as f32, (rows * cell.1) as f32);
+            let views: Vec<(wgpu::TextureView, (u32, u32), i32, usize)> = picks
+                .iter()
+                .enumerate()
+                .filter_map(|(n, key)| self.cache.get(key.as_ref()?).map(|c| (c.view.clone(), c.size, c.rotation, n)))
+                .collect();
+            let draws: Vec<LayerDraw<'_>> = views
+                .iter()
+                .map(|(view, size, rotation, n)| {
+                    // The picture as displayed, fitted into its cell instead of the whole monitor.
+                    let (w, h) = if rotation.rem_euclid(180) == 90 { (size.1, size.0) } else { *size };
+                    let (w, h) = (w.max(1) as f32, h.max(1) as f32);
+                    let whole = (width / w).min(height / h);
+                    let in_cell = (cell.0 as f32 / w).min(cell.1 as f32 / h);
+                    let (col, row) = (*n as u32 % cols, *n as u32 / cols);
+                    LayerDraw {
+                        x: (col as f32 + 0.5) / cols as f32 - 0.5,
+                        y: (row as f32 + 0.5) / rows as f32 - 0.5,
+                        scale: in_cell / whole,
+                        ..LayerDraw::fitted(view, *size, *rotation)
+                    }
+                })
+                .collect();
+            self.monitor.render(&draws);
+            self.monitor_rendered = Some((self.frame, picks));
             (self.notify)();
         }
         waiting

@@ -233,3 +233,40 @@ Not measured: export on a quiet machine; 4K with several layers; 10-bit
 sources (they still take the CPU conversion path); long exports (hours);
 the software fallback encoder; the clipboard hand-over (never run
 automatically, by rule).
+
+## 2026-11-19, M7 (and feedback round 3), commit 7c8971e + angle monitor
+
+Commands: `scripts/bench-m4.sh`; the spike run of
+`docs/spikes/s6-sync-beats.md`; scripted runs of the app on a synthetic
+multicam project (`/disk/shotgun-dev/media/m7`: a 2 minute song at 128 bpm and
+three "phone" recordings of it, made by `spikes/s6-sync-beats write`).
+Machine state: night, load average 2 to 4, app hidden, sound into the null
+backend. No budget in `04-performance.md` names sync, beats or angle
+switching; the UI frame-time budget is the one this work could have broken.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| UI frame time p99, 10 clips | 0.28 to 0.41 ms | 6.9 ms | pass |
+| UI frame time p99, 50 000 clips on 20 tracks | 0.64 ms | 6.9 ms | pass |
+| UI frame time p99, 50 000 clips on 4 tracks | 0.38 to 0.42 ms | 6.9 ms | pass |
+| UI frame time p99, 500 000 clips | 1.43 to 1.78 ms | 6.9 ms | pass |
+| UI frame time p99, multicam project with waveform (1500 columns) and beat grid | 0.60 ms | 6.9 ms | pass |
+| Find a take in a 200 s song (spike, release build) | 0.44 s (12 s take) to 1.26 s (150 s take) | none | |
+| Find the beats of a 180 s song | 0.46 to 0.50 s | none | |
+| Position error of a synced take (synthetic) | at most 1.47 ms; in the app each take landed on the expected frame | none (a frame is 16.7 ms) | |
+| Cutting between 3 angles during playback, 4 cuts in 7 s | 424 frames composited, 1 late | 0 dropped (general playback budget) | **1 late frame** |
+| Same before the angle monitor kept all angles decoded | 428 frames, 8 late | | |
+
+Notes:
+
+- In the multicam frame-time run the waveform only counts in the run where
+  its peaks had been loaded before the measurement began (the third of
+  three); the first two measured 24 quads and 0.48 ms.
+- "Late" as in M5: a frame composited without its exact picture, counted by
+  the preview engine. All angles play from proxies while playing.
+- Nothing here was measured with real footage or a real recording; see the
+  spike for what the synthetic recordings do and do not cover.
+
+Not measured: sync and beat analysis inside the app on a long real song
+(they run on their own thread; the UI does not wait), the monitor with more
+than three angles, switching by mouse or keyboard in real time.
