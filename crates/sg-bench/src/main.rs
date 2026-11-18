@@ -265,8 +265,106 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some("open") => bench_open(Path::new(arg(1).context("open <project-dir>")?), number(2, 10)?),
+        // sg-bench audio <sink name or "default"> [secs]
+        Some("audio") => {
+            let target = arg(1).context("audio <sink name|default> [secs]")?;
+            bench_audio(
+                (target != "default").then_some(target),
+                number(2, 10)? as u64,
+                Path::new("/disk/shotgun-dev/tmp"),
+            )
+        }
         _ => bail!(
             "usage: sg-bench ops [clips] | journal <dir> [records] | gen <library> <name> [clips] | open <project-dir> [reps]"
         ),
     }
+}
+
+/// Plays a generated tone through PipeWire and reports what the engine
+/// measured. `target` names the sink; use a null sink for automated runs.
+fn bench_audio(target: Option<&str>, secs: u64, dir: &Path) -> anyhow::Result<()> {
+    use sg_audio::{Backend, ClipSpan, DEFAULT_QUANTUM, Engine, Mix, SAMPLE_RATE, TrackMix};
+    std::fs::create_dir_all(dir)?;
+    let wav = dir.join("bench-tone.wav");
+    let frames = SAMPLE_RATE as usize * (secs as usize + 2);
+    let mut bytes = Vec::with_capacity(44 + frames * 8);
+    let data = (frames * 8) as u32;
+    bytes.extend(b"RIFF");
+    bytes.extend((36 + data).to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(16u32.to_le_bytes());
+    bytes.extend(3u16.to_le_bytes());
+    bytes.extend(2u16.to_le_bytes());
+    bytes.extend(SAMPLE_RATE.to_le_bytes());
+    bytes.extend((SAMPLE_RATE * 8).to_le_bytes());
+    bytes.extend(8u16.to_le_bytes());
+    bytes.extend(32u16.to_le_bytes());
+    bytes.extend(b"data");
+    bytes.extend(data.to_le_bytes());
+    for n in 0..frames {
+        let s = (n as f32 * 440.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin() * 0.05;
+        bytes.extend(s.to_le_bytes());
+        bytes.extend(s.to_le_bytes());
+    }
+    std::fs::write(&wav, bytes)?;
+
+    let engine = Engine::start(Backend::PipeWire { target: target.map(str::to_owned), quantum: DEFAULT_QUANTUM })?;
+    let clip = ClipSpan { start: 0, len: frames as i64, src_in: 0, wav: wav.clone(), gain: 1.0 };
+    engine.set_mix(Mix { tracks: vec![TrackMix { clips: vec![clip], gain: 1.0, pan: 0.0, mute: false }] });
+
+    // Play start: from the call until the realtime thread renders the first block.
+    let mut starts = Vec::new();
+    for round in 0..10 {
+        let t = Instant::now();
+        engine.play(0);
+        while !engine.is_playing() {
+            if t.elapsed() > Duration::from_secs(3) {
+                bail!("the audio stream did not start (is the target sink there?)");
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        starts.push(t.elapsed().as_nanos() as u64);
+        std::thread::sleep(Duration::from_millis(if round == 9 { 0 } else { 150 }));
+        if round < 9 {
+            engine.pause();
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+    Samples(starts).report("audio start", 80_000.0);
+
+    // Clock: the heard position must advance at one sample per 1/48000 s.
+    let t0 = Instant::now();
+    let p0 = engine.position();
+    let mut worst = 0.0f64;
+    while t0.elapsed() < Duration::from_secs(secs) {
+        std::thread::sleep(Duration::from_millis(50));
+        let expected = p0 as f64 + t0.elapsed().as_secs_f64() * SAMPLE_RATE as f64;
+        worst = worst.max((engine.position() as f64 - expected).abs());
+    }
+    let stats = engine.stats();
+    engine.pause();
+    std::thread::sleep(Duration::from_millis(50));
+    let stats_after = engine.stats();
+    println!(
+        "pipewire stream: quantum {} frames ({:.2} ms), reported output delay {} frames ({:.2} ms)",
+        stats.quantum,
+        stats.quantum as f64 * 1000.0 / SAMPLE_RATE as f64,
+        stats.delay_frames,
+        stats.delay_frames as f64 * 1000.0 / SAMPLE_RATE as f64
+    );
+    println!(
+        "over {secs} s: {} callbacks, graph xruns {}, ring underruns {}, worst process() {:.1} us, realtime policy {} (2 = SCHED_RR)",
+        stats.callbacks,
+        stats.xruns,
+        stats.underruns,
+        stats.process_max_ns as f64 / 1000.0,
+        stats_after.sched_policy
+    );
+    println!(
+        "clock: heard position stayed within {:.0} samples ({:.2} ms) of wall-clock time",
+        worst,
+        worst * 1000.0 / SAMPLE_RATE as f64
+    );
+    std::fs::remove_file(&wav)?;
+    Ok(())
 }

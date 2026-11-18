@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 sg-core = { path = "crates/sg-core" }
+sg-audio = { path = "crates/sg-audio" }
 sg-media = { path = "crates/sg-media" }
 sg-project = { path = "crates/sg-project" }
 sg-ui = { path = "crates/sg-ui" }
