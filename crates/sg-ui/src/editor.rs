@@ -7,6 +7,7 @@ use egui::{Align, FontId, Layout, RichText, Sense, vec2};
 use sg_core::{Asset, AssetId, Op, Rate, Sequence};
 
 use crate::assets::{AssetRequest, AssetsPanel, summary};
+use crate::clip_panel::{ClipPanel, Target};
 use crate::session::Session;
 use crate::stage::{self, Transport, ViewerState};
 use crate::theme;
@@ -17,6 +18,7 @@ pub enum EditorRequest {
     Undo,
     Redo,
     RemoveAsset(AssetId),
+    AddTrack(sg_core::TrackKind),
 }
 
 #[derive(Default)]
@@ -26,6 +28,8 @@ pub struct Editor {
     focus_rename: bool,
     pub assets: AssetsPanel,
     pub timeline: Timeline,
+    pub clip_panel: ClipPanel,
+    was_playing: bool,
     /// The label being typed for the selected asset.
     asset_label: Option<(AssetId, String)>,
 }
@@ -71,15 +75,27 @@ impl Editor {
         egui::Panel::left("assets").default_size(320.0).min_size(170.0).show(ui, |ui| {
             self.assets.ui(ui, &project, asset_requests);
         });
+        // The clip the inspector and the viewer act on, as of this frame.
+        let target = self.target(session, view.frame);
+        if self.clip_panel.recording && self.was_playing && !view.playing {
+            self.clip_panel.finish_recording(session, sequence, target.as_ref(), error);
+        }
+        self.was_playing = view.playing;
+        let target = self.target(session, view.frame);
         egui::Panel::right("inspector").default_size(300.0).min_size(200.0).show(ui, |ui| {
             // The content can be taller than a small window.
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                self.inspector(ui, session, sequence, error, &mut request);
+                self.inspector(ui, session, sequence, target.as_ref(), error, &mut request);
             });
         });
-        egui::CentralPanel::default()
+        let recording = self.clip_panel.recording;
+        let dragged = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(12.0))
-            .show(ui, |ui| stage::viewer(ui, sequence, view));
+            .show(ui, |ui| stage::viewer(ui, sequence, view, recording))
+            .inner;
+        if let (Some(delta), Some(target)) = (dragged, &target) {
+            self.clip_panel.viewer_drag(session, sequence, target, delta, view.playing, error);
+        }
         request
     }
 
@@ -136,11 +152,16 @@ impl Editor {
         ui: &mut egui::Ui,
         session: &mut Session,
         sequence: &Sequence,
+        target: Option<&Target>,
         error: &mut Option<String>,
         request: &mut Option<EditorRequest>,
     ) {
         let project = session.project().clone();
         ui.take_available_width();
+        if let Some(target) = target {
+            self.clip_panel.ui(ui, session, sequence, target, error);
+            ui.add_space(10.0);
+        }
         if let Some(asset) = self.assets.selected.and_then(|id| project.assets.get(&id)) {
             self.asset_section(ui, session, asset, error, request);
             ui.add_space(10.0);
@@ -157,6 +178,14 @@ impl Editor {
         row(ui, "Format", &format!("{}x{}, {}", sequence.width, sequence.height, fps(sequence.rate)));
         row(ui, "Tracks", &sequence.tracks.len().to_string());
         row(ui, "Clips", &sequence.clip_count().to_string());
+        ui.horizontal(|ui| {
+            if ui.small_button("Add video track").clicked() {
+                *request = Some(EditorRequest::AddTrack(sg_core::TrackKind::Video));
+            }
+            if ui.small_button("Add audio track").clicked() {
+                *request = Some(EditorRequest::AddTrack(sg_core::TrackKind::Audio));
+            }
+        });
         ui.add_space(10.0);
         section(ui, "HISTORY");
         let history = session.document().history();
@@ -247,6 +276,175 @@ impl Editor {
         }
         if ui.small_button("Remove from project (Del)").clicked() {
             *request = Some(EditorRequest::RemoveAsset(asset.id));
+        }
+    }
+}
+
+impl Editor {
+    /// The selected timeline clip with its properties, at the playhead.
+    pub fn target(&self, session: &Session, playhead: i64) -> Option<Target> {
+        let project = session.project();
+        let sequence = project.sequences.first()?;
+        let (track, clip) = self.timeline.primary(sequence)?;
+        Some(Target::new(sequence, &track, clip, playhead))
+    }
+
+    /// Adds a track: video on top, audio at the bottom.
+    pub fn add_track(&mut self, session: &mut Session, kind: sg_core::TrackKind, error: &mut Option<String>) {
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return };
+        let count = sequence.tracks.iter().filter(|t| t.kind == kind).count();
+        let (index, name) = match kind {
+            sg_core::TrackKind::Video => (0, format!("V{}", count + 1)),
+            sg_core::TrackKind::Audio => (sequence.tracks.len(), format!("A{}", count + 1)),
+        };
+        let track = sg_core::TrackHeader { id: session.new_track_id(), kind, name };
+        if let Err(e) = session.apply(Op::AddTrack { seq: sequence.id, index, track }, None) {
+            *error = Some(e.to_string());
+        }
+    }
+
+    /// Keyframe, title and record keys.
+    pub fn clip_action(
+        &mut self,
+        action: crate::keymap::Action,
+        session: &mut Session,
+        playhead: i64,
+        playing: bool,
+        error: &mut Option<String>,
+    ) -> Vec<Transport> {
+        use crate::keymap::Action;
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first().cloned() else { return Vec::new() };
+        let target = self.target(session, playhead);
+        let mut transport = Vec::new();
+        match action {
+            Action::KeyframeSet | Action::KeyframeRemove => {
+                let Some(target) = target.filter(|t| t.track.kind == sg_core::TrackKind::Video) else {
+                    return transport;
+                };
+                let mut props = target.props.clone();
+                for param in props.picture_params() {
+                    if action == Action::KeyframeSet {
+                        let now = param.at(target.at);
+                        param.set_key(target.at, now);
+                    } else {
+                        param.remove_key(target.at);
+                    }
+                }
+                let props = (props != sg_core::ClipProps::default()).then(|| Box::new(props));
+                let op = Op::SetClipProps { seq: sequence.id, track: target.track.id, clip: target.clip.id, props };
+                if let Err(e) = session.apply(op, None) {
+                    *error = Some(e.to_string());
+                }
+            }
+            Action::AddTitle => {
+                // Three seconds, on the topmost video track that is free
+                // there; a new track on top if none is.
+                let len = (3 * sequence.rate.num() as i64 / sequence.rate.den() as i64).max(1);
+                let free = sequence
+                    .tracks
+                    .iter()
+                    .find(|t| {
+                        t.kind == sg_core::TrackKind::Video && t.clips.range(playhead, playhead + len).next().is_none()
+                    })
+                    .map(|t| t.id);
+                let mut ops = Vec::new();
+                let track = match free {
+                    Some(id) => id,
+                    None => {
+                        let id = session.new_track_id();
+                        let count = sequence.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Video).count();
+                        let header = sg_core::TrackHeader {
+                            id,
+                            kind: sg_core::TrackKind::Video,
+                            name: format!("V{}", count + 1),
+                        };
+                        ops.push(Op::AddTrack { seq: sequence.id, index: 0, track: header });
+                        id
+                    }
+                };
+                // A title has no asset: the id is all zeros.
+                let clip = sg_core::Clip {
+                    id: session.new_clip_id(),
+                    asset: sg_core::AssetId(0),
+                    start: playhead,
+                    len,
+                    src_in: 0,
+                };
+                let props =
+                    sg_core::ClipProps { title: Some(sg_core::Title::default()), ..sg_core::ClipProps::default() };
+                ops.push(Op::InsertClip { seq: sequence.id, track, clip });
+                ops.push(Op::SetClipProps { seq: sequence.id, track, clip: clip.id, props: Some(Box::new(props)) });
+                match session.apply(Op::Batch(ops), None) {
+                    Ok(()) => self.timeline.select_only(track, &clip),
+                    Err(e) => *error = Some(e.to_string()),
+                }
+            }
+            Action::LiveRecord => {
+                if self.clip_panel.recording {
+                    self.clip_panel.finish_recording(session, &sequence, target.as_ref(), error);
+                    if playing {
+                        transport.push(Transport::Toggle);
+                    }
+                } else if target.is_some() {
+                    self.clip_panel.recording = true;
+                    if !playing {
+                        transport.push(Transport::Toggle);
+                    }
+                } else {
+                    *error =
+                        Some("Select a clip first, then press R and drag it in the viewer while it plays.".to_owned());
+                }
+            }
+            _ => {}
+        }
+        transport
+    }
+}
+
+impl Editor {
+    /// Sets one property of the selected clip by name (scripted runs).
+    pub fn set_prop(
+        &mut self,
+        session: &mut Session,
+        playhead: i64,
+        name: &str,
+        value: &str,
+        error: &mut Option<String>,
+    ) {
+        let project = session.project().clone();
+        let (Some(sequence), Some(target)) = (project.sequences.first(), self.target(session, playhead)) else {
+            *error = Some("No clip is selected.".to_owned());
+            return;
+        };
+        let mut props = target.props.clone();
+        let number = value.parse::<f32>().unwrap_or(0.0);
+        match name {
+            "x" => props.x.set(target.at, number),
+            "y" => props.y.set(target.at, number),
+            "scale" => props.scale.set(target.at, number),
+            "rotation" => props.rotation.set(target.at, number),
+            "opacity" => props.opacity.set(target.at, number),
+            "gain" => props.gain_db.set(target.at, number),
+            "speed" => props.speed = (number.max(1.0) as u32, 100),
+            "fadein" => props.fade_in = number as i64,
+            "fadeout" => props.fade_out = number as i64,
+            "crop" => props.crop = [number; 4],
+            "text" => {
+                if let Some(title) = &mut props.title {
+                    title.text = value.replace("\\n", "\n");
+                }
+            }
+            _ => {
+                *error = Some(format!("Unknown clip property {name}"));
+                return;
+            }
+        }
+        let props = (props != sg_core::ClipProps::default()).then(|| Box::new(props));
+        let op = Op::SetClipProps { seq: sequence.id, track: target.track.id, clip: target.clip.id, props };
+        if let Err(e) = session.apply(op, None) {
+            *error = Some(e.to_string());
         }
     }
 }

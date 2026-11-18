@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::asset::Asset;
 use crate::clips::ClipStore;
-use crate::ids::{AssetId, ProjectId, SequenceId, TrackId};
+use crate::ids::{AssetId, ClipId, ProjectId, SequenceId, TrackId};
+use crate::props::ClipProps;
 use crate::time::Rate;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +42,9 @@ pub struct Track {
     pub kind: TrackKind,
     pub name: String,
     pub clips: ClipStore,
+    /// Properties of the clips that have any, by clip id. An entry may
+    /// outlive its clip (a removed clip comes back with its properties on undo).
+    pub props: Arc<BTreeMap<ClipId, Arc<ClipProps>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +122,7 @@ impl Track {
 
 impl From<TrackHeader> for Track {
     fn from(h: TrackHeader) -> Track {
-        Track { id: h.id, kind: h.kind, name: h.name, clips: ClipStore::new() }
+        Track { id: h.id, kind: h.kind, name: h.name, clips: ClipStore::new(), props: Arc::default() }
     }
 }
 
@@ -128,4 +132,11 @@ pub struct Marker {
     pub frame: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+}
+
+impl Track {
+    /// The properties of a clip, if it has any that differ from the defaults.
+    pub fn props_of(&self, clip: ClipId) -> Option<&Arc<ClipProps>> {
+        self.props.get(&clip)
+    }
 }

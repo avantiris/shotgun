@@ -129,6 +129,8 @@ struct Disk {
     playing: bool,
     block: Vec<f32>,
     raw: Vec<u8>,
+    /// Scratch for one clip's stretch of a block before gain and fades.
+    segment: Vec<f32>,
     offered: u64,
 }
 
@@ -171,7 +173,7 @@ impl Disk {
                 let from = clip.start.max(start);
                 let to = (clip.start + clip.len).min(end);
                 let out = &mut block[((from - start) * 2) as usize..((to - start) * 2) as usize];
-                wav.mix_into(clip.src_in + (from - clip.start), out, clip.gain, &mut raw);
+                render_clip(&wav, &clip, from, out, &mut raw, &mut self.segment);
             }
             i += 1;
         }
@@ -282,6 +284,7 @@ pub fn run(
         playing: false,
         block: Vec::new(),
         raw: Vec::new(),
+        segment: Vec::new(),
         offered: 0,
     };
     loop {
@@ -323,4 +326,47 @@ fn realtime_policy() -> Option<i64> {
         }
     }
     None
+}
+
+/// Adds the part of `clip` that starts at timeline sample `from` to `out`
+/// (interleaved stereo), with the clip's speed, gain and fades applied.
+fn render_clip(wav: &Wav, clip: &ClipSpan, from: i64, out: &mut [f32], raw: &mut Vec<u8>, segment: &mut Vec<f32>) {
+    let frames = out.len() / 2;
+    let elapsed = from - clip.start;
+    segment.clear();
+    segment.resize(out.len(), 0.0);
+    let (num, den) = (clip.speed.0.max(1) as i64, clip.speed.1.max(1) as i64);
+    if num == den {
+        wav.mix_into(clip.src_in + elapsed, segment, 1.0, raw);
+    } else {
+        // Read the stretch of source this block covers, then pick each
+        // output sample between its two neighbours.
+        let first = clip.src_in + elapsed * num / den;
+        let needed = (frames as i64 * num / den + 3) as usize;
+        let mut source = vec![0.0f32; needed * 2];
+        wav.mix_into(first, &mut source, 1.0, raw);
+        for (i, frame) in segment.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            let position = (elapsed + i as i64) as f64 * num as f64 / den as f64 - (first - clip.src_in) as f64;
+            let index = (position.floor().max(0.0) as usize).min(needed - 2);
+            let t = (position - index as f64).clamp(0.0, 1.0) as f32;
+            for (c, sample) in frame.iter_mut().enumerate() {
+                *sample = source[index * 2 + c] * (1.0 - t) + source[index * 2 + 2 + c] * t;
+            }
+        }
+    }
+    let faded = clip.fade_in > 0 || clip.fade_out > 0;
+    for (i, (o, s)) in out.as_chunks_mut::<2>().0.iter_mut().zip(segment.as_chunks::<2>().0).enumerate() {
+        let mut gain = clip.gain;
+        if faded {
+            let at = elapsed + i as i64;
+            if at < clip.fade_in {
+                gain *= at.max(0) as f32 / clip.fade_in as f32;
+            }
+            if clip.len - at < clip.fade_out {
+                gain *= (clip.len - at).max(0) as f32 / clip.fade_out as f32;
+            }
+        }
+        o[0] += s[0] * gain;
+        o[1] += s[1] * gain;
+    }
 }

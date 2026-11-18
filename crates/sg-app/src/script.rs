@@ -43,6 +43,15 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "paste" => Step::Dev(DevStep::Act(Action::PasteClips)),
         "marker" => Step::Dev(DevStep::Act(Action::Marker)),
         "history" => Step::Dev(DevStep::Act(Action::History)),
+        "key" => Step::Dev(DevStep::Act(Action::KeyframeSet)),
+        "title" => Step::Dev(DevStep::Act(Action::AddTitle)),
+        "record" => Step::Dev(DevStep::Act(Action::LiveRecord)),
+        "vtrack" => Step::Dev(DevStep::AddTrack(sg_core::TrackKind::Video)),
+        "atrack" => Step::Dev(DevStep::AddTrack(sg_core::TrackKind::Audio)),
+        "prop" => {
+            let (name, value) = arg.split_once('=').ok_or_else(|| anyhow!("prop needs <name>=<value>"))?;
+            Step::Dev(DevStep::Prop(name.to_owned(), value.to_owned()))
+        }
         "checkpoint" => Step::Dev(DevStep::Checkpoint(need()?)),
         "restore" => Step::Dev(DevStep::Restore(
             need()?.parse().map_err(|_| anyhow!("restore needs the position in the history list"))?,

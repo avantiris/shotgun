@@ -10,6 +10,7 @@ pub mod history;
 pub mod ids;
 pub mod model;
 pub mod ops;
+pub mod props;
 pub mod text;
 pub mod time;
 
@@ -19,4 +20,5 @@ pub use history::{Document, History, HistoryError, Record};
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};
 pub use model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader, TrackKind};
 pub use ops::{Op, OpError, apply};
+pub use props::{ClipProps, Key, Param, Title};
 pub use time::Rate;

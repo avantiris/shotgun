@@ -63,7 +63,16 @@ fn clips_land_on_their_timeline_samples() {
     let engine = Engine::start(Backend::Manual).unwrap();
     // The clip sits at timeline sample 1000 and starts 200 samples into its file.
     engine.set_mix(Mix {
-        tracks: vec![track(vec![ClipSpan { start: 1000, len: 600, src_in: 200, wav: stereo, gain: 1.0 }])],
+        tracks: vec![track(vec![ClipSpan {
+            start: 1000,
+            len: 600,
+            src_in: 200,
+            wav: stereo,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            speed: (1, 1),
+        }])],
     });
     assert_eq!(engine.position(), 0);
     assert!(!engine.is_playing());
@@ -93,7 +102,16 @@ fn mono_gain_pan_mute_and_mixing() {
     let dir = tempfile::tempdir().unwrap();
     let mono = wav(dir.path(), "m.wav", 1, 4000, |_, _| 0.5);
     let other = wav(dir.path(), "o.wav", 2, 4000, |_, _| 0.25);
-    let clip = |wav: &PathBuf, gain: f32| ClipSpan { start: 0, len: 4000, src_in: 0, wav: wav.clone(), gain };
+    let clip = |wav: &PathBuf, gain: f32| ClipSpan {
+        start: 0,
+        len: 4000,
+        src_in: 0,
+        wav: wav.clone(),
+        gain,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+    };
     let engine = Engine::start(Backend::Manual).unwrap();
     let mix = |pan: f32, mute: bool| Mix {
         tracks: vec![TrackMix { clips: vec![clip(&mono, 0.5)], gain: 2.0, pan, mute }, track(vec![clip(&other, 1.0)])],
@@ -125,7 +143,16 @@ fn pause_seek_and_resume_are_sample_accurate() {
     let file = wav(dir.path(), "r.wav", 1, 48_000, |n, _| ramp(n));
     let engine = Engine::start(Backend::Manual).unwrap();
     engine.set_mix(Mix {
-        tracks: vec![track(vec![ClipSpan { start: 0, len: 48_000, src_in: 0, wav: file, gain: 1.0 }])],
+        tracks: vec![track(vec![ClipSpan {
+            start: 0,
+            len: 48_000,
+            src_in: 0,
+            wav: file,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            speed: (1, 1),
+        }])],
     });
     engine.play(0);
     engine.settle();
@@ -160,8 +187,18 @@ fn a_missing_file_is_silence_until_it_appears() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("later.wav");
     let engine = Engine::start(Backend::Manual).unwrap();
-    let mix =
-        Mix { tracks: vec![track(vec![ClipSpan { start: 0, len: 1000, src_in: 0, wav: path.clone(), gain: 1.0 }])] };
+    let mix = Mix {
+        tracks: vec![track(vec![ClipSpan {
+            start: 0,
+            len: 1000,
+            src_in: 0,
+            wav: path.clone(),
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            speed: (1, 1),
+        }])],
+    };
     engine.set_mix(mix.clone());
     engine.play(0);
     engine.settle();
@@ -192,4 +229,51 @@ fn the_null_backend_keeps_time() {
     let at = engine.pause();
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(engine.position(), at, "paused: the position holds");
+}
+
+#[test]
+fn fades_and_speed() {
+    let dir = tempfile::tempdir().unwrap();
+    let flat = wav(dir.path(), "flat.wav", 1, 4000, |_, _| 1.0);
+    let ramp_file = wav(dir.path(), "ramp.wav", 1, 4000, |n, _| ramp(n));
+    let engine = Engine::start(Backend::Manual).unwrap();
+
+    // A 1000-sample clip of constant 1.0 with 100-sample fades.
+    let faded =
+        ClipSpan { start: 0, len: 1000, src_in: 0, wav: flat, gain: 1.0, fade_in: 100, fade_out: 100, speed: (1, 1) };
+    engine.set_mix(Mix { tracks: vec![track(vec![faded])] });
+    engine.play(0);
+    engine.settle();
+    let out = pull(&engine, 1024);
+    assert_eq!(out[0], 0.0);
+    assert!(
+        close(out[50 * 2], 0.5) && close(out[500 * 2], 1.0) && close(out[950 * 2], 0.5),
+        "{} {} {}",
+        out[100],
+        out[1000],
+        out[1900]
+    );
+    assert_eq!(out[1000 * 2], 0.0);
+
+    // Double speed: output sample n is source sample 2n; half speed: n/2.
+    for (speed, factor) in [((2, 1), 2.0), ((1, 2), 0.5)] {
+        let clip = ClipSpan {
+            start: 0,
+            len: 1000,
+            src_in: 100,
+            wav: ramp_file.clone(),
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            speed,
+        };
+        engine.set_mix(Mix { tracks: vec![track(vec![clip])] });
+        engine.play(0);
+        engine.settle();
+        let out = pull(&engine, 600);
+        for n in [0usize, 1, 2, 3, 250, 599] {
+            let expected = (100.0 + n as f32 * factor) / 100_000.0;
+            assert!((out[n * 2] - expected).abs() < 1e-5, "speed {speed:?} sample {n}: {} vs {expected}", out[n * 2]);
+        }
+    }
 }

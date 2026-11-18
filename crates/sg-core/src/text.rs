@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipStore};
 use crate::ids::ProjectId;
-use crate::model::{Marker, Project, Sequence, Track, TrackKind};
+use crate::model::{Marker, Project, Sequence, Track, TrackHeader, TrackKind};
+use crate::props::ClipProps;
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const PROJECT_FILE: &str = "project.toml";
@@ -185,6 +186,10 @@ fn write_sequence(seq: &Sequence) -> String {
         for c in track.clips.iter() {
             let _ = writeln!(out, "clip {} {} {} {} {}", c.id, c.asset, c.start, c.len, c.src_in);
         }
+        // One line per clip that has properties, sorted by clip id.
+        for (id, props) in track.props.iter() {
+            let _ = writeln!(out, "props {id} {}", serde_json::to_string(&**props).unwrap_or_default());
+        }
     }
     out
 }
@@ -227,6 +232,16 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                 let (_, clips) = current.as_mut().ok_or_else(|| err(n, "clip before any track"))?;
                 clips.push(parse_clip(rest).ok_or_else(|| err(n, "malformed clip line"))?);
             }
+            "props" => {
+                let (track, _) = current.as_mut().ok_or_else(|| err(n, "props before any track"))?;
+                let (id, json) = rest.split_once(' ').ok_or_else(|| err(n, "malformed props line"))?;
+                let id = id.parse().map_err(|_| err(n, "bad clip id"))?;
+                let props: ClipProps =
+                    serde_json::from_str(json).map_err(|e| err(n, &format!("bad clip properties: {e}")))?;
+                let mut map = BTreeMap::clone(&track.props);
+                map.insert(id, Arc::new(props));
+                track.props = Arc::new(map);
+            }
             "track" => {
                 finish(&mut current, n)?;
                 let mut parts = rest.splitn(3, ' ');
@@ -237,7 +252,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                     _ => return Err(err(n, "track kind must be video or audio")),
                 };
                 let track_name = parts.next().and_then(unquote).ok_or_else(|| err(n, "bad track name"))?;
-                current = Some((Track { id: track_id, kind, name: track_name, clips: ClipStore::new() }, Vec::new()));
+                current = Some((Track::from(TrackHeader { id: track_id, kind, name: track_name }), Vec::new()));
             }
             "id" => id = Some(rest.parse().map_err(|_| err(n, "bad sequence id"))?),
             "name" => name = Some(unquote(rest).ok_or_else(|| err(n, "bad name"))?),

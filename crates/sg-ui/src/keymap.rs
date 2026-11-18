@@ -37,6 +37,12 @@ pub enum Action {
     Checkpoint,
     /// Show saved states and checkpoints.
     History,
+    /// Fix the selected clip's placement at the playhead.
+    KeyframeSet,
+    KeyframeRemove,
+    AddTitle,
+    /// Play and record drags in the viewer as motion.
+    LiveRecord,
     /// Put the selected asset on the timeline.
     InsertAsset,
     /// Import what the clipboard holds.
@@ -101,6 +107,10 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, true, Key::D, Action::NextCut),
     bind(Scope::Editor, true, false, Key::S, Action::Checkpoint),
     bind(Scope::Editor, true, false, Key::H, Action::History),
+    bind(Scope::Editor, false, false, Key::F, Action::KeyframeSet),
+    bind(Scope::Editor, false, true, Key::F, Action::KeyframeRemove),
+    bind(Scope::Editor, false, false, Key::T, Action::AddTitle),
+    bind(Scope::Editor, false, false, Key::R, Action::LiveRecord),
     bind(Scope::Editor, true, false, Key::V, Action::Paste),
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
 ];

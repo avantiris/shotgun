@@ -6,6 +6,7 @@
 //! [`Shell::opened`], [`Shell::import_event`] and [`Shell::poster_loaded`].
 
 mod assets;
+mod clip_panel;
 mod editor;
 mod history;
 pub mod keymap;
@@ -102,6 +103,10 @@ pub enum DevStep {
     Import(String),
     Transport(Transport),
     Checkpoint(String),
+    /// Set a property of the selected clip: x, y, scale, rotation, opacity,
+    /// speed (percent), fadein, fadeout (frames), gain (dB), text.
+    Prop(String, String),
+    AddTrack(sg_core::TrackKind),
     /// Restore the n-th entry of the loaded history list (0 is the newest).
     Restore(usize),
     /// Zoom (frames per point) and scroll (frame at the left edge) of the timeline.
@@ -120,6 +125,7 @@ pub struct Shell {
     perf: Perf,
     error: Option<String>,
     history: HistoryPanel,
+    playing: bool,
     /// The playhead as of the last frame, for key actions.
     playhead: i64,
 }
@@ -187,6 +193,7 @@ impl Shell {
         let mut asset_requests = Vec::new();
         let mut transport = Vec::new();
         self.playhead = view.frame;
+        self.playing = view.playing;
         match &mut self.session {
             Some(session) => {
                 let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests, view, &mut transport);
@@ -197,6 +204,11 @@ impl Shell {
                     Some(EditorRequest::Undo) => self.act(Action::Undo, &mut commands),
                     Some(EditorRequest::Redo) => self.act(Action::Redo, &mut commands),
                     Some(EditorRequest::RemoveAsset(id)) => self.remove_asset(id),
+                    Some(EditorRequest::AddTrack(kind)) => {
+                        if let Some(session) = &mut self.session {
+                            self.editor.add_track(session, kind, &mut self.error);
+                        }
+                    }
                     None => {}
                 }
             }
@@ -335,6 +347,13 @@ impl Shell {
                     self.remove_asset(id);
                 }
             }
+            Action::KeyframeSet | Action::KeyframeRemove | Action::AddTitle | Action::LiveRecord => {
+                if let Some(session) = &mut self.session {
+                    let transport =
+                        self.editor.clip_action(action, session, self.playhead, self.playing, &mut self.error);
+                    commands.extend(transport.into_iter().map(Command::Transport));
+                }
+            }
             Action::Checkpoint => {
                 if self.session.is_some() {
                     self.history.begin_checkpoint();
@@ -371,6 +390,16 @@ impl Shell {
             }
             DevStep::Act(action) => self.act(action, &mut commands),
             DevStep::Transport(transport) => commands.push(Command::Transport(transport)),
+            DevStep::Prop(name, value) => {
+                if let Some(session) = &mut self.session {
+                    self.editor.set_prop(session, self.playhead, &name, &value, &mut self.error);
+                }
+            }
+            DevStep::AddTrack(kind) => {
+                if let Some(session) = &mut self.session {
+                    self.editor.add_track(session, kind, &mut self.error);
+                }
+            }
             DevStep::Checkpoint(name) => {
                 if let Some(session) = &self.session {
                     session.checkpoint(name);

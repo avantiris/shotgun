@@ -1,11 +1,12 @@
 // Layer pass: one textured quad per picture, blended in linear light.
 struct Layer {
-    // Half-size of the quad in clip space (xy) and its centre (zw).
-    rect: vec4<f32>,
-    // 2x2 matrix turning quad coordinates into texture coordinates.
+    // 2x2 matrix (rows) from quad corners to clip space.
+    matrix: vec4<f32>,
+    // xy: centre in clip space, z: opacity.
+    offset: vec4<f32>,
+    // 2x2 matrix (rows) from quad corners to texture coordinate offsets.
     uv: vec4<f32>,
-    // x: opacity
-    params: vec4<f32>,
+    uv_centre: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> layer: Layer;
 @group(0) @binding(1) var picture: texture_2d<f32>;
@@ -21,10 +22,11 @@ fn layer_vs(@builtin(vertex_index) i: u32) -> V {
     // Corners of a strip: (-1,-1) (1,-1) (-1,1) (1,1).
     let corner = vec2<f32>(f32(i & 1u) * 2.0 - 1.0, f32((i >> 1u) & 1u) * 2.0 - 1.0);
     var out: V;
-    out.pos = vec4<f32>(layer.rect.zw + corner * layer.rect.xy, 0.0, 1.0);
+    let p = vec2<f32>(dot(layer.matrix.xy, corner), dot(layer.matrix.zw, corner));
+    out.pos = vec4<f32>(layer.offset.xy + p, 0.0, 1.0);
     // Texture space has y down; quad space has y up.
     let q = vec2<f32>(corner.x, -corner.y);
-    out.uv = vec2<f32>(dot(layer.uv.xy, q), dot(layer.uv.zw, q)) * 0.5 + vec2<f32>(0.5);
+    out.uv = layer.uv_centre.xy + vec2<f32>(dot(layer.uv.xy, q), dot(layer.uv.zw, q));
     return out;
 }
 
@@ -46,7 +48,7 @@ fn to_display(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn layer_fs(v: V) -> @location(0) vec4<f32> {
     let texel = textureSample(picture, picture_sampler, v.uv);
-    let alpha = texel.a * layer.params.x;
+    let alpha = texel.a * layer.offset.z;
     // Premultiplied, to match the blend state.
     return vec4<f32>(to_linear(texel.rgb) * alpha, alpha);
 }

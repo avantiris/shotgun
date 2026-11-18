@@ -50,6 +50,12 @@ pub struct ClipSpan {
     pub wav: PathBuf,
     /// Linear gain of this clip.
     pub gain: f32,
+    /// Fade lengths in samples of timeline time.
+    pub fade_in: i64,
+    pub fade_out: i64,
+    /// Playback speed as a fraction. Other than 1/1 the sound is resampled,
+    /// so its pitch changes with the speed.
+    pub speed: (u32, u32),
 }
 
 #[derive(Clone, Debug, PartialEq)]

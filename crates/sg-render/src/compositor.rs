@@ -3,21 +3,57 @@
 use wgpu::util::DeviceExt;
 
 /// One picture to draw: fitted into the frame, turned and faded.
+/// One picture to draw.
+#[derive(Clone, Copy)]
 pub struct LayerDraw<'a> {
     pub view: &'a wgpu::TextureView,
     /// Stored size of the picture in pixels.
     pub size: (u32, u32),
-    /// Degrees the stored picture is turned (counter-clockwise) for display.
+    /// Degrees the stored picture is turned (counter-clockwise) for display:
+    /// the rotation recorded in the file.
     pub rotation: i32,
     pub opacity: f32,
+    /// Centre relative to the frame centre, in frame widths and heights (y down).
+    pub x: f32,
+    pub y: f32,
+    /// 1 fits the picture into the frame.
+    pub scale: f32,
+    /// The user's rotation, degrees clockwise.
+    pub turn_degrees: f32,
+    /// Fractions cut off at left, top, right, bottom of the displayed picture.
+    pub crop: [f32; 4],
+    /// Draw at one texture pixel per frame pixel instead of fitting (titles).
+    pub natural_size: bool,
+}
+
+impl<'a> LayerDraw<'a> {
+    /// The picture fitted into the frame, centred, opaque.
+    pub fn fitted(view: &'a wgpu::TextureView, size: (u32, u32), rotation: i32) -> LayerDraw<'a> {
+        LayerDraw {
+            view,
+            size,
+            rotation,
+            opacity: 1.0,
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            turn_degrees: 0.0,
+            crop: [0.0; 4],
+            natural_size: false,
+        }
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LayerUniform {
-    rect: [f32; 4],
+    /// 2x2 matrix from quad corners (-1..1) to clip space.
+    matrix: [f32; 4],
+    /// Clip-space centre (xy) and opacity (z).
+    offset: [f32; 4],
+    /// 2x2 matrix from quad corners to texture coordinate offsets.
     uv: [f32; 4],
-    params: [f32; 4],
+    uv_centre: [f32; 4],
 }
 
 /// Layers per frame the uniform buffer has room for.
@@ -221,21 +257,33 @@ impl Compositor {
         for (i, layer) in layers.iter().enumerate() {
             let turns = layer.rotation.rem_euclid(360) / 90;
             let (w, h) = (layer.size.0 as f32, layer.size.1 as f32);
-            // Size as displayed, fitted inside the frame.
+            // Size as displayed after the file's own rotation.
             let (dw, dh) = if turns % 2 == 1 { (h, w) } else { (w, h) };
-            let scale = (fw / dw).min(fh / dh);
-            // Rows of the matrix from quad to texture coordinates: the
-            // inverse of turning the picture by `turns` quarter turns.
-            let uv = match turns {
+            // Rows of the matrix from displayed to stored texture directions:
+            // the inverse of turning the picture by `turns` quarter turns.
+            let turn = match turns {
                 1 => [0.0, -1.0, 1.0, 0.0],
                 2 => [-1.0, 0.0, 0.0, -1.0],
                 3 => [0.0, 1.0, -1.0, 0.0],
                 _ => [1.0, 0.0, 0.0, 1.0],
             };
+            let [l, t, r, b] = layer.crop.map(|c| c.clamp(0.0, 0.49));
+            // Scale 1 fits the uncropped picture into the frame (text keeps its pixel size).
+            let fit = if layer.natural_size { 1.0 } else { (fw / dw).min(fh / dh) };
+            let s = fit * layer.scale.max(0.0);
+            let (hx, hy) = (dw * (1.0 - l - r) * s / 2.0, dh * (1.0 - t - b) * s / 2.0);
+            // Clockwise on screen is a negative angle with y up.
+            let (sin, cos) = (-layer.turn_degrees).to_radians().sin_cos();
+            // Cropping moves the middle of what is left; that offset turns with the picture.
+            let (sx, sy) = ((l - r) / 2.0 * dw * s, -(t - b) / 2.0 * dh * s);
+            let (cx, cy) = (layer.x * fw + cos * sx - sin * sy, -layer.y * fh + sin * sx + cos * sy);
+            let (hex, hey) = ((1.0 - l - r) / 2.0, (1.0 - t - b) / 2.0);
+            let (du, dv) = ((l - r) / 2.0, (t - b) / 2.0);
             let uniform = LayerUniform {
-                rect: [dw * scale / fw, dh * scale / fh, 0.0, 0.0],
-                uv,
-                params: [layer.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+                matrix: [cos * hx / (fw / 2.0), -sin * hy / (fw / 2.0), sin * hx / (fh / 2.0), cos * hy / (fh / 2.0)],
+                offset: [cx / (fw / 2.0), cy / (fh / 2.0), layer.opacity.clamp(0.0, 1.0), 0.0],
+                uv: [turn[0] * hex, turn[1] * hey, turn[2] * hex, turn[3] * hey],
+                uv_centre: [0.5 + turn[0] * du + turn[1] * dv, 0.5 + turn[2] * du + turn[3] * dv, 0.0, 0.0],
             };
             self.queue.write_buffer(&self.uniforms, i as u64 * UNIFORM_STRIDE, bytemuck::bytes_of(&uniform));
         }

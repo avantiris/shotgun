@@ -315,7 +315,16 @@ fn bench_audio(target: Option<&str>, secs: u64, dir: &Path) -> anyhow::Result<()
     std::fs::write(&wav, bytes)?;
 
     let engine = Engine::start(Backend::PipeWire { target: target.map(str::to_owned), quantum: DEFAULT_QUANTUM })?;
-    let clip = ClipSpan { start: 0, len: frames as i64, src_in: 0, wav: wav.clone(), gain: 1.0 };
+    let clip = ClipSpan {
+        start: 0,
+        len: frames as i64,
+        src_in: 0,
+        wav: wav.clone(),
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+    };
     engine.set_mix(Mix { tracks: vec![TrackMix { clips: vec![clip], gain: 1.0, pan: 0.0, mute: false }] });
 
     // Play start: from the call until the realtime thread renders the first block.

@@ -9,6 +9,7 @@
 
 mod frames;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -16,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use sg_audio::{ClipSpan, Engine, Mix, SAMPLE_RATE, TrackMix};
-use sg_core::{AssetId, Project, Sequence, TrackKind};
+use sg_core::{AssetId, ClipProps, Project, Sequence, TrackKind};
 use sg_project::cache;
-use sg_render::{Compositor, LayerDraw, plan, sequence_frames};
+use sg_render::{Compositor, LayerDraw, Source, plan, sequence_frames};
 
 use crate::frames::{Decoded, FrameKey, Pool, Quality, TextureCache};
 
@@ -114,6 +115,7 @@ impl Player {
             frame: 0,
             playing: false,
             rendered: None,
+            titles: HashMap::new(),
             seek_started: None,
             full_started: None,
             play_started: None,
@@ -224,7 +226,9 @@ struct State {
     frame: i64,
     playing: bool,
     /// What the output texture currently shows.
-    rendered: Option<(i64, Vec<FrameKey>)>,
+    rendered: Option<(i64, Vec<LayerKey>)>,
+    /// Rasterised titles.
+    titles: HashMap<TitleKey, (wgpu::TextureView, (u32, u32))>,
     seek_started: Option<Instant>,
     full_started: Option<Instant>,
     play_started: Option<Instant>,
@@ -259,12 +263,21 @@ impl State {
                 clips: track
                     .clips
                     .iter()
-                    .map(|c| ClipSpan {
-                        start: c.start,
-                        len: c.len,
-                        src_in: c.src_in,
-                        wav: cache::audio(&open.root, c.asset),
-                        gain: 1.0,
+                    .map(|c| {
+                        let default = ClipProps::default();
+                        let props = track.props_of(c.id).map_or(&default, |p| &**p);
+                        let samples = |frames: i64| sequence.rate.frames_to_samples(frames, SAMPLE_RATE);
+                        ClipSpan {
+                            start: c.start,
+                            len: c.len,
+                            src_in: c.src_in,
+                            wav: cache::audio(&open.root, c.asset),
+                            // Decibels to linear; the value at the clip start (volume keyframes: later).
+                            gain: 10f32.powf(props.gain_db.at(0) / 20.0),
+                            fade_in: samples(props.fade_in),
+                            fade_out: samples(props.fade_out),
+                            speed: if props.speed_valid() { props.speed } else { (1, 1) },
+                        }
                     })
                     .collect(),
                 gain: 1.0,
@@ -408,23 +421,52 @@ impl State {
             }
         }
         let layers = plan(&project, &sequence, self.frame);
-        // While playing or scrubbing: proxies. Once the playhead rests: full quality.
         // Paused: ask for the full-quality picture at once. A newer seek makes
         // the request obsolete before a worker starts on it, so dragging the
         // playhead costs at most one decode in flight.
         let paused = !self.playing;
+        let frame_height = self.compositor.size().1 as f32;
         let mut waiting = false;
         let mut keys = Vec::with_capacity(layers.len());
+        // What to draw: the texture to use and the layer it belongs to.
+        let mut chosen: Vec<(LayerKey, usize)> = Vec::with_capacity(layers.len());
         let mut exact = true;
-        for layer in &layers {
-            let Some(asset) = project.assets.get(&layer.asset) else { continue };
-            let proxy = FrameKey { asset: layer.asset, quality: Quality::Proxy, frame: layer.source_frame };
+        for (index, layer) in layers.iter().enumerate() {
+            let (asset_id, source_frame) = match &layer.source {
+                Source::Asset { asset, frame } => (*asset, *frame),
+                Source::Title => {
+                    let Some(title) = layer.props.as_ref().and_then(|p| p.title.as_ref()) else { continue };
+                    let key = TitleKey {
+                        text: title.text.clone(),
+                        px: (title.size * frame_height).round().max(4.0) as u32,
+                        color: title.color,
+                    };
+                    if !self.titles.contains_key(&key) {
+                        let image = sg_render::text::rasterize(&key.text, key.px as f32, key.color);
+                        let texture =
+                            Compositor::upload(&self.device, &self.queue, image.width, image.height, &image.rgba);
+                        // Titles are few and small; a simple cap keeps the map bounded.
+                        if self.titles.len() >= 64 {
+                            self.titles.clear();
+                        }
+                        self.titles.insert(
+                            key.clone(),
+                            (texture.create_view(&Default::default()), (image.width, image.height)),
+                        );
+                    }
+                    keys.push(LayerKey::Title(key.clone()));
+                    chosen.push((LayerKey::Title(key), index));
+                    continue;
+                }
+            };
+            let Some(asset) = project.assets.get(&asset_id) else { continue };
+            let proxy = FrameKey { asset: asset_id, quality: Quality::Proxy, frame: source_frame };
             let full = FrameKey { quality: Quality::Full, ..proxy };
             if paused && !self.cache.contains(&full) {
                 self.pool.request(full, &root, asset);
                 waiting = true;
             }
-            let chosen = if self.cache.contains(&full) {
+            let pick = if self.cache.contains(&full) {
                 Some(full)
             } else if self.cache.contains(&proxy) {
                 Some(proxy)
@@ -433,15 +475,19 @@ impl State {
                 waiting = true;
                 exact = false;
                 // Meanwhile: the picture just before, so playback does not flash black.
-                self.cache.nearest_before(layer.asset, layer.source_frame)
+                self.cache.nearest_before(asset_id, source_frame)
             };
-            keys.extend(chosen);
+            if let Some(key) = pick {
+                keys.push(LayerKey::Frame(key));
+                chosen.push((LayerKey::Frame(key), index));
+            }
         }
         if self.playing {
             for ahead in 1..=READ_AHEAD {
                 for layer in plan(&project, &sequence, self.frame + ahead) {
-                    let key = FrameKey { asset: layer.asset, quality: Quality::Proxy, frame: layer.source_frame };
-                    if let (false, Some(asset)) = (self.cache.contains(&key), project.assets.get(&layer.asset)) {
+                    let Source::Asset { asset: asset_id, frame } = layer.source else { continue };
+                    let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame };
+                    if let (false, Some(asset)) = (self.cache.contains(&key), project.assets.get(&asset_id)) {
                         self.pool.request(key, &root, asset);
                     }
                 }
@@ -449,17 +495,41 @@ impl State {
         }
 
         if self.rendered.as_ref() != Some(&(self.frame, keys.clone())) {
-            let mut draws = Vec::with_capacity(keys.len());
             // Clone the views first: `get` records the use for eviction order.
             // The rotation comes with the decoded file, so a proxy that was
             // written upright is not turned a second time.
-            let views: Vec<(wgpu::TextureView, (u32, u32), i32)> = keys
+            let views: Vec<(wgpu::TextureView, (u32, u32), i32, usize, bool)> = chosen
                 .iter()
-                .filter_map(|key| self.cache.get(key).map(|c| (c.view.clone(), c.size, c.rotation)))
+                .filter_map(|(key, index)| match key {
+                    LayerKey::Frame(key) => {
+                        self.cache.get(key).map(|c| (c.view.clone(), c.size, c.rotation, *index, false))
+                    }
+                    LayerKey::Title(key) => {
+                        self.titles.get(key).map(|(view, size)| (view.clone(), *size, 0, *index, true))
+                    }
+                })
                 .collect();
-            for (view, size, rotation) in &views {
-                draws.push(LayerDraw { view, size: *size, rotation: *rotation, opacity: 1.0 });
-            }
+            let default = ClipProps::default();
+            let draws: Vec<LayerDraw<'_>> = views
+                .iter()
+                .map(|(view, size, rotation, index, title)| {
+                    let layer = &layers[*index];
+                    let props = layer.props.as_deref().unwrap_or(&default);
+                    let at = layer.at;
+                    LayerDraw {
+                        view,
+                        size: *size,
+                        rotation: *rotation,
+                        opacity: props.opacity.at(at),
+                        x: props.x.at(at),
+                        y: props.y.at(at),
+                        scale: props.scale.at(at),
+                        turn_degrees: props.rotation.at(at),
+                        crop: props.crop,
+                        natural_size: *title,
+                    }
+                })
+                .collect();
             self.compositor.render(&draws);
             self.rendered = Some((self.frame, keys.clone()));
             let now = Instant::now();
@@ -471,7 +541,7 @@ impl State {
                     s.dropped += late as u64;
                 });
             } else if exact {
-                let all_full = keys.iter().all(|k| k.quality == Quality::Full);
+                let all_full = keys.iter().all(|k| !matches!(k, LayerKey::Frame(f) if f.quality != Quality::Full));
                 let (seek, full) = (self.seek_started.take(), if all_full { self.full_started.take() } else { None });
                 self.stats(|s| {
                     if let Some(t) = seek {
@@ -546,4 +616,19 @@ impl State {
             }
         }
     }
+}
+
+/// A rasterised title: its text, letter height in pixels and colour.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TitleKey {
+    text: String,
+    px: u32,
+    color: [u8; 4],
+}
+
+/// What a layer of the rendered frame was drawn from.
+#[derive(Clone, Debug, PartialEq)]
+enum LayerKey {
+    Frame(FrameKey),
+    Title(TitleKey),
 }

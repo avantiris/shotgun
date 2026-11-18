@@ -14,6 +14,7 @@ use crate::asset::Asset;
 use crate::clips::{Clip, ClipError, ClipStore};
 use crate::ids::{AssetId, ClipId, SequenceId, TrackId};
 use crate::model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader};
+use crate::props::ClipProps;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +71,13 @@ pub enum Op {
         track: TrackId,
         from: i64,
         delta: i64,
+    },
+    /// Sets or clears (`None`) the properties of a clip.
+    SetClipProps {
+        seq: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        props: Option<Box<ClipProps>>,
     },
     /// Adds a marker; a frame holds at most one.
     AddMarker {
@@ -133,6 +141,7 @@ impl Op {
             Op::RemoveClip { .. } => "remove clip",
             Op::SetClip { .. } => "trim or move clip",
             Op::ShiftFrom { .. } => "ripple",
+            Op::SetClipProps { .. } => "adjust clip",
             Op::AddMarker { .. } => "add marker",
             Op::RemoveMarker { .. } => "remove marker",
             Op::AddAsset { .. } => "import",
@@ -251,6 +260,19 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             };
             Ok((next, inverse))
         }),
+        Op::SetClipProps { seq, track, clip, props } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let before = old.props.get(clip).map(|p| Box::new(ClipProps::clone(p)));
+            let mut map = BTreeMap::clone(&old.props);
+            match props {
+                Some(new) => map.insert(*clip, Arc::new(ClipProps::clone(new))),
+                None => map.remove(clip),
+            };
+            // The clip arrays are shared, only the property map is new.
+            s.tracks[index] = Arc::new(Track { props: Arc::new(map), ..Track::clone(old) });
+            Ok(Op::SetClipProps { seq: *seq, track: *track, clip: *clip, props: before })
+        }),
         Op::AddMarker { seq, marker } => with_sequence(p, *seq, |s| {
             let at = s.markers.partition_point(|m| m.frame < marker.frame);
             if s.markers.get(at).is_some_and(|m| m.frame == marker.frame) {
@@ -342,7 +364,8 @@ fn with_clips(
         let index = s.tracks.iter().position(|t| t.id == track).ok_or(OpError::NoTrack(track))?;
         let old = &s.tracks[index];
         let (clips, inverse) = f(&old.clips)?;
-        s.tracks[index] = Arc::new(Track { id: old.id, kind: old.kind, name: old.name.clone(), clips });
+        s.tracks[index] =
+            Arc::new(Track { id: old.id, kind: old.kind, name: old.name.clone(), clips, props: old.props.clone() });
         Ok(inverse)
     })
 }
@@ -649,5 +672,41 @@ mod marker_tests {
         let (removed, inverse) = apply(&p, &Op::RemoveMarker { seq: SEQ, frame: 120 }).unwrap();
         assert_eq!(removed.sequences[0].markers.len(), 2);
         assert_eq!(apply(&removed, &inverse).unwrap().0, p);
+    }
+}
+
+#[cfg(test)]
+mod props_tests {
+    use super::tests::{SEQ, V1, base, clip};
+    use super::*;
+    use crate::props::Param;
+    use crate::text::{from_files, to_files};
+
+    #[test]
+    fn properties_are_set_cleared_undone_and_saved() {
+        let (p, _) = apply(&base(), &Op::InsertClip { seq: SEQ, track: V1, clip: clip(7, 0, 100) }).unwrap();
+        let mut props = ClipProps { speed: (2, 1), crop: [0.1, 0.0, 0.1, 0.0], ..ClipProps::default() };
+        props.opacity = Param::constant(0.5);
+        props.x.set_key(0, -0.25);
+        props.x.set_key(30, 0.25);
+        let set = Op::SetClipProps { seq: SEQ, track: V1, clip: ClipId(7), props: Some(Box::new(props.clone())) };
+        let (p2, undo) = apply(&p, &set).unwrap();
+        let track = &p2.sequences[0].tracks[0];
+        assert_eq!(track.props_of(ClipId(7)).map(|x| &**x), Some(&props));
+        assert!(Arc::ptr_eq(&p.sequences[0].tracks[1], &p2.sequences[0].tracks[1]));
+        assert_eq!(apply(&p2, &undo).unwrap().0, p);
+
+        let files = to_files(&p2);
+        let line = files["sequences/main.sg"].lines().find(|l| l.starts_with("props ")).unwrap();
+        assert!(line.starts_with("props 0000000000000007 {"), "{line}");
+        assert_eq!(from_files(&files).unwrap(), *p2);
+
+        let clear = Op::SetClipProps { seq: SEQ, track: V1, clip: ClipId(7), props: None };
+        let (p3, undo) = apply(&p2, &clear).unwrap();
+        assert!(p3.sequences[0].tracks[0].props.is_empty());
+        assert_eq!(apply(&p3, &undo).unwrap().0, p2);
+        // Removing the clip keeps its properties for the undo.
+        let (p4, undo) = apply(&p2, &Op::RemoveClip { seq: SEQ, track: V1, start: 0 }).unwrap();
+        assert_eq!(apply(&p4, &undo).unwrap().0, p2);
     }
 }

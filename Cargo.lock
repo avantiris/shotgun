@@ -3262,7 +3262,9 @@ dependencies = [
 name = "sg-render"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
+ "epaint_default_fonts",
  "pollster 1.0.2",
  "sg-core",
  "wgpu",

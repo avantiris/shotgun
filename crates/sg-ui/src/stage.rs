@@ -45,10 +45,12 @@ fn sequence_end(sequence: &Sequence) -> i64 {
         .unwrap_or(0)
 }
 
-pub fn viewer(ui: &mut egui::Ui, sequence: &Sequence, view: &ViewerState) {
+/// Draws the viewer. Returns how far the picture was dragged this frame, in
+/// frame widths and heights.
+pub fn viewer(ui: &mut egui::Ui, sequence: &Sequence, view: &ViewerState, recording: bool) -> Option<egui::Vec2> {
     const BAR_H: f32 = 22.0;
     let available = ui.available_rect_before_wrap();
-    ui.allocate_rect(available, Sense::hover());
+    let response = ui.allocate_rect(available, Sense::drag());
     let picture_area = Rect::from_min_max(available.min, pos2(available.max.x, available.max.y - BAR_H));
     let aspect = sequence.width as f32 / sequence.height.max(1) as f32;
     let size = if picture_area.width() / picture_area.height().max(1.0) > aspect {
@@ -69,6 +71,18 @@ pub fn viewer(ui: &mut egui::Ui, sequence: &Sequence, view: &ViewerState) {
         format!("{}  /  {}", timecode(view.frame, sequence.rate), timecode(sequence_end(sequence), sequence.rate));
     painter.text(pos2(available.center().x, y), Align2::CENTER_CENTER, text, FontId::monospace(12.0), theme::TEXT);
     painter.text(pos2(rect.right(), y), Align2::RIGHT_CENTER, state, FontId::proportional(11.0), theme::DIM);
+    if recording {
+        painter.text(
+            pos2(rect.left(), y),
+            Align2::LEFT_CENTER,
+            "REC: drag the picture while it plays",
+            FontId::proportional(11.0),
+            theme::ERROR,
+        );
+    }
+    let delta = response.drag_delta();
+    (response.dragged() && delta != egui::Vec2::ZERO)
+        .then(|| vec2(delta.x / size.x.max(1.0), delta.y / size.y.max(1.0)))
 }
 
 #[cfg(test)]

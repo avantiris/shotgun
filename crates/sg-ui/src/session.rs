@@ -100,8 +100,33 @@ impl Session {
         let project = self.project().clone();
         let Some(seq) = project.sequences.first() else { return Ok(None) };
         let rate = seq.rate;
-        let video_track = seq.tracks.iter().find(|t| t.kind == TrackKind::Video).filter(|_| asset.video.is_some());
-        let audio_track = seq.tracks.iter().find(|t| t.kind == TrackKind::Audio).filter(|_| asset.audio.is_some());
+        // Bounded, so that the arithmetic below cannot overflow.
+        let playhead = playhead.clamp(0, 1 << 40);
+        let still = (5 * rate.num() as i64 / rate.den() as i64).max(1);
+        let span = asset.frames_at(rate, still).max(1);
+        let free = |t: &&std::sync::Arc<sg_core::Track>| match t.kind {
+            TrackKind::Video => t.clips.range(playhead, playhead + span).next().is_none(),
+            TrackKind::Audio => {
+                let (a0, a1) = (
+                    rate.frames_to_samples(playhead, SAMPLE_RATE),
+                    rate.frames_to_samples(playhead + span, SAMPLE_RATE),
+                );
+                t.clips.range(a0, a1).next().is_none()
+            }
+        };
+        // The lowest video track and the highest audio track with room at
+        // the playhead, so that a second asset placed at the same spot
+        // stacks on the next track; the first track of each kind otherwise.
+        let pick = |kind: TrackKind, from_bottom: bool| {
+            let mut tracks: Vec<&std::sync::Arc<sg_core::Track>> =
+                seq.tracks.iter().filter(|t| t.kind == kind).collect();
+            if from_bottom {
+                tracks.reverse();
+            }
+            tracks.iter().find(|t| free(t)).or(tracks.first()).copied()
+        };
+        let video_track = pick(TrackKind::Video, true).filter(|_| asset.video.is_some());
+        let audio_track = pick(TrackKind::Audio, false).filter(|_| asset.audio.is_some());
         // After everything that is already on the tracks this asset uses.
         let video_end = video_track.map_or(0, |t| t.clips.end());
         let audio_end = audio_track.map_or(0, |t| {
@@ -120,8 +145,6 @@ impl Session {
                 (rate.frames_to_samples(start, SAMPLE_RATE), rate.frames_to_samples(start + frames, SAMPLE_RATE));
             video_free && audio_track.is_none_or(|t| t.clips.range(a0, a1).next().is_none())
         };
-        // Bounded, so that the arithmetic below cannot overflow.
-        let playhead = playhead.clamp(0, 1 << 40);
         let start = if free_at(playhead) { playhead } else { at_end };
         let mut ops = Vec::new();
         if let Some(track) = video_track {
@@ -161,5 +184,18 @@ impl Session {
     /// Names the current state (saved, committed and tagged by the writer).
     pub fn checkpoint(&self, name: String) {
         self.writer.checkpoint(name);
+    }
+}
+
+impl Session {
+    /// A fresh undo-group id for a gesture.
+    pub fn new_group(&mut self) -> u64 {
+        self.ids.next_u64()
+    }
+}
+
+impl Session {
+    pub fn new_track_id(&mut self) -> sg_core::TrackId {
+        self.ids.track()
     }
 }

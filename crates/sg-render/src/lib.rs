@@ -7,6 +7,7 @@
 
 mod compositor;
 mod plan;
+pub mod text;
 
 pub use compositor::{Compositor, LayerDraw};
-pub use plan::{PlanLayer, plan, sequence_frames};
+pub use plan::{PlanLayer, Source, plan, sequence_frames};

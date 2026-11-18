@@ -49,7 +49,7 @@ fn fits_blends_and_turns() {
     let colour = [200, 90, 30, 255];
     let wide = Compositor::upload(&device, &queue, 100, 50, &solid(100, 50, |_, _| colour));
     let wide_view = wide.create_view(&Default::default());
-    comp.render(&[LayerDraw { view: &wide_view, size: (100, 50), rotation: 0, opacity: 1.0 }]);
+    comp.render(&[LayerDraw::fitted(&wide_view, (100, 50), 0)]);
     let out = comp.read_output().unwrap();
     assert!(near(pixel(&out, 200, 100, 100), colour), "{:?}", pixel(&out, 200, 100, 100));
     assert_eq!(pixel(&out, 200, 100, 20), [0, 0, 0, 255], "bar above");
@@ -63,8 +63,8 @@ fn fits_blends_and_turns() {
     let black = Compositor::upload(&device, &queue, 4, 4, &solid(4, 4, |_, _| [0, 0, 0, 255]));
     let black_view = black.create_view(&Default::default());
     comp.render(&[
-        LayerDraw { view: &black_view, size: (4, 4), rotation: 0, opacity: 1.0 },
-        LayerDraw { view: &white_view, size: (4, 4), rotation: 0, opacity: 0.5 },
+        LayerDraw::fitted(&black_view, (4, 4), 0),
+        LayerDraw { opacity: 0.5, ..LayerDraw::fitted(&white_view, (4, 4), 0) },
     ]);
     let grey = pixel(&comp.read_output().unwrap(), 200, 100, 100);
     assert!((186..=189).contains(&grey[0]), "50 % white over black is {} in sRGB", grey[0]);
@@ -72,10 +72,7 @@ fn fits_blends_and_turns() {
     // Straight alpha in the picture is honoured.
     let half = Compositor::upload(&device, &queue, 4, 4, &solid(4, 4, |_, _| [255, 255, 255, 0]));
     let half_view = half.create_view(&Default::default());
-    comp.render(&[
-        LayerDraw { view: &wide_view, size: (200, 200), rotation: 0, opacity: 1.0 },
-        LayerDraw { view: &half_view, size: (4, 4), rotation: 0, opacity: 1.0 },
-    ]);
+    comp.render(&[LayerDraw::fitted(&wide_view, (200, 200), 0), LayerDraw::fitted(&half_view, (4, 4), 0)]);
     assert!(near(pixel(&comp.read_output().unwrap(), 200, 100, 100), colour));
 
     // Rotation: a picture that is red on its left half and blue on its right.
@@ -88,7 +85,7 @@ fn fits_blends_and_turns() {
     );
     let two_view = two.create_view(&Default::default());
     let mut at = |rotation: i32, x: u32, y: u32| {
-        comp.render(&[LayerDraw { view: &two_view, size: (8, 8), rotation, opacity: 1.0 }]);
+        comp.render(&[LayerDraw::fitted(&two_view, (8, 8), rotation)]);
         pixel(&comp.read_output().unwrap(), 200, x, y)
     };
     let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
@@ -107,4 +104,47 @@ fn resize_changes_the_output() {
     assert_eq!(comp.size(), (320, 180));
     comp.render(&[]);
     assert_eq!(comp.read_output().unwrap().len(), 320 * 180 * 4);
+}
+
+#[test]
+fn placement_scale_crop_and_turn() {
+    let Some((device, queue)) = device() else { return };
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 200, 100);
+    // Left half red, right half blue; fills the 2:1 frame exactly.
+    let two = Compositor::upload(
+        &device,
+        &queue,
+        8,
+        4,
+        &solid(8, 4, |x, _| if x < 4 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }),
+    );
+    let view = two.create_view(&Default::default());
+    let base = LayerDraw::fitted(&view, (8, 4), 0);
+    let (red, blue, black) = ([255, 0, 0, 255], [0, 0, 255, 255], [0, 0, 0, 255]);
+    let mut shot = |layer: LayerDraw<'_>| {
+        comp.render(&[layer]);
+        comp.read_output().unwrap()
+    };
+
+    // Half size: a 100x50 picture in the middle.
+    let out = shot(LayerDraw { scale: 0.5, ..base });
+    assert_eq!((pixel(&out, 200, 60, 50), pixel(&out, 200, 140, 50)), (red, blue));
+    assert_eq!((pixel(&out, 200, 40, 50), pixel(&out, 200, 100, 15)), (black, black));
+
+    // Moved a quarter frame to the right and down.
+    let out = shot(LayerDraw { scale: 0.5, x: 0.25, y: 0.25, ..base });
+    assert_eq!((pixel(&out, 200, 110, 75), pixel(&out, 200, 190, 75)), (red, blue));
+    assert_eq!(pixel(&out, 200, 60, 30), black);
+
+    // Cropping the left quarter away: what is left sits where it was.
+    let out = shot(LayerDraw { crop: [0.25, 0.0, 0.0, 0.0], ..base });
+    assert_eq!((pixel(&out, 200, 25, 50), pixel(&out, 200, 75, 50), pixel(&out, 200, 150, 50)), (black, red, blue));
+
+    // A quarter turn clockwise: the left (red) half points up.
+    let out = shot(LayerDraw { turn_degrees: 90.0, scale: 0.5, ..base });
+    assert_eq!((pixel(&out, 200, 100, 30), pixel(&out, 200, 100, 70)), (red, blue));
+
+    // Natural size: an 8x4 texture stays 8x4 pixels.
+    let out = shot(LayerDraw { natural_size: true, ..base });
+    assert_eq!((pixel(&out, 200, 98, 50), pixel(&out, 200, 102, 50), pixel(&out, 200, 90, 50)), (red, blue, black));
 }

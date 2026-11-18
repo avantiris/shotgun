@@ -711,7 +711,11 @@ impl Timeline {
                         instances.push(Instance::new(quad(x0, y1 - 2.0, x1, y1), theme::ACCENT, 0.0, 0.0));
                     }
                     if x1 - x0 >= LABEL_MIN && row_h >= 16.0 && labels.len() < 400 {
-                        let name = project.assets.get(&clip.asset).map_or("missing asset", |a| a.label.as_str());
+                        // A title shows its text, anything else its asset's label.
+                        let title = track.props_of(clip.id).and_then(|p| p.title.as_ref()).map(|t| t.text.as_str());
+                        let name = title
+                            .or(project.assets.get(&clip.asset).map(|a| a.label.as_str()))
+                            .unwrap_or("missing asset");
                         labels.push((
                             x0.max(lanes.left()) + 5.0,
                             (y0 + y1) / 2.0,
@@ -1262,5 +1266,20 @@ mod tests {
         timeline.plan_trim(&session, &seq, &view, 150.0, timeline.selection[0], Edge::Start, true, false);
         session.apply(Op::Batch(timeline.pending.take().unwrap()), None).unwrap();
         assert_eq!(layout(&session), (vec![(0, 450), (450, 600)], vec![(0, 450), (450, 600)]));
+    }
+}
+
+impl Timeline {
+    /// The clip the inspector and the viewer act on: the first selected one.
+    pub fn primary(&self, sequence: &Sequence) -> Option<(Arc<Track>, Clip)> {
+        let sel = self.selection.first()?;
+        let track = sequence.track(sel.track)?;
+        let clip = track.clips.get(sel.start).filter(|c| c.id == sel.id)?;
+        Some((track.clone(), clip))
+    }
+
+    /// Selects one clip by position, alone.
+    pub fn select_only(&mut self, track: TrackId, clip: &Clip) {
+        self.selection = vec![Sel { track, start: clip.start, id: clip.id }];
     }
 }
