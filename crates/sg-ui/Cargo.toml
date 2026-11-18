@@ -8,6 +8,11 @@ publish.workspace = true
 sg-core.workspace = true
 sg-project.workspace = true
 egui.workspace = true
+egui-wgpu.workspace = true
+bytemuck.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -15,6 +15,7 @@ mod writer;
 use std::path::{Path, PathBuf};
 
 pub use bundle::{Created, Opened, create, open};
+pub use git::{HistoryEntry, history, restore};
 pub use import::{Derived, ImportEvent, ImportSource, Importer, read_poster};
 pub use journal::Journal;
 pub use layout::cache;

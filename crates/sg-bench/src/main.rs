@@ -36,11 +36,11 @@ fn synthetic_clip(ids: &mut IdGen, i: usize) -> Clip {
     Clip { id: ids.clip(), asset: AssetId(ids.next_u64() as u128), start: i as i64 * 180, len: 120, src_in: 0 }
 }
 
-/// Adds tracks until the first sequence has [`TRACKS`] of them.
-fn add_tracks(mut project: Arc<Project>, ids: &mut IdGen) -> anyhow::Result<(Arc<Project>, Vec<Op>)> {
+/// Adds tracks until the first sequence has `count` of them.
+fn add_tracks(mut project: Arc<Project>, ids: &mut IdGen, count: usize) -> anyhow::Result<(Arc<Project>, Vec<Op>)> {
     let seq = project.sequences.first().context("project has no sequence")?.id;
     let mut ops = Vec::new();
-    while project.sequences[0].tracks.len() < TRACKS {
+    while project.sequences[0].tracks.len() < count {
         let n = project.sequences[0].tracks.len();
         let kind = if n.is_multiple_of(2) { TrackKind::Video } else { TrackKind::Audio };
         let op =
@@ -66,7 +66,7 @@ fn empty_project(ids: &mut IdGen) -> anyhow::Result<Arc<Project>> {
 
 fn bench_ops(clips: usize) -> anyhow::Result<()> {
     let mut ids = IdGen::new(1);
-    let (mut project, _) = add_tracks(empty_project(&mut ids)?, &mut ids)?;
+    let (mut project, _) = add_tracks(empty_project(&mut ids)?, &mut ids, TRACKS)?;
     let seq: SequenceId = project.sequences[0].id;
     let tracks: Vec<TrackId> = project.sequences[0].tracks.iter().map(|t| t.id).collect();
     let per_track = clips / TRACKS;
@@ -188,7 +188,7 @@ fn bench_journal(dir: &Path, records: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn generate(library: &Path, name: &str, clips: usize) -> anyhow::Result<PathBuf> {
+fn generate(library: &Path, name: &str, clips: usize, tracks: usize) -> anyhow::Result<PathBuf> {
     let created = sg_project::create(library, name)?;
     let mut opened = sg_project::open(&created.path, || {})?;
     let mut ids = IdGen::new(sg_project::random_seed());
@@ -197,7 +197,7 @@ fn generate(library: &Path, name: &str, clips: usize) -> anyhow::Result<PathBuf>
         opened.writer.record(record, doc.project().clone());
         Ok(())
     };
-    let (_, track_ops) = add_tracks(opened.document.project().clone(), &mut ids)?;
+    let (_, track_ops) = add_tracks(opened.document.project().clone(), &mut ids, tracks.max(2))?;
     for op in track_ops {
         apply_op(&mut opened.document, op)?;
     }
@@ -260,6 +260,7 @@ fn main() -> anyhow::Result<()> {
                 Path::new(arg(1).context("gen <library> <name>")?),
                 arg(2).context("gen <library> <name>")?,
                 number(3, 50_000)?,
+                number(4, TRACKS)?,
             )?;
             println!("folder: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
             Ok(())

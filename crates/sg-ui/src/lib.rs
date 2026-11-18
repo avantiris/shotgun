@@ -7,12 +7,15 @@
 
 mod assets;
 mod editor;
+mod history;
 pub mod keymap;
 mod library;
 mod perf;
 mod session;
 mod stage;
 pub mod theme;
+mod timeline;
+pub mod timeline_gpu;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -24,6 +27,7 @@ use sg_project::{ImportEvent, ImportSource, Opened, ProjectEntry, ProjectWriter}
 use crate::assets::{AssetRequest, JobView};
 
 use crate::editor::{Editor, EditorRequest};
+use crate::history::{HistoryPanel, HistoryRequest};
 pub use crate::keymap::{Action, Scope};
 use crate::library::{Library, LibraryRequest};
 pub use crate::perf::Perf;
@@ -61,6 +65,17 @@ pub enum Command {
     },
     /// Show the system file picker; the chosen files are imported.
     PickFiles,
+    /// Read the list of saved states; answered with [`Shell::set_history`].
+    LoadHistory {
+        root: PathBuf,
+    },
+    /// Close the project, bring its files back to this saved state, reopen.
+    Restore {
+        root: PathBuf,
+        writer: ProjectWriter,
+        commit: String,
+        description: String,
+    },
     /// Play, pause or move the playhead.
     Transport(Transport),
     /// Read the clipboard; the content comes back through [`Shell::incoming`].
@@ -86,6 +101,13 @@ pub enum DevStep {
     /// Import a path or a link, as a drop or paste would.
     Import(String),
     Transport(Transport),
+    Checkpoint(String),
+    /// Restore the n-th entry of the loaded history list (0 is the newest).
+    Restore(usize),
+    /// Zoom (frames per point) and scroll (frame at the left edge) of the timeline.
+    TimelineView(f64, f64),
+    /// The scripted zoom-and-scroll of the frame-time benchmark at this time in seconds.
+    TimelineBench(f64),
     /// Select the n-th asset in the panel (0 is the newest).
     SelectAsset(usize),
 }
@@ -97,6 +119,9 @@ pub struct Shell {
     session: Option<Session>,
     perf: Perf,
     error: Option<String>,
+    history: HistoryPanel,
+    /// The playhead as of the last frame, for key actions.
+    playhead: i64,
 }
 
 impl Shell {
@@ -161,6 +186,7 @@ impl Shell {
         self.banner(ui);
         let mut asset_requests = Vec::new();
         let mut transport = Vec::new();
+        self.playhead = view.frame;
         match &mut self.session {
             Some(session) => {
                 let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests, view, &mut transport);
@@ -191,6 +217,23 @@ impl Shell {
             }
         }
         commands.extend(transport.into_iter().map(Command::Transport));
+        for request in self.history.ui(&ctx, now_unix) {
+            match request {
+                HistoryRequest::Checkpoint(name) => {
+                    if let Some(session) = &mut self.session {
+                        session.checkpoint(name.clone());
+                        session.notice = Some(format!("Checkpoint \"{name}\" saved."));
+                    }
+                }
+                HistoryRequest::Restore { commit, description } => {
+                    if let Some(session) = self.session.take() {
+                        self.library.pending = Some("Restoring...".to_owned());
+                        let root = session.root.clone();
+                        commands.push(Command::Restore { root, writer: session.into_writer(), commit, description });
+                    }
+                }
+            }
+        }
         self.perf.ui(&ctx, self.session.as_ref(), &view.stats);
         commands
     }
@@ -227,7 +270,7 @@ impl Shell {
             Action::TogglePerf => self.perf.show = !self.perf.show,
             Action::Cancel => {
                 // Dismiss one thing per press, most urgent first.
-                if self.error.take().is_some() || self.editor.cancel() {
+                if self.error.take().is_some() || self.history.cancel() || self.editor.cancel() {
                     return;
                 }
                 match &mut self.session {
@@ -274,9 +317,33 @@ impl Shell {
             Action::ToStart => commands.push(Command::Transport(Transport::Seek(0))),
             Action::ToEnd => commands.push(Command::Transport(Transport::Seek(i64::MAX))),
             Action::InsertAsset => self.insert_selected(commands),
+            Action::Split
+            | Action::RippleStart
+            | Action::RippleEnd
+            | Action::RippleDelete
+            | Action::SelectUnder
+            | Action::Copy
+            | Action::PasteClips
+            | Action::Marker
+            | Action::PrevCut
+            | Action::NextCut => self.timeline_action(action, commands),
             Action::Delete => {
-                if let Some(id) = self.editor.assets.selected {
+                // Clips if any are selected, otherwise the selected asset.
+                if self.editor.timeline.has_selection() {
+                    self.timeline_action(action, commands);
+                } else if let Some(id) = self.editor.assets.selected {
                     self.remove_asset(id);
+                }
+            }
+            Action::Checkpoint => {
+                if self.session.is_some() {
+                    self.history.begin_checkpoint();
+                }
+            }
+            Action::History => {
+                if let Some(session) = &self.session {
+                    self.history.open();
+                    commands.push(Command::LoadHistory { root: session.root.clone() });
                 }
             }
         }
@@ -304,6 +371,24 @@ impl Shell {
             }
             DevStep::Act(action) => self.act(action, &mut commands),
             DevStep::Transport(transport) => commands.push(Command::Transport(transport)),
+            DevStep::Checkpoint(name) => {
+                if let Some(session) = &self.session {
+                    session.checkpoint(name);
+                }
+            }
+            DevStep::Restore(n) => {
+                let entry = self.history.entry(n);
+                if let (Some((commit, description)), Some(session)) = (entry, self.session.take()) {
+                    let root = session.root.clone();
+                    commands.push(Command::Restore { root, writer: session.into_writer(), commit, description });
+                }
+            }
+            DevStep::TimelineView(frames_per_point, left) => self.editor.timeline.set_view(frames_per_point, left),
+            DevStep::TimelineBench(t) => {
+                if let Some(sequence) = self.session.as_ref().and_then(|s| s.project().sequences.first().cloned()) {
+                    self.editor.timeline.bench_view(t, &sequence);
+                }
+            }
             DevStep::Import(what) => {
                 let incoming = if sg_project::fetch::looks_like_url(&what) {
                     Incoming::Text(what)
@@ -337,6 +422,9 @@ impl Shell {
         let Some(session) = &mut self.session else { return };
         match session.apply(Op::RemoveAsset { id }, None) {
             Ok(()) => self.editor.assets.selected = None,
+            Err(sg_core::OpError::AssetInUse(_)) => {
+                self.error = Some("This asset is still used on the timeline. Remove its clips first.".to_owned());
+            }
             Err(e) => self.error = Some(format!("Cannot remove: {e}")),
         }
     }
@@ -421,10 +509,46 @@ impl Shell {
         let Some(asset) = self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned()) else {
             return;
         };
-        match session.append_asset(&asset) {
+        match session.place_asset(&asset, self.playhead) {
             Ok(Some(start)) => commands.push(Command::Transport(Transport::Seek(start))),
             Ok(None) => {}
             Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+}
+
+impl Shell {
+    fn timeline_action(&mut self, action: Action, commands: &mut Vec<Command>) {
+        let Some(session) = &mut self.session else { return };
+        if let Some(frame) = self.editor.timeline.act(action, session, self.playhead, &mut self.error) {
+            commands.push(Command::Transport(Transport::Seek(frame)));
+        }
+    }
+}
+
+impl Shell {
+    /// Quads the timeline drew last frame.
+    pub fn timeline_quads(&self) -> usize {
+        self.editor.timeline.quads
+    }
+}
+
+impl Shell {
+    /// Tells the shell where the playhead is before a scripted step, which
+    /// (unlike a key press) does not come through a frame.
+    pub fn set_playhead(&mut self, frame: i64) {
+        self.playhead = frame;
+    }
+}
+
+impl Shell {
+    pub fn set_history(&mut self, result: Result<Vec<sg_project::HistoryEntry>, String>) {
+        match result {
+            Ok(entries) => self.history.set_entries(entries),
+            Err(e) => {
+                self.history.cancel();
+                self.error = Some(format!("Cannot read the history: {e}"));
+            }
         }
     }
 }

@@ -20,6 +20,23 @@ pub enum Action {
     StepForward,
     ToStart,
     ToEnd,
+    Split,
+    /// Remove from the clip start to the playhead and close the gap.
+    RippleStart,
+    /// Remove from the playhead to the clip end and close the gap.
+    RippleEnd,
+    RippleDelete,
+    /// Select the clip under the playhead; again for the next track up.
+    SelectUnder,
+    Copy,
+    PasteClips,
+    Marker,
+    PrevCut,
+    NextCut,
+    /// Name the current state (a git tag).
+    Checkpoint,
+    /// Show saved states and checkpoints.
+    History,
     /// Put the selected asset on the timeline.
     InsertAsset,
     /// Import what the clipboard holds.
@@ -70,6 +87,20 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, true, false, Key::A, Action::ToStart),
     bind(Scope::Editor, true, false, Key::D, Action::ToEnd),
     bind(Scope::Editor, false, false, Key::Enter, Action::InsertAsset),
+    bind(Scope::Editor, false, false, Key::S, Action::Split),
+    bind(Scope::Editor, false, false, Key::Q, Action::RippleStart),
+    bind(Scope::Editor, false, false, Key::E, Action::RippleEnd),
+    bind(Scope::Editor, false, false, Key::X, Action::RippleDelete),
+    bind(Scope::Editor, false, true, Key::X, Action::Delete),
+    bind(Scope::Editor, false, false, Key::W, Action::SelectUnder),
+    bind(Scope::Editor, false, false, Key::C, Action::Copy),
+    bind(Scope::Editor, true, false, Key::C, Action::Copy),
+    bind(Scope::Editor, false, false, Key::V, Action::PasteClips),
+    bind(Scope::Editor, false, false, Key::G, Action::Marker),
+    bind(Scope::Editor, false, true, Key::A, Action::PrevCut),
+    bind(Scope::Editor, false, true, Key::D, Action::NextCut),
+    bind(Scope::Editor, true, false, Key::S, Action::Checkpoint),
+    bind(Scope::Editor, true, false, Key::H, Action::History),
     bind(Scope::Editor, true, false, Key::V, Action::Paste),
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
 ];

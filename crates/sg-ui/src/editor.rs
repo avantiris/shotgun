@@ -10,6 +10,7 @@ use crate::assets::{AssetRequest, AssetsPanel, summary};
 use crate::session::Session;
 use crate::stage::{self, Transport, ViewerState};
 use crate::theme;
+use crate::timeline::Timeline;
 
 pub enum EditorRequest {
     Close,
@@ -24,6 +25,7 @@ pub struct Editor {
     rename: Option<String>,
     focus_rename: bool,
     pub assets: AssetsPanel,
+    pub timeline: Timeline,
     /// The label being typed for the selected asset.
     asset_label: Option<(AssetId, String)>,
 }
@@ -65,7 +67,7 @@ impl Editor {
             .default_size(230.0)
             .min_size(120.0)
             .frame(flush)
-            .show(ui, |ui| stage::timeline(ui, &project, sequence, view, transport));
+            .show(ui, |ui| self.timeline.ui(ui, session, view, transport, error));
         egui::Panel::left("assets").default_size(320.0).min_size(170.0).show(ui, |ui| {
             self.assets.ui(ui, &project, asset_requests);
         });

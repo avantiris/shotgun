@@ -148,7 +148,11 @@ impl Importer {
                     break;
                 }
                 let origin = Path::new(&asset.source.origin);
-                let present = root.join(&asset.file).is_file()
+                let target = root.join(&asset.file);
+                // An older state was restored: its media may sit in the trash.
+                let trashed = root.join(".shotgun/trash").join(target.file_name().unwrap_or_default());
+                let present = target.is_file()
+                    || (trashed.is_file() && std::fs::rename(&trashed, &target).is_ok())
                     // The app was closed before the copy of a dropped file had
                     // finished: fetch it again from where it came from.
                     || (origin.is_absolute()

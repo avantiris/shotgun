@@ -78,6 +78,7 @@ enum UserEvent {
     Wake,
     Library(Result<Vec<ProjectEntry>, String>),
     Opened(Result<Opened, String>),
+    History(Result<Vec<sg_project::HistoryEntry>, String>),
     /// A scripted step and the channel that tells the script thread it is done.
     Script(Step, Sender<()>),
     Import(ImportEvent),
@@ -179,6 +180,29 @@ impl App {
                         let _ = proxy.send_event(scan_library(&library));
                     });
                 }
+                Command::LoadHistory { root } => {
+                    self.pending_jobs += 1;
+                    self.io.run(move || {
+                        let result = sg_project::history(&root, 200).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::History(result));
+                    });
+                }
+                Command::Restore { root, writer, commit, description } => {
+                    self.pending_jobs += 1;
+                    self.open_requested = Some(Instant::now());
+                    self.saw_editor_frame = false;
+                    self.io.run(move || {
+                        // The writer saves and commits what was open, then the
+                        // files go back to the chosen state as a new commit.
+                        if let Some(thread) = writer.close() {
+                            let _ = thread.join();
+                        }
+                        let result = sg_project::restore(&root, &commit, &description)
+                            .and_then(|()| open_project(&root, &proxy))
+                            .map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Opened(result));
+                    });
+                }
                 Command::Import { root, known, source } => {
                     if let Some(importer) = &self.importer {
                         self.pending_jobs += 1;
@@ -257,10 +281,14 @@ impl App {
         }
         match step {
             Step::Dev(dev) => {
+                if let Some(player) = &self.player {
+                    self.shell.set_playhead(player.frame());
+                }
                 let commands = self.shell.dev(dev);
                 self.run_commands(commands);
             }
             Step::Shot(path) => self.screenshot(&path),
+            Step::TimelineBench(frames) => self.timeline_bench(frames),
             // Handled by the script thread.
             Step::WaitMs(_) | Step::Quit => {}
         }
@@ -372,6 +400,39 @@ impl App {
         }
         self.gfx = None;
         el.exit();
+    }
+
+    /// Frame-time benchmark of the UI with the timeline zooming and scrolling
+    /// (the script of spike S2), rendered off-screen at 144 steps per second
+    /// of script time. Blocks the UI thread; development use only.
+    fn timeline_bench(&mut self, frames: usize) {
+        self.sync_player();
+        let view = self.viewer_state();
+        let Some(gfx) = &mut self.gfx else { return };
+        let shell = &mut self.shell;
+        let mut cpu = Vec::with_capacity(frames);
+        let mut quads = 0;
+        // Warm-up frames (fonts, pipeline) are not counted, as in the spike.
+        for i in 0..frames + 30 {
+            let _ = shell.dev(DevStep::TimelineBench(i as f64 / 144.0));
+            let ms = gfx.bench_frame(&self.ctx, |ui| drop(shell.frame(ui, 0, &view)));
+            if i >= 30 {
+                cpu.push(ms);
+                quads = quads.max(shell.timeline_quads());
+            }
+            // Keep the GPU from piling up frames: the next one starts when this one is done.
+            if i % 4 == 3 {
+                gfx.wait_idle();
+            }
+        }
+        println!(
+            "BENCH timeline frames={} cpu_p50={:.2} cpu_p95={:.2} cpu_p99={:.2} cpu_max={:.2} max_quads={quads}",
+            cpu.len(),
+            percentile(&cpu, 0.5),
+            percentile(&cpu, 0.95),
+            percentile(&cpu, 0.99),
+            percentile(&cpu, 1.0)
+        );
     }
 
     fn screenshot(&mut self, path: &Path) {
@@ -493,6 +554,10 @@ impl ApplicationHandler<UserEvent> for App {
                     let commands = self.shell.dev(DevStep::Open(folder));
                     self.run_commands(commands);
                 }
+            }
+            UserEvent::History(result) => {
+                self.shell.set_history(result);
+                self.job_done();
             }
             UserEvent::Opened(result) => {
                 let commands = self.shell.opened(result);

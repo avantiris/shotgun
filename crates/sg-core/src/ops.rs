@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipError, ClipStore};
 use crate::ids::{AssetId, ClipId, SequenceId, TrackId};
-use crate::model::{Project, Sequence, SequenceHeader, Track, TrackHeader};
+use crate::model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +71,15 @@ pub enum Op {
         from: i64,
         delta: i64,
     },
+    /// Adds a marker; a frame holds at most one.
+    AddMarker {
+        seq: SequenceId,
+        marker: Marker,
+    },
+    RemoveMarker {
+        seq: SequenceId,
+        frame: i64,
+    },
     /// Registers an imported asset. The media file is already in the bundle.
     AddAsset {
         asset: Box<Asset>,
@@ -100,6 +109,8 @@ pub enum OpError {
     BadIndex { index: usize, len: usize },
     #[error("cannot remove {0}: it is not empty")]
     NotEmpty(&'static str),
+    #[error("there is no marker at frame {0}")]
+    NoMarker(i64),
     #[error("asset {0} does not exist")]
     NoAsset(AssetId),
     #[error("asset {0} is still used by a clip")]
@@ -109,6 +120,38 @@ pub enum OpError {
 }
 
 impl Op {
+    /// A few words for commit messages and the history list.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Op::SetProjectName { .. } => "rename project",
+            Op::AddSequence { .. } => "add sequence",
+            Op::RemoveSequence { .. } => "remove sequence",
+            Op::SetSequenceName { .. } => "rename sequence",
+            Op::AddTrack { .. } => "add track",
+            Op::RemoveTrack { .. } => "remove track",
+            Op::InsertClip { .. } => "add clip",
+            Op::RemoveClip { .. } => "remove clip",
+            Op::SetClip { .. } => "trim or move clip",
+            Op::ShiftFrom { .. } => "ripple",
+            Op::AddMarker { .. } => "add marker",
+            Op::RemoveMarker { .. } => "remove marker",
+            Op::AddAsset { .. } => "import",
+            Op::RemoveAsset { .. } => "remove asset",
+            Op::SetAssetLabel { .. } => "rename asset",
+            // A batch is named after what it mostly is.
+            Op::Batch(ops) => match ops.as_slice() {
+                [] => "edit",
+                [Op::SetClip { .. }, Op::InsertClip { .. }, ..] => "split",
+                [Op::RemoveClip { .. }, Op::ShiftFrom { .. }, ..] => "ripple delete",
+                [Op::SetClip { .. }, Op::ShiftFrom { .. }, ..] | [Op::ShiftFrom { .. }, Op::SetClip { .. }, ..] => {
+                    "ripple trim"
+                }
+                [Op::RemoveClip { .. }, .., Op::InsertClip { .. }] => "move clip",
+                [first, ..] => first.label(),
+            },
+        }
+    }
+
     /// Cuts `clip` in two at `at`. The left part keeps the clip's id, the
     /// right part gets `right_id`. `None` if `at` is not strictly inside.
     pub fn split(seq: SequenceId, track: TrackId, clip: &Clip, at: i64, right_id: ClipId) -> Option<Op> {
@@ -207,6 +250,23 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
                 None => Op::Batch(Vec::new()),
             };
             Ok((next, inverse))
+        }),
+        Op::AddMarker { seq, marker } => with_sequence(p, *seq, |s| {
+            let at = s.markers.partition_point(|m| m.frame < marker.frame);
+            if s.markers.get(at).is_some_and(|m| m.frame == marker.frame) {
+                return Err(OpError::DuplicateId(format!("marker at frame {}", marker.frame)));
+            }
+            let mut markers = Vec::clone(&s.markers);
+            markers.insert(at, marker.clone());
+            s.markers = Arc::new(markers);
+            Ok(Op::RemoveMarker { seq: *seq, frame: marker.frame })
+        }),
+        Op::RemoveMarker { seq, frame } => with_sequence(p, *seq, |s| {
+            let at = s.markers.binary_search_by_key(frame, |m| m.frame).map_err(|_| OpError::NoMarker(*frame))?;
+            let mut markers = Vec::clone(&s.markers);
+            let marker = markers.remove(at);
+            s.markers = Arc::new(markers);
+            Ok(Op::AddMarker { seq: *seq, marker })
         }),
         Op::AddAsset { asset } => {
             if p.assets.contains_key(&asset.id) {
@@ -558,5 +618,36 @@ mod asset_tests {
         let key = "assets/index/00000000000000000000000000000abc.toml";
         evil.insert(key.into(), files[key].replace("assets/video/", "assets/../../"));
         assert!(from_files(&evil).is_err());
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::tests::{SEQ, base};
+    use super::*;
+    use crate::text::{from_files, to_files};
+
+    #[test]
+    fn markers_stay_sorted_unique_and_round_trip() {
+        let mut p = base();
+        for (frame, label) in [(300, "chorus"), (10, ""), (120, "drop \"in\"")] {
+            let op = Op::AddMarker { seq: SEQ, marker: Marker { frame, label: label.into() } };
+            let (next, inverse) = apply(&p, &op).unwrap();
+            assert_eq!(apply(&next, &inverse).unwrap().0, p);
+            p = next;
+        }
+        let frames: Vec<i64> = p.sequences[0].markers.iter().map(|m| m.frame).collect();
+        assert_eq!(frames, [10, 120, 300]);
+        let dup = Op::AddMarker { seq: SEQ, marker: Marker { frame: 120, label: String::new() } };
+        assert!(matches!(apply(&p, &dup), Err(OpError::DuplicateId(_))));
+        assert_eq!(apply(&p, &Op::RemoveMarker { seq: SEQ, frame: 11 }).unwrap_err(), OpError::NoMarker(11));
+
+        let files = to_files(&p);
+        assert!(files["sequences/main.sg"].contains("marker 120 \"drop \\\"in\\\"\"\n"));
+        assert_eq!(from_files(&files).unwrap(), *p);
+
+        let (removed, inverse) = apply(&p, &Op::RemoveMarker { seq: SEQ, frame: 120 }).unwrap();
+        assert_eq!(removed.sequences[0].markers.len(), 2);
+        assert_eq!(apply(&removed, &inverse).unwrap().0, p);
     }
 }

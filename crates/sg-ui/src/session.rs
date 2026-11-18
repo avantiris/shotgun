@@ -92,10 +92,11 @@ impl Session {
 }
 
 impl Session {
-    /// Puts the whole asset at the end of the first video and audio track:
+    /// Puts the whole asset on the first video and audio track, at the
+    /// playhead if there is room for it there and otherwise at the end:
     /// its picture on the video track, its sound on the audio track, both
     /// starting at the same time. Returns the frame it starts at.
-    pub fn append_asset(&mut self, asset: &Asset) -> Result<Option<i64>, OpError> {
+    pub fn place_asset(&mut self, asset: &Asset, playhead: i64) -> Result<Option<i64>, OpError> {
         let project = self.project().clone();
         let Some(seq) = project.sequences.first() else { return Ok(None) };
         let rate = seq.rate;
@@ -108,10 +109,20 @@ impl Session {
             let frames = rate.samples_to_frames(samples, SAMPLE_RATE);
             if rate.frames_to_samples(frames, SAMPLE_RATE) < samples { frames + 1 } else { frames }
         });
-        let start = video_end.max(audio_end);
+        let at_end = video_end.max(audio_end);
         // A still gets five seconds.
         let still_frames = (5 * rate.num() as i64 / rate.den() as i64).max(1);
         let frames = asset.frames_at(rate, still_frames).max(1);
+        // Room at the playhead on every track this asset needs?
+        let free_at = |start: i64| {
+            let video_free = video_track.is_none_or(|t| t.clips.range(start, start + frames).next().is_none());
+            let (a0, a1) =
+                (rate.frames_to_samples(start, SAMPLE_RATE), rate.frames_to_samples(start + frames, SAMPLE_RATE));
+            video_free && audio_track.is_none_or(|t| t.clips.range(a0, a1).next().is_none())
+        };
+        // Bounded, so that the arithmetic below cannot overflow.
+        let playhead = playhead.clamp(0, 1 << 40);
+        let start = if free_at(playhead) { playhead } else { at_end };
         let mut ops = Vec::new();
         if let Some(track) = video_track {
             let clip = Clip { id: self.ids.clip(), asset: asset.id, start, len: frames, src_in: 0 };
@@ -137,5 +148,18 @@ impl Session {
         }
         self.apply(Op::Batch(ops), None)?;
         Ok(Some(start))
+    }
+}
+
+impl Session {
+    pub fn new_clip_id(&mut self) -> sg_core::ClipId {
+        self.ids.clip()
+    }
+}
+
+impl Session {
+    /// Names the current state (saved, committed and tagged by the writer).
+    pub fn checkpoint(&self, name: String) {
+        self.writer.checkpoint(name);
     }
 }

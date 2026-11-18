@@ -20,6 +20,8 @@ pub struct Gfx {
     config: wgpu::SurfaceConfiguration,
     renderer: egui_wgpu::Renderer,
     pub egui_state: egui_winit::State,
+    /// Target of `bench_frame`.
+    offscreen: Option<(wgpu::TextureView, (u32, u32))>,
 }
 
 pub enum Frame {
@@ -77,11 +79,13 @@ impl Gfx {
         }
         surface.configure(&device, &config);
 
-        let renderer = egui_wgpu::Renderer::new(
+        let mut renderer = egui_wgpu::Renderer::new(
             &device,
             format,
             egui_wgpu::RendererOptions { msaa_samples: 1, ..Default::default() },
         );
+        // The timeline draws its clips through this pipeline (sg-ui/timeline_gpu.rs).
+        renderer.callback_resources.insert(sg_ui::timeline_gpu::TimelineGpu::new(&device, format));
         let egui_state = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,
@@ -104,7 +108,7 @@ impl Gfx {
             ms(t_adapter, t_device),
             ms(t_device, Instant::now()),
         );
-        Ok(Gfx { window, surface, device, queue, config, renderer, egui_state })
+        Ok(Gfx { window, surface, device, queue, config, renderer, egui_state, offscreen: None })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -280,5 +284,39 @@ impl Gfx {
     /// Points an id from [`register_texture`](Self::register_texture) at another texture.
     pub fn replace_texture(&mut self, id: egui::TextureId, view: &wgpu::TextureView) {
         self.renderer.update_egui_texture_from_wgpu_texture(&self.device, view, wgpu::FilterMode::Linear, id);
+    }
+}
+
+impl Gfx {
+    /// Runs and draws one UI frame into an off-screen texture and returns
+    /// the CPU time it took in milliseconds: UI build, tessellation, buffer
+    /// upload, encoding and submit. For frame-time benchmarks on a window
+    /// the compositor is not showing.
+    pub fn bench_frame(&mut self, ctx: &egui::Context, mut ui: impl FnMut(&mut egui::Ui)) -> f32 {
+        let size = (self.config.width, self.config.height);
+        if self.offscreen.as_ref().is_none_or(|(_, s)| *s != size) {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bench target"),
+                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            self.offscreen = Some((texture.create_view(&Default::default()), size));
+        }
+        let start = Instant::now();
+        let built = self.build(ctx, &mut ui);
+        if let Some((view, _)) = self.offscreen.clone() {
+            self.draw(&built, &view);
+        }
+        start.elapsed().as_secs_f32() * 1000.0
+    }
+
+    /// Waits until the GPU has finished everything submitted so far.
+    pub fn wait_idle(&self) {
+        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     }
 }

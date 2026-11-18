@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use sg_core::{Asset, AssetId, Project, Record, text};
 
+use crate::git;
 use crate::journal::Journal;
 use crate::save::{self, SavedMark};
 
@@ -21,9 +22,13 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(1);
 const SAVE_IDLE: Duration = Duration::from_secs(2);
 /// ...or at the latest this long after the first unsaved edit.
 const SAVE_MAX: Duration = Duration::from_secs(10);
+/// While there are changes, they are committed to git this often.
+const COMMIT_INTERVAL: Duration = Duration::from_secs(300);
 
 enum Msg {
     Record(Record, Arc<Project>),
+    /// Save, commit and tag the current state with this name.
+    Checkpoint(String),
     Close,
 }
 
@@ -75,6 +80,8 @@ impl ProjectWriter {
             root,
             journal,
             saved_assets: snapshot.assets.clone(),
+            summary: BTreeMap::new(),
+            last_commit: now,
             snapshot,
             on_disk: on_disk.iter().map(|(k, v)| (k.clone(), blake3::hash(v.as_bytes()))).collect(),
             saved_records,
@@ -123,6 +130,9 @@ struct Worker {
     saved_records: u64,
     /// The asset set as of the last save, to move media in and out of the trash.
     saved_assets: Assets,
+    /// What was done since the last commit, for its message.
+    summary: BTreeMap<&'static str, u32>,
+    last_commit: Instant,
     sync_at: Option<Instant>,
     last_edit: Instant,
     first_unsaved: Option<Instant>,
@@ -148,7 +158,20 @@ impl Worker {
                         self.save();
                     }
                     self.sync();
+                    // Closing a project is one of the moments it is committed (03).
+                    self.commit();
                     return;
+                }
+                Some(Msg::Checkpoint(name)) => {
+                    if self.first_unsaved.is_some() {
+                        self.save();
+                    }
+                    self.commit();
+                    match git::checkpoint(&self.root, &name) {
+                        Ok(tag) => log::info!("checkpoint {tag}"),
+                        Err(e) => self.fail(format!("checkpoint failed: {e}")),
+                    }
+                    (self.notify)();
                 }
                 None => {}
             }
@@ -176,6 +199,7 @@ impl Worker {
     fn append(&mut self, record: &Record, snapshot: Arc<Project>) {
         let start = Instant::now();
         let result = self.journal.append(record);
+        *self.summary.entry(record_label(record)).or_default() += 1;
         let ns = start.elapsed().as_nanos() as u64;
         self.snapshot = snapshot;
         self.last_edit = start;
@@ -215,6 +239,10 @@ impl Worker {
                 }
                 self.status.saved.store(mark.records, Ordering::Relaxed);
                 self.status.set_error(None);
+                // While editing, a commit every few minutes (03: proposed 5).
+                if self.last_commit.elapsed() >= COMMIT_INTERVAL {
+                    self.commit();
+                }
                 (self.notify)();
             }
             Err(e) => {
@@ -256,5 +284,39 @@ fn reconcile_media(root: &std::path::Path, old: &Assets, new: &Assets) {
         {
             log::error!("cannot move {} to {}: {e}", from.display(), to.display());
         }
+    }
+}
+
+fn record_label(record: &Record) -> &'static str {
+    match record {
+        Record::Do { op, .. } => op.label(),
+        Record::Undo => "undo",
+        Record::Redo => "redo",
+    }
+}
+
+impl Worker {
+    /// Commits the saved files, with a message that says what was done.
+    fn commit(&mut self) {
+        self.last_commit = Instant::now();
+        let mut parts: Vec<String> = self
+            .summary
+            .iter()
+            .map(|(label, n)| if *n == 1 { (*label).to_owned() } else { format!("{n} x {label}") })
+            .collect();
+        parts.truncate(6);
+        let message = if parts.is_empty() { "Save".to_owned() } else { parts.join(", ") };
+        match git::commit_if_changed(&self.root, &message) {
+            Ok(_) => self.summary.clear(),
+            // No repository (a bundle copied without .git) is not an error worth a banner.
+            Err(e) => log::warn!("{}: no commit: {e}", self.root.display()),
+        }
+    }
+}
+
+impl ProjectWriter {
+    /// Names the current state. Saved and committed first; returns at once.
+    pub fn checkpoint(&self, name: String) {
+        let _ = self.tx.send(Msg::Checkpoint(name));
     }
 }

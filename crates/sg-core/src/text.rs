@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipStore};
 use crate::ids::ProjectId;
-use crate::model::{Project, Sequence, Track, TrackKind};
+use crate::model::{Marker, Project, Sequence, Track, TrackKind};
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const PROJECT_FILE: &str = "project.toml";
@@ -173,6 +173,9 @@ fn write_sequence(seq: &Sequence) -> String {
     let _ = writeln!(out, "name {}", quote(&seq.name));
     let _ = writeln!(out, "rate {}", seq.rate);
     let _ = writeln!(out, "size {}x{}", seq.width, seq.height);
+    for marker in seq.markers.iter() {
+        let _ = writeln!(out, "marker {} {}", marker.frame, quote(&marker.label));
+    }
     for track in &seq.tracks {
         let kind = match track.kind {
             TrackKind::Video => "video",
@@ -201,6 +204,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
     }
 
     let (mut id, mut name, mut rate, mut size) = (None, None, None, None);
+    let mut markers: Vec<Marker> = Vec::new();
     // The track being read: its header and clips so far.
     let mut current: Option<(Track, Vec<Clip>)> = None;
     let mut tracks = Vec::new();
@@ -242,6 +246,12 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                 let parsed = rest.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
                 size = Some(parsed.ok_or_else(|| err(n, "bad size"))?);
             }
+            "marker" => {
+                let (frame, label) = rest.split_once(' ').unwrap_or((rest, "\"\""));
+                let frame = frame.parse().map_err(|_| err(n, "bad marker frame"))?;
+                let label = unquote(label).ok_or_else(|| err(n, "bad marker label"))?;
+                markers.push(Marker { frame, label });
+            }
             // Unknown keys are skipped so that a newer minor format stays readable.
             _ => {}
         }
@@ -250,6 +260,8 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
     finish(&mut current, last)?;
     let missing = |what: &str| TextError::File { file: file.to_owned(), message: format!("missing {what}") };
     let (width, height) = size.ok_or_else(|| missing("size"))?;
+    markers.sort_by_key(|m| m.frame);
+    markers.dedup_by_key(|m| m.frame);
     Ok(Sequence {
         id: id.ok_or_else(|| missing("id"))?,
         name: name.ok_or_else(|| missing("name"))?,
@@ -257,6 +269,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
         width,
         height,
         tracks,
+        markers: Arc::new(markers),
     })
 }
 

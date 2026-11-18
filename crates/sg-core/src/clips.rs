@@ -35,6 +35,17 @@ impl Clip {
     }
 }
 
+/// What [`ClipStore::visit`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visible {
+    Clip(Clip),
+    /// Several clips too short to tell apart at this zoom.
+    Run {
+        start: i64,
+        end: i64,
+    },
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
 pub enum ClipError {
     #[error(
@@ -285,6 +296,86 @@ impl ClipStore {
             c.end += delta;
         }
         Ok((out, Some(first_moved)))
+    }
+
+    /// Position (chunk, index) of the first clip that starts at or after `t`.
+    fn seek_start(&self, t: i64) -> (usize, usize) {
+        // The first chunk starting at or after `t`; the clip may still be in
+        // the tail of the chunk before it.
+        let ci = self.chunks.partition_point(|c| c.first < t);
+        if let Some(prev) = ci.checked_sub(1).map(|p| &self.chunks[p]) {
+            let i = prev.clips.partition_point(|c| c.start + prev.base < t);
+            if i < prev.clips.len() {
+                return (ci - 1, i);
+            }
+        }
+        (ci, 0)
+    }
+
+    fn clip_at(&self, pos: (usize, usize)) -> Option<Clip> {
+        let chunk = self.chunks.get(pos.0)?;
+        (pos.1 < chunk.clips.len()).then(|| chunk.abs(pos.1))
+    }
+
+    fn step(&self, pos: (usize, usize)) -> (usize, usize) {
+        match self.chunks.get(pos.0) {
+            Some(chunk) if pos.1 + 1 < chunk.clips.len() => (pos.0, pos.1 + 1),
+            _ => (pos.0 + 1, 0),
+        }
+    }
+
+    fn step_back(&self, pos: (usize, usize)) -> Option<(usize, usize)> {
+        if pos.1 > 0 {
+            return Some((pos.0, pos.1 - 1));
+        }
+        let ci = pos.0.checked_sub(1)?;
+        Some((ci, self.chunks[ci].clips.len() - 1))
+    }
+
+    /// The first clip that starts at or after `t`.
+    pub fn first_at_or_after(&self, t: i64) -> Option<Clip> {
+        self.clip_at(self.seek_start(t))
+    }
+
+    /// The last clip that starts before `t`.
+    pub fn last_before(&self, t: i64) -> Option<Clip> {
+        self.clip_at(self.step_back(self.seek_start(t))?)
+    }
+
+    /// Visits what is visible of `t0..t1` at a zoom where clips shorter than
+    /// `min_len` would be narrower than a couple of pixels: such clips are
+    /// reported merged into runs of at most `min_len` each. The number of
+    /// calls is therefore bounded by `(t1 - t0) / min_len` plus the number of
+    /// clips that are wide enough to see, however many clips the track has;
+    /// every skip is a binary search (spike S2).
+    pub fn visit(&self, t0: i64, t1: i64, min_len: i64, mut f: impl FnMut(Visible)) {
+        let min_len = min_len.max(1);
+        // Start at the clip covering t0, if there is one.
+        let mut pos = self.seek_start(t0);
+        if let Some(before) = self.step_back(pos).filter(|p| self.clip_at(*p).is_some_and(|c| c.end() > t0)) {
+            pos = before;
+        }
+        while let Some(clip) = self.clip_at(pos).filter(|c| c.start < t1) {
+            if clip.len >= min_len {
+                f(Visible::Clip(clip));
+                pos = self.step(pos);
+                continue;
+            }
+            // Everything that starts within one bucket becomes one run.
+            let mut next = self.seek_start(clip.start + min_len);
+            let mut last = self.step_back(next).and_then(|p| self.clip_at(p)).unwrap_or(clip);
+            // A wide clip that merely starts inside the bucket is drawn on
+            // its own in the next round.
+            if last.start > clip.start
+                && last.len >= min_len
+                && let Some(back) = self.step_back(next)
+            {
+                next = back;
+                last = self.step_back(next).and_then(|p| self.clip_at(p)).unwrap_or(clip);
+            }
+            f(Visible::Run { start: clip.start, end: last.end().max(clip.start + 1) });
+            pos = next;
+        }
     }
 
     /// All clips in order.
@@ -543,6 +634,94 @@ mod tests {
             let ranged: Vec<i64> = s.range(1000, 2000).map(|c| c.start).collect();
             let expect: Vec<i64> = want.iter().filter(|(s, l)| s + l > 1000 && *s < 2000).map(|c| c.0).collect();
             prop_assert_eq!(ranged, expect);
+        }
+    }
+}
+
+#[cfg(test)]
+mod visit_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn clip(start: i64, len: i64) -> Clip {
+        Clip { id: ClipId(start as u64 + 1), asset: AssetId(1), start, len, src_in: 0 }
+    }
+
+    #[test]
+    fn edges() {
+        let s = ClipStore::from_sorted([clip(0, 10), clip(10, 5), clip(40, 5)]).unwrap();
+        assert_eq!(s.first_at_or_after(0).map(|c| c.start), Some(0));
+        assert_eq!(s.first_at_or_after(11).map(|c| c.start), Some(40));
+        assert_eq!(s.first_at_or_after(41), None);
+        assert_eq!(s.last_before(0), None);
+        assert_eq!(s.last_before(10).map(|c| c.start), Some(0));
+        assert_eq!(s.last_before(1000).map(|c| c.start), Some(40));
+        assert_eq!(ClipStore::new().first_at_or_after(0), None);
+    }
+
+    #[test]
+    fn wide_clips_are_reported_one_by_one() {
+        let s = ClipStore::from_sorted([clip(0, 100), clip(100, 100), clip(300, 100)]).unwrap();
+        let mut seen = Vec::new();
+        s.visit(50, 350, 10, |v| seen.push(v));
+        assert_eq!(seen, [Visible::Clip(clip(0, 100)), Visible::Clip(clip(100, 100)), Visible::Clip(clip(300, 100))]);
+        seen.clear();
+        s.visit(200, 300, 10, |v| seen.push(v));
+        assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn short_clips_merge_and_a_wide_one_in_between_survives() {
+        // Ten 1-long clips, then a wide clip, then ten more short ones.
+        let mut clips: Vec<Clip> = (0..10).map(|i| clip(i * 2, 1)).collect();
+        clips.push(clip(20, 500));
+        clips.extend((0..10).map(|i| clip(520 + i * 2, 1)));
+        let s = ClipStore::from_sorted(clips).unwrap();
+        let mut seen = Vec::new();
+        s.visit(0, 1000, 100, |v| seen.push(v));
+        assert_eq!(
+            seen,
+            [Visible::Run { start: 0, end: 19 }, Visible::Clip(clip(20, 500)), Visible::Run { start: 520, end: 539 }]
+        );
+    }
+
+    proptest! {
+        /// Whatever the zoom: every visible clip is covered by exactly the
+        /// items reported, in order, without overlap, and the number of
+        /// items stays bounded by the window, not by the clip count.
+        #[test]
+        fn visit_covers_everything_once(
+            lens in prop::collection::vec((1i64..40, 0i64..6), 1..3000),
+            window in (0i64..20_000, 1i64..30_000),
+            min_len in 1i64..400,
+        ) {
+            let mut t = 0;
+            let clips: Vec<Clip> = lens.iter().map(|(len, gap)| { let c = clip(t + gap, *len); t = c.end(); c }).collect();
+            let s = ClipStore::from_sorted(clips.clone()).unwrap();
+            let (t0, t1) = (window.0, window.0 + window.1);
+            let mut items = Vec::new();
+            s.visit(t0, t1, min_len, |v| items.push(v));
+
+            let span = |v: &Visible| match v { Visible::Clip(c) => (c.start, c.end()), Visible::Run { start, end } => (*start, *end) };
+            for pair in items.windows(2) {
+                prop_assert!(span(&pair[0]).1 <= span(&pair[1]).0, "items overlap or are out of order: {:?}", pair);
+            }
+            for c in clips.iter().filter(|c| c.end() > t0 && c.start < t1) {
+                let covered = items.iter().any(|v| match v {
+                    Visible::Clip(x) => x == c,
+                    Visible::Run { start, end } => *start <= c.start && c.end() <= *end,
+                });
+                prop_assert!(covered, "clip {}..{} is not drawn", c.start, c.end());
+            }
+            for v in &items {
+                if let Visible::Clip(c) = v {
+                    prop_assert!(c.len >= min_len && c.end() > t0 && c.start < t1);
+                }
+            }
+            // Each item advances by at least min_len, or is a wide clip.
+            let wide = clips.iter().filter(|c| c.len >= min_len && c.end() > t0 && c.start < t1).count();
+            prop_assert!(items.len() <= (window.1 / min_len) as usize + 2 * wide + 3, "{} items", items.len());
         }
     }
 }

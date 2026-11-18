@@ -31,6 +31,8 @@ pub struct Sequence {
     pub height: u32,
     /// Top of the timeline first.
     pub tracks: Vec<Arc<Track>>,
+    /// Sorted by frame, at most one per frame.
+    pub markers: Arc<Vec<Marker>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,7 +98,15 @@ impl Sequence {
 
 impl From<SequenceHeader> for Sequence {
     fn from(h: SequenceHeader) -> Sequence {
-        Sequence { id: h.id, name: h.name, rate: h.rate, width: h.width, height: h.height, tracks: Vec::new() }
+        Sequence {
+            id: h.id,
+            name: h.name,
+            rate: h.rate,
+            width: h.width,
+            height: h.height,
+            tracks: Vec::new(),
+            markers: Arc::default(),
+        }
     }
 }
 
@@ -110,4 +120,12 @@ impl From<TrackHeader> for Track {
     fn from(h: TrackHeader) -> Track {
         Track { id: h.id, kind: h.kind, name: h.name, clips: ClipStore::new() }
     }
+}
+
+/// A named point on a sequence's timeline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Marker {
+    pub frame: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }

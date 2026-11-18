@@ -14,9 +14,9 @@ pub mod text;
 pub mod time;
 
 pub use asset::{Asset, AssetKind, AudioInfo, Source, VideoInfo};
-pub use clips::{Clip, ClipError, ClipStore};
+pub use clips::{Clip, ClipError, ClipStore, Visible};
 pub use history::{Document, History, HistoryError, Record};
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};
-pub use model::{Project, Sequence, SequenceHeader, Track, TrackHeader, TrackKind};
+pub use model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader, TrackKind};
 pub use ops::{Op, OpError, apply};
 pub use time::Rate;

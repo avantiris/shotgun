@@ -9,6 +9,9 @@ use sg_ui::{Action, DevStep, Transport};
 pub enum Step {
     Dev(DevStep),
     WaitMs(u64),
+    /// Render this many UI frames off-screen with the timeline zooming and
+    /// scrolling, and print their CPU times.
+    TimelineBench(usize),
     /// Write a PNG of the UI, rendered off-screen.
     Shot(std::path::PathBuf),
     Quit,
@@ -31,6 +34,29 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "asset" => Step::Dev(DevStep::SelectAsset(need()?.parse().map_err(|_| anyhow!("asset needs a number"))?)),
         "add" => Step::Dev(DevStep::Act(Action::AddAsset)),
         "insert" => Step::Dev(DevStep::Act(Action::InsertAsset)),
+        "split" => Step::Dev(DevStep::Act(Action::Split)),
+        "rippleq" => Step::Dev(DevStep::Act(Action::RippleStart)),
+        "ripplee" => Step::Dev(DevStep::Act(Action::RippleEnd)),
+        "xdel" => Step::Dev(DevStep::Act(Action::RippleDelete)),
+        "select" => Step::Dev(DevStep::Act(Action::SelectUnder)),
+        "copy" => Step::Dev(DevStep::Act(Action::Copy)),
+        "paste" => Step::Dev(DevStep::Act(Action::PasteClips)),
+        "marker" => Step::Dev(DevStep::Act(Action::Marker)),
+        "history" => Step::Dev(DevStep::Act(Action::History)),
+        "checkpoint" => Step::Dev(DevStep::Checkpoint(need()?)),
+        "restore" => Step::Dev(DevStep::Restore(
+            need()?.parse().map_err(|_| anyhow!("restore needs the position in the history list"))?,
+        )),
+        "prev" => Step::Dev(DevStep::Act(Action::PrevCut)),
+        "next" => Step::Dev(DevStep::Act(Action::NextCut)),
+        "view" => {
+            let (zoom, left) =
+                arg.split_once(',').ok_or_else(|| anyhow!("view needs <frames per point>,<left frame>"))?;
+            Step::Dev(DevStep::TimelineView(zoom.parse()?, left.parse()?))
+        }
+        "timelinebench" => {
+            Step::TimelineBench(need()?.parse().map_err(|_| anyhow!("timelinebench needs a number of frames"))?)
+        }
         "play" => Step::Dev(DevStep::Act(Action::PlayPause)),
         "seek" => Step::Dev(DevStep::Transport(Transport::Seek(
             need()?.parse().map_err(|_| anyhow!("seek needs a frame number"))?,
