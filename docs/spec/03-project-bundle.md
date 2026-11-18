@@ -94,7 +94,9 @@ Copy exact command lines from the spike document; summary:
   4K60, VMAF 99.9); software fallback x264 GOP 15 crf 14. Sources with alpha:
   Ut Video `gbrap` in MKV.
 - **Master export default:** HEVC Main10 `hevc_vaapi` CQP 20 (21.6 Mbit/s,
-  VMAF 99.55, 3.2x realtime). `PROPOSED` until the user compares it by eye
+  VMAF 99.55, 3.2x realtime; in the app, M6: 0.95x at 4K60 and 3.8x at
+  1080p60 for render and encode, frames widened to 10 bits with
+  `hwupload,scale_vaapi=format=p010`). `PROPOSED` until the user compares it by eye
   with `libx264 -preset slow -crf 16` on real footage.
   **Never pass `-tag:v hvc1` to `hevc_vaapi`** (undecodable output on this
   GPU): encode as `hev1`, then remux with `-c copy -tag:v hvc1`. Every export

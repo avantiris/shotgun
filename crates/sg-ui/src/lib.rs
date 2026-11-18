@@ -457,7 +457,8 @@ impl Shell {
                     _ => (ExportPreset::Master, 10),
                 };
                 let range = if preset == ExportPreset::Gif { self.gif_range() } else { None };
-                self.start_export(ExportRequest { preset, megabytes, range, to_clipboard: true }, &mut commands);
+                // Scripted exports never touch the clipboard: it belongs to the person at the desk.
+                self.start_export(ExportRequest { preset, megabytes, range, to_clipboard: false }, &mut commands);
             }
             DevStep::Checkpoint(name) => {
                 if let Some(session) = &self.session {

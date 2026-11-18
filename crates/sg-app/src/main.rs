@@ -37,9 +37,11 @@ shotgun [options]
   --exit-after <secs>  quit after this many seconds
                        script steps: filter:<text> new:<name> open:<folder> rename:<name> undo redo close
                        import:<path or link> asset:<n> add del perf esc wait:<ms> shot:<file.png> quit
+                       size:<w>x<h> exportpanel export:<master|vertical|gif|share:<MB>> (see script.rs for all)
   --bench-start        print the time to the first library frame and quit
   --bench-open         with --open: print the time to the first editor frame and quit
-Environment: SHOTGUN_LIBRARY (library folder), SHOTGUN_APP_ID (Wayland app id), SHOTGUN_LOG (error..trace)";
+Environment: SHOTGUN_LIBRARY (library folder), SHOTGUN_APP_ID (Wayland app id), SHOTGUN_LOG (error..trace),
+  SHOTGUN_AUDIO (null | sink:<name>), SHOTGUN_NO_CLIPBOARD (exports leave the clipboard alone)";
 
 #[derive(Default)]
 struct Args {

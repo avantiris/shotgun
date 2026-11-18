@@ -24,7 +24,7 @@ measured and logged in `docs/perf-log.md`, and a commit is made.
 | M3 (done) | Playback: decode pool, GPU viewer, audio engine on PipeWire, A/V sync, scrubbing, frame cache | scrub/play budgets, audio latency numbers |
 | M4 (done) | Timeline: multi-track, split/trim/ripple/move/snap, selection, markers, undo/redo, autosave, git auto-commits + checkpoints | 50k-clip UI budget |
 | M5 (done) | Compositing: transform, crop, opacity, speed, titles, keyframes (classic + live record), basic audio fades/gain | realtime with layers |
-| M6 | Export: 16:9 master, 9:16 with reframe, compressed share copy, GIF to clipboard; export panel + repeat-last | export speed, output verified by probing the file |
+| M6 (done) | Export: 16:9 master, 9:16 with reframe, compressed share copy, GIF to clipboard; export panel + repeat-last | export speed, output verified by probing the file |
 
 Status:
 
@@ -83,6 +83,24 @@ Status:
   copies no properties to the right half. Not verifiable without a person:
   dragging in the viewer and live record (real pointer input), and how any
   of it looks in motion.
+
+- **M6 done 2026-11-18** (commits `d2124d5`, `5fa02d0`), with one missed
+  budget: a 4K60 master renders at 57 fps (0.95x realtime), and the whole
+  export with its check decode takes 2.4 times the length of the video
+  (`docs/perf-log.md`). 1080p60 exports at 1.8x realtime in all. Built:
+  master, vertical (the frame turned upright, pictures fill it), share copy
+  under a size, GIF; export panel, repeat-last, GIF key; the sequence frame
+  can be set to 1080p, 4K, 9:16 or 1:1. Not built: reframing per clip for
+  the vertical export beyond the clip's own position and scale (the export
+  crops the centre), choosing a range for master and share copy (they export
+  the whole sequence; only the GIF takes the selection or marker range),
+  export of 10-bit pictures as real 10 bits (the file is 10-bit, the
+  pipeline in front of the encoder is 8-bit until M10), a queue of several
+  exports, a "reveal in file manager" action. Export reads the constant-rate
+  conform of a variable-rate source instead of its original (`PROPOSED`,
+  see 02). Not verifiable without a person: the keys and the panel with real
+  input, the clipboard hand-over into a chat or browser, how the files look
+  and sound in a player and on a phone.
 
 Then the user tests and gives feedback. Feedback is triaged into fixes before
 stage 2 starts.

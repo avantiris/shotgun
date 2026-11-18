@@ -109,6 +109,12 @@ What must be true **now** so this is an extension and not a rewrite:
   with long GOPs. The proxy frame is on screen after 3 to 7 ms meanwhile.
   Decide after seeing it: accept, or ask for an intra mezzanine of originals
   (about 0.56 GB per minute of 4K60).
+- `OPEN`, with numbers (M6, `docs/perf-log.md`): a 4K60 master renders at
+  57 fps, just under realtime, and every export is then decoded once as a
+  check, which for 4K takes longer than the render (20 s of video: 21 s
+  render, 26 s check). Decide after using it: keep the full check, check
+  with the GPU decoder (fast, less independent), or check only the first and
+  last seconds.
 - `OPEN` Full-quality seek into long-GOP originals: proxy-first display
   (planned) versus an intra mezzanine of originals (S1, see 04).
 - `OPEN` Shot-match quality on the user's real footage can only be judged with

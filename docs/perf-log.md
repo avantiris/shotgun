@@ -192,3 +192,44 @@ What this does and does not show:
 Not measured: compositing cost per layer on the GPU, playback with keyframed
 transforms on every layer, title rasterisation time (done once per text and
 size on the render thread).
+
+## 2026-11-18, M6, commit 5fa02d0
+
+Command: `nix develop --command bash scripts/bench-m6.sh`.
+Machine state: load average 8.9 (1 min) at the start; the user was working on
+the desktop. Exports ran through `sg-bench export` (the code the export panel
+runs), no window.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| 4K60 HEVC master, one 4K60 HEVC clip, 20 s: render and encode | 57.9 and 56.8 fps (0.96x and 0.95x realtime) | >= realtime where the encoder allows | **miss, by 4 %** |
+| Same, whole export including the check decode | 47.6 and 47.0 s for 20 s (0.42x) | (same line) | **miss** |
+| 1080p60 master, two video layers + title + sound, 20 s | 229 fps render; 10.9 s in all (1.84x) | (no line; for comparison) | |
+| 1080p60 vertical 1080x1920 | 228 fps render; 9.2 s in all (2.18x) | | |
+| Share copy, 10 MB target | 9 850 995 bytes (98.5 %), 720p30, 28.9 s | never over the target | pass |
+| Share copy, 25 MB target | 24 629 630 bytes (98.5 %), 1080p60, 32.2 s | never over the target | pass |
+| GIF, 3 s | 632 kB, 480x270, 20 fps, 3.4 s | | |
+
+Every file was probed: masters are `hevc` / `hvc1` / `yuv420p10le` / 60 fps
+with the exact frame count (1200) and AAC sound where the sequence has
+sound; share copies are `h264` / `yuv420p`.
+
+Per frame at 4K, the three stages run side by side: decode 10 ms, upload and
+GPU colour conversion 6 ms plus compositing and read-back 9 ms (one thread),
+feeding the encoder 17 ms. The encoder process is the slowest stage: alone,
+reading the same frames from a file, it takes 10.8 ms per frame (93 fps), so
+it is slowed by sharing the GPU and memory with the other stages. The check
+decode of the finished 4K file (software, 10-bit, 129 Mbit/s) takes 26 s for
+20 s of video and is what makes the whole export 0.42x.
+
+How it got here (4K60, same clip): 13 fps as first written (RGBA read-back,
+colour conversion to 10-bit on the CPU inside ffmpeg, one thread doing
+everything, CPU conversion of every decoded frame to RGBA); 20 fps with NV12
+made on the GPU; 36 fps with three stages and the 10-bit step moved to the
+GPU encoder's scaler; 57 fps with decoded planes converted on the GPU.
+Decoding through VAAPI with read-back was tried and is slower (13 fps).
+
+Not measured: export on a quiet machine; 4K with several layers; 10-bit
+sources (they still take the CPU conversion path); long exports (hours);
+the software fallback encoder; the clipboard hand-over (never run
+automatically, by rule).

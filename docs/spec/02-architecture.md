@@ -111,6 +111,15 @@ and `sg-audio` do not depend on `sg-ui`. `sg-core` depends on nothing internal.
   replaced by the full-quality one as soon as that is decoded.
 - Preview quality is adaptive (proxy source and/or reduced viewer resolution
   under load); export always uses originals at full resolution.
+- Export (M6) runs on its own thread as three stages side by side: plan and
+  decode (software, sequential, full size), composite on the GPU, feed the
+  encoder process. 8-bit 4:2:0 pictures cross to the GPU as planes and are
+  converted there; the finished frame is read back as NV12 and piped to
+  `ffmpeg`, which uploads it to the GPU encoder. Sound is rendered offline
+  by the audio engine (manual backend) with the mix the preview plays.
+  `PROPOSED`: for a variable-frame-rate source export reads its
+  constant-rate conform, not the original, because frame numbers only mean
+  the same thing in both for constant-rate files.
 
 ## Media
 
