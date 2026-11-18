@@ -38,7 +38,8 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Wheel on timeline | zoom around cursor |
 | Shift + wheel | scroll horizontally |
 | Middle drag | pan timeline / viewer |
-| Click ruler / drag | set / scrub playhead |
+| Click or drag on the ruler or on empty timeline | set / scrub playhead |
+| Click clip | select it with its partner (picture + sound of one take); Shift adds, Alt selects it alone |
 | Drag clip | move (snaps; hold Alt to disable snapping) |
 | Drag clip edge | trim (Ctrl = ripple) |
 | Drag in viewer | move selected layer; corner = scale; outside corner = rotate |
@@ -75,9 +76,9 @@ Cutting
 | X | ripple delete selection |
 | Shift + X | delete, leave gap |
 | W | select clip under playhead (repeat: next track up) |
-| C / V | copy / paste at playhead (Ctrl optional) |
+| C / V | copy selected clips / paste them at the playhead (same tracks; refused if there is no room) |
 | Ctrl + V | paste; if the clipboard holds a link, file or image: **import it** |
-| G | add marker |
+| G | add marker at the playhead (again on the same frame: remove it) |
 | Y | undo (Shift + Y redo); Ctrl + Z / Ctrl + Shift + Z also work |
 
 Animation and creation
@@ -100,6 +101,7 @@ Panels and output
 | Ctrl + E | export panel; Ctrl + Shift + E repeats the last export |
 | Ctrl + G | export selection/range as GIF to the clipboard |
 | Ctrl + S | name a checkpoint (saving itself is automatic) |
+| Ctrl + H | history: saved states and checkpoints, restore any of them |
 | Ctrl + W | close project, back to library |
 | ` (key left of 1) | performance overlay (with Ctrl while a text field has focus, e.g. in the library) |
 | F2 | rename the project |

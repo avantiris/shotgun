@@ -129,3 +129,37 @@ Not measured:
   smoothness and audible glitches need a person.
 - The xrun matrix of S3 on a quiet machine (still open in 08, stage 0).
 - "3 simultaneous 4K60 HEVC layers, 0 dropped": M5.
+
+## 2026-11-18, M4, commit ae30869
+
+Command: `nix develop --command bash scripts/bench-m4.sh`.
+Machine state: load average 4.5 to 4.7; the user was watching a video. Release
+build. Window 1600x900, rendered off-screen (the app was on a hidden
+workspace), 1440 frames per run, three runs each.
+
+What is measured: the CPU time of a whole UI frame (input, UI build with the
+timeline lookup and instance fill, tessellation, buffer upload, encoding,
+submit) while the timeline zooms between "whole sequence" and 200 points per
+second and sweeps across the sequence, the script of spike S2.
+
+| Project | CPU frame time p50 | p99 (three runs) | max | Quads | Budget (p99) | Result |
+|---------|-------------------:|-----------------:|----:|------:|-------------:|--------|
+| 10 clips, 2 tracks | 0.21 ms | 0.26, 0.34, 0.38 ms | 1.19 ms | 13 | 6.9 ms | pass |
+| 50 000 clips, 20 tracks (rows 10 pt high, no labels) | 0.28 ms | 0.66, 0.69, 0.72 ms | 1.30 ms | 7453 | 6.9 ms | pass |
+| 50 000 clips, 4 tracks (rows 40 pt high, labels) | 0.27 ms | 0.39, 0.45, 0.47 ms | 0.96 ms | 1497 | 6.9 ms | pass |
+| 500 000 clips, 20 tracks (10 x the budgeted size) | 0.31 ms | 1.49, 1.63, 2.98 ms | 4.50 ms | 7453 | 6.9 ms | pass |
+
+These are lower than the spike's 2.2 to 3.2 ms: the spike redrew a 1280x720
+viewer texture and six sliders every frame and laid out up to 200 changing
+labels; here the viewer is a texture the player owns and the synthetic clips
+all carry the same short label.
+
+Not measured:
+
+- Frame pacing on a real monitor (missed vblanks at 144 Hz). The numbers
+  above are CPU time per frame, not presentation intervals.
+- Frame time during real mouse interaction (drag, wheel): the benchmark sets
+  zoom and scroll directly.
+- A project with thousands of distinct, long labels.
+- Git: commit time of the auto-commit was not re-measured in the app; S5
+  measured 12 ms idle and 29 to 43 ms under load for the same commands.

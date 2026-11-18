@@ -16,10 +16,10 @@ for r in 'workspace special:sgdev silent' 'no_initial_focus on' 'no_focus on' 'f
 done
 echo "== machine: $(uptime | sed 's/.*load average/load average/'), commit $(git rev-parse --short HEAD)"
 rm -rf "$LIB"
-"$BIN/sg-bench" gen "$LIB" "Ten" 10 2 | head -1
-"$BIN/sg-bench" gen "$LIB" "Fifty k on twenty" 50000 20 | head -1
-"$BIN/sg-bench" gen "$LIB" "Fifty k on four" 50000 4 | head -1
-"$BIN/sg-bench" gen "$LIB" "Half a million" 500000 20 | head -1
+"$BIN/sg-bench" gen "$LIB" "Ten" 10 2 > "$LIB.log" && head -1 "$LIB.log"
+"$BIN/sg-bench" gen "$LIB" "Fifty k on twenty" 50000 20 > "$LIB.log" && head -1 "$LIB.log"
+"$BIN/sg-bench" gen "$LIB" "Fifty k on four" 50000 4 > "$LIB.log" && head -1 "$LIB.log"
+"$BIN/sg-bench" gen "$LIB" "Half a million" 500000 20 > "$LIB.log" && head -1 "$LIB.log"
 run() { # <folder> <label>
   for _ in 1 2 3; do
     SHOTGUN_LIBRARY=$LIB SHOTGUN_APP_ID=shotgun-dev SHOTGUN_AUDIO=null SHOTGUN_LOG=error timeout 300 "$BIN/shotgun" \

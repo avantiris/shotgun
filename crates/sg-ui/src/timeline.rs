@@ -1108,8 +1108,10 @@ mod tests {
         (dir, session)
     }
 
+    type Spans = Vec<(i64, i64)>;
+
     /// (start, length) of every clip, video in frames and audio in frames too.
-    fn layout(session: &Session) -> (Vec<(i64, i64)>, Vec<(i64, i64)>) {
+    fn layout(session: &Session) -> (Spans, Spans) {
         let project = session.project();
         let seq = &project.sequences[0];
         let v = seq.tracks[0].clips.iter().map(|c| (c.start, c.len)).collect();
@@ -1213,8 +1215,7 @@ mod tests {
     #[test]
     fn moving_and_trimming_plan_ops_that_fit() {
         let (_dir, mut session) = session();
-        let mut timeline = Timeline::default();
-        timeline.frames_per_point = 1.0;
+        let mut timeline = Timeline { frames_per_point: 1.0, ..Timeline::default() };
         let project = session.project().clone();
         let seq = project.sequences[0].clone();
         let view = ViewerState::default();

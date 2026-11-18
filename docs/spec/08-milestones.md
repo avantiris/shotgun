@@ -22,7 +22,7 @@ measured and logged in `docs/perf-log.md`, and a commit is made.
 | M1 (done) | Workspace + crates, window, library view, create/open project, bundle layout, journal + snapshot model in `sg-core` | start/open budgets, edit-op budget |
 | M2 (done) | Import: drag-drop, file picker, paste link/file/image, yt-dlp, probe, hash, thumbnails, peaks, conform, proxy; asset panel | asset-usable budget |
 | M3 (done) | Playback: decode pool, GPU viewer, audio engine on PipeWire, A/V sync, scrubbing, frame cache | scrub/play budgets, audio latency numbers |
-| M4 | Timeline: multi-track, split/trim/ripple/move/snap, selection, markers, undo/redo, autosave, git auto-commits + checkpoints | 50k-clip UI budget |
+| M4 (done) | Timeline: multi-track, split/trim/ripple/move/snap, selection, markers, undo/redo, autosave, git auto-commits + checkpoints | 50k-clip UI budget |
 | M5 | Compositing: transform, crop, opacity, speed, titles, keyframes (classic + live record), basic audio fades/gain | realtime with layers |
 | M6 | Export: 16:9 master, 9:16 with reframe, compressed share copy, GIF to clipboard; export panel + repeat-last | export speed, output verified by probing the file |
 
@@ -54,6 +54,21 @@ Status:
   scrubbing, plugin delay compensation (no processor with latency exists
   yet), the user-adjustable A/V offset. Not verifiable without a person:
   sound through the real device, A/V sync, smoothness on a real monitor.
+
+- **M4 done 2026-11-18** (commit `ae30869`). Changed or added on the way:
+  picture and sound of a take are kept together by a rule (same asset, same
+  time, same source position), not by a link stored in the project; Alt+click
+  picks one clip alone. Moves and trims show a ghost and are applied when the
+  button is released, so the viewer does not follow a drag live. Not built:
+  dragging an asset from the panel onto the timeline (Enter or a double-click
+  places it at the playhead instead), dropping a file directly onto a
+  position in the timeline, overwrite and insert edits (a move onto occupied
+  space is refused), waveforms and thumbnails on clips, track add/remove/
+  mute in the UI, renaming markers, the key map config file, journal
+  compaction. After restoring an older state, media of assets that state does
+  not know stays in `assets/` instead of moving to the trash. Not verifiable
+  without a person: every mouse gesture on the timeline (they are covered by
+  tests of the planning code and by scripted key actions, not by real input).
 
 Then the user tests and gives feedback. Feedback is triaged into fixes before
 stage 2 starts.

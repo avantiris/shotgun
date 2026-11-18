@@ -197,3 +197,14 @@ How this is built (M1, `sg-project`):
   pushes; verified against a local remote only.
 - Remote-ready means: nothing in the layout prevents `git remote add` + push
   later. No remote UI in stage 1 or 2.
+
+As built in M4: the project's writer thread commits on close, at a named
+checkpoint (Ctrl+S: an annotated tag whose name is the slug of what was
+typed) and, while there are changes, five minutes after the previous commit.
+The message lists what the journal recorded since ("split, 2 x ripple trim,
+import"). The history popover (Ctrl+H) shows the last 200 commits; restoring
+one runs `git restore --source=<commit>` on `project.toml`, `sequences/` and
+`assets/index/` and commits the result as "Restore: ...". The project is then
+reopened from its files, which starts a new undo history (the old journal is
+kept as a backup). Not built: commits before/after export (M6) and after an
+import batch.
