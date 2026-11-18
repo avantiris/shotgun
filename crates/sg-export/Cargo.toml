@@ -11,9 +11,14 @@ sg-media.workspace = true
 sg-play.workspace = true
 sg-project.workspace = true
 sg-render.workspace = true
+libc = "0.2"
 log.workspace = true
 thiserror.workspace = true
 wgpu = "30.0.2"
+
+[dev-dependencies]
+pollster.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

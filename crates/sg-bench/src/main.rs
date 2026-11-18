@@ -462,5 +462,9 @@ fn bench_export(root: &Path, preset: &str, range: Option<(i64, i64)>) -> anyhow:
         done.render_fps,
         done.encoder
     );
+    println!(
+        "  per frame: decode {:.1} ms, upload {:.1} ms, composite+readback {:.1} ms, encoder pipe {:.1} ms",
+        done.stage_ms[0], done.stage_ms[1], done.stage_ms[2], done.stage_ms[3]
+    );
     Ok(())
 }

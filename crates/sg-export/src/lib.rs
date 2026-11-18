@@ -9,15 +9,16 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::time::Instant;
 
 use sg_audio::{Backend, Engine, SAMPLE_RATE};
 use sg_core::text::slug;
 use sg_core::{AssetId, AssetKind, ClipProps, Project, Sequence};
-use sg_media::decode::VideoDecoder;
+use sg_media::decode::{VideoDecoder, VideoFrame};
 use sg_media::tool::{Cancel, ToolError, run_lines, run_output};
 use sg_project::cache;
-use sg_render::{Compositor, LayerDraw, Source, plan, sequence_frames};
+use sg_render::{Compositor, LayerDraw, PlanLayer, Source, YuvImporter, YuvPlanes, plan, sequence_frames};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Preset {
@@ -64,6 +65,9 @@ pub struct Exported {
     pub seconds: f64,
     /// Rendered and encoded frames per second of the render pass.
     pub render_fps: f64,
+    /// Milliseconds per frame spent decoding, uploading, compositing with
+    /// read-back, and feeding the encoder.
+    pub stage_ms: [f64; 4],
     pub encoder: &'static str,
 }
 
@@ -181,50 +185,51 @@ impl Encoder {
         if hardware {
             cmd.args(["-vaapi_device", VAAPI_DEVICE]);
         }
+        // Frames arrive as NV12, already limited-range BT.709 (converted on the GPU).
         cmd.args([
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "rgba",
+            "nv12",
             "-s",
             &format!("{}x{}", size.0, size.1),
             "-r",
             &rate.to_string(),
-            "-i",
-            "pipe:0",
         ]);
+        cmd.args(COLOUR).args(["-i", "pipe:0"]);
         if let Some(audio) = audio {
             cmd.arg("-i").arg(audio);
         }
-        // The frames are display-referred BT.709 from the compositor.
-        let matrix = "scale=out_color_matrix=bt709:out_range=tv";
         if hardware {
-            let format = if ten_bit { "p010" } else { "nv12" };
-            cmd.args(["-vf", &format!("{matrix},format={format},hwupload"), "-c:v", "hevc_vaapi"]);
+            // Widening to 10 bits happens on the GPU: on the CPU it alone holds
+            // a 4K export to 44 frames per second (perf log, M6).
+            let filter = if ten_bit { "format=nv12,hwupload,scale_vaapi=format=p010" } else { "format=nv12,hwupload" };
+            cmd.args(["-vf", filter, "-c:v", "hevc_vaapi"]);
             if ten_bit {
                 cmd.args(["-profile:v", "main10"]);
             }
             // The default hev1 tag: adding hvc1 here gives an undecodable file on this GPU (S4, 5.3).
             cmd.args(["-rc_mode", "CQP", "-qp", "20"]);
         } else {
-            cmd.args([
-                "-vf",
-                &format!("{matrix},format=yuv420p"),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "16",
-            ]);
+            cmd.args(["-vf", "format=yuv420p", "-c:v", "libx264", "-preset", "medium", "-crf", "16"]);
         }
         cmd.args(COLOUR);
         if audio.is_some() {
-            cmd.args(["-c:a", "aac", "-b:a", "256k", "-shortest"]);
+            // No -shortest: the sound is rendered to exactly the length of the
+            // picture, and with a pipe as input -shortest can end the file early.
+            cmd.args(["-c:a", "aac", "-b:a", "256k"]);
         }
         cmd.args(["-movflags", "+faststart"]).arg(out);
         cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| ExportError::Tool(format!("cannot start ffmpeg: {e}")))?;
+        if let Some(stdin) = &child.stdin {
+            // A 4K frame is 12 MB; through the default 64 kB pipe it takes 190
+            // round trips between the two processes. Failure only costs speed.
+            // SAFETY: fcntl on a descriptor this process owns and keeps open.
+            unsafe {
+                libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(stdin), libc::F_SETPIPE_SZ, 1 << 20);
+            }
+        }
         let stderr = child.stderr.take().map(|mut pipe| {
             std::thread::spawn(move || {
                 let mut text = String::new();
@@ -256,8 +261,80 @@ impl Encoder {
     }
 }
 
-/// The offline render loop: composites every frame at full quality and
-/// feeds it to the encoder. Returns frames per second achieved.
+/// One frame on its way from the decode stage to the compositing stage.
+struct Decoded {
+    layers: Vec<PlanLayer>,
+    /// Per layer: the picture, if it is another one than this asset showed last.
+    fresh: Vec<Option<VideoFrame>>,
+}
+
+/// Frames waiting between two stages. Small: a 4K picture is 33 MB.
+const QUEUE: usize = 3;
+
+/// First stage: plans every frame and decodes the pictures it needs, at
+/// full quality. Returns the seconds spent decoding.
+fn decode_stage(
+    job: &Job,
+    sequence: &Sequence,
+    range: (i64, i64),
+    cancel: &Cancel,
+    out: SyncSender<Decoded>,
+) -> Result<f64, ExportError> {
+    let mut decoders: HashMap<AssetId, VideoDecoder> = HashMap::new();
+    // The source frame last handed on per asset: stills and held frames are sent once.
+    let mut shown: HashMap<AssetId, i64> = HashMap::new();
+    let mut spent = 0.0;
+    for frame in range.0..range.1 {
+        if cancel.is_cancelled() {
+            return Err(ExportError::Cancelled);
+        }
+        let layers = plan(&job.project, sequence, frame);
+        let mut fresh = Vec::with_capacity(layers.len());
+        for layer in &layers {
+            let Source::Asset { asset: id, frame: source_frame } = &layer.source else {
+                fresh.push(None);
+                continue;
+            };
+            let asset = job.project.assets.get(id);
+            let (Some(asset), true) = (asset, shown.get(id) != Some(source_frame)) else {
+                fresh.push(None);
+                continue;
+            };
+            let failed = |e: sg_media::decode::DecodeError| ExportError::Tool(format!("{}: {e}", asset.label));
+            if !decoders.contains_key(id) {
+                // Originals, or the constant-rate conform where one was needed.
+                let conform = cache::conform(&job.root, *id, asset.kind == AssetKind::Image);
+                let path = if conform.is_file() { conform } else { job.root.join(&asset.file) };
+                let mut decoder = VideoDecoder::open(&path, 0).map_err(failed)?;
+                if let Some(v) = &asset.video {
+                    decoder.set_rate(v.rate.num(), v.rate.den());
+                }
+                // No preview-sized cap: only what no GPU texture can hold.
+                decoder.set_max_dim(8192);
+                // Planes go to the GPU as they are and become RGB there.
+                decoder.set_planes(true);
+                decoders.insert(*id, decoder);
+            }
+            let Some(decoder) = decoders.get_mut(id) else {
+                fresh.push(None);
+                continue;
+            };
+            let mark = Instant::now();
+            fresh.push(Some(decoder.frame(*source_frame).map_err(failed)?));
+            spent += mark.elapsed().as_secs_f64();
+            shown.insert(*id, *source_frame);
+        }
+        if out.send(Decoded { layers, fresh }).is_err() {
+            // The compositing stage stopped; it knows why.
+            break;
+        }
+    }
+    Ok(spent)
+}
+
+/// The offline render: three stages running side by side (decode, composite
+/// on the GPU, feed the encoder), every frame at full quality. Returns the
+/// frames per second achieved and the milliseconds per frame of each stage.
 #[allow(clippy::too_many_arguments)]
 fn render(
     job: &Job,
@@ -270,96 +347,133 @@ fn render(
     encoder: &mut Encoder,
     cancel: &Cancel,
     progress: Progress<'_>,
-) -> Result<f64, ExportError> {
+) -> Result<(f64, [f64; 4]), ExportError> {
     let mut compositor = Compositor::new(device.clone(), queue.clone(), size.0, size.1);
     compositor.set_cover(cover);
-    let mut decoders: HashMap<AssetId, VideoDecoder> = HashMap::new();
-    // The last picture uploaded per asset: stills and held frames are not uploaded twice.
-    let mut pictures: HashMap<AssetId, (i64, wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
+    let importer = YuvImporter::new(device.clone(), queue.clone());
+    // The picture each asset shows at the moment.
+    let mut pictures: HashMap<AssetId, (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
     let mut titles: HashMap<(String, u32, [u8; 4]), (wgpu::TextureView, (u32, u32))> = HashMap::new();
     let default = ClipProps::default();
     let started = Instant::now();
     let total = (range.1 - range.0).max(1);
-    for frame in range.0..range.1 {
-        if cancel.is_cancelled() {
-            return Err(ExportError::Cancelled);
-        }
-        let layers = plan(&job.project, sequence, frame);
-        let mut drawn: Vec<(wgpu::TextureView, (u32, u32), i32, bool, usize)> = Vec::with_capacity(layers.len());
-        for (index, layer) in layers.iter().enumerate() {
-            match &layer.source {
-                Source::Title => {
-                    let Some(title) = layer.props.as_ref().and_then(|p| p.title.as_ref()) else { continue };
-                    let key = (title.text.clone(), (title.size * size.1 as f32).round().max(4.0) as u32, title.color);
-                    let entry = titles.entry(key.clone()).or_insert_with(|| {
-                        let image = sg_render::text::rasterize(&key.0, key.1 as f32, key.2);
-                        let texture = Compositor::upload(device, queue, image.width, image.height, &image.rgba);
-                        (texture.create_view(&Default::default()), (image.width, image.height))
-                    });
-                    drawn.push((entry.0.clone(), entry.1, 0, true, index));
+    let (mut uploading, mut compositing) = (0.0f64, 0.0f64);
+    let (decoded, writing, composited) = std::thread::scope(|scope| {
+        let (frames_tx, frames_rx) = sync_channel::<Decoded>(QUEUE);
+        let (pixels_tx, pixels_rx) = sync_channel::<Vec<u8>>(QUEUE);
+        let decoding = scope.spawn(move || decode_stage(job, sequence, range, cancel, frames_tx));
+        let writing = scope.spawn(move || -> (std::io::Result<()>, f64) {
+            let mut spent = 0.0;
+            for pixels in pixels_rx {
+                let mark = Instant::now();
+                if let Err(e) = encoder.write(&pixels) {
+                    return (Err(e), spent);
                 }
-                Source::Asset { asset: id, frame: source_frame } => {
-                    let Some(asset) = job.project.assets.get(id) else { continue };
-                    if pictures.get(id).is_none_or(|p| p.0 != *source_frame) {
-                        if !decoders.contains_key(id) {
-                            // Originals, or the constant-rate conform where one was needed.
-                            let conform = cache::conform(&job.root, *id, asset.kind == AssetKind::Image);
-                            let path = if conform.is_file() { conform } else { job.root.join(&asset.file) };
-                            let mut decoder = VideoDecoder::open(&path, 0)
-                                .map_err(|e| ExportError::Tool(format!("{}: {e}", asset.label)))?;
-                            if let Some(v) = &asset.video {
-                                decoder.set_rate(v.rate.num(), v.rate.den());
-                            }
-                            // No preview-sized cap: only what no GPU texture can hold.
-                            decoder.set_max_dim(8192);
-                            decoders.insert(*id, decoder);
-                        }
-                        let Some(decoder) = decoders.get_mut(id) else { continue };
-                        let picture = decoder
-                            .frame(*source_frame)
-                            .map_err(|e| ExportError::Tool(format!("{}: {e}", asset.label)))?;
-                        let texture = Compositor::upload(device, queue, picture.width, picture.height, &picture.rgba);
-                        pictures.insert(
-                            *id,
-                            (
-                                *source_frame,
-                                texture.create_view(&Default::default()),
-                                (picture.width, picture.height),
-                                picture.rotation,
-                            ),
-                        );
-                    }
-                    if let Some((_, view, picture_size, rotation)) = pictures.get(id) {
-                        drawn.push((view.clone(), *picture_size, *rotation, false, index));
-                    }
-                }
+                spent += mark.elapsed().as_secs_f64();
             }
-        }
-        let draws: Vec<LayerDraw<'_>> = drawn
-            .iter()
-            .map(|(view, picture_size, rotation, title, index)| {
-                let layer = &layers[*index];
-                let props = layer.props.as_deref().unwrap_or(&default);
-                LayerDraw {
-                    view,
-                    size: *picture_size,
-                    rotation: *rotation,
-                    opacity: props.opacity.at(layer.at),
-                    x: props.x.at(layer.at),
-                    y: props.y.at(layer.at),
-                    scale: props.scale.at(layer.at),
-                    turn_degrees: props.rotation.at(layer.at),
-                    crop: props.crop,
-                    natural_size: *title,
+            (Ok(()), spent)
+        });
+        let mut done = 0i64;
+        let mut composite = || -> Result<(), ExportError> {
+            for Decoded { layers, fresh } in frames_rx.iter() {
+                let mut drawn: Vec<(wgpu::TextureView, (u32, u32), i32, bool, usize)> =
+                    Vec::with_capacity(layers.len());
+                for (index, (layer, fresh)) in layers.iter().zip(fresh).enumerate() {
+                    match &layer.source {
+                        Source::Title => {
+                            let Some(title) = layer.props.as_ref().and_then(|p| p.title.as_ref()) else { continue };
+                            let key =
+                                (title.text.clone(), (title.size * size.1 as f32).round().max(4.0) as u32, title.color);
+                            let entry = titles.entry(key.clone()).or_insert_with(|| {
+                                let image = sg_render::text::rasterize(&key.0, key.1 as f32, key.2);
+                                let texture = Compositor::upload(device, queue, image.width, image.height, &image.rgba);
+                                (texture.create_view(&Default::default()), (image.width, image.height))
+                            });
+                            drawn.push((entry.0.clone(), entry.1, 0, true, index));
+                        }
+                        Source::Asset { asset: id, .. } => {
+                            if let Some(picture) = fresh {
+                                let mark = Instant::now();
+                                let converted = picture.planes.as_ref().and_then(|p| {
+                                    let (kr, kb) = p.matrix.kr_kb();
+                                    importer.import(&YuvPlanes {
+                                        size: (picture.width, picture.height),
+                                        chroma_size: p.chroma_size,
+                                        y: &p.y,
+                                        u: &p.u,
+                                        v: &p.v,
+                                        kr,
+                                        kb,
+                                        full_range: p.full_range,
+                                    })
+                                });
+                                let Some(texture) = converted.or_else(|| {
+                                    let complete =
+                                        picture.rgba.len() == picture.width as usize * picture.height as usize * 4;
+                                    complete.then(|| {
+                                        Compositor::upload(device, queue, picture.width, picture.height, &picture.rgba)
+                                    })
+                                }) else {
+                                    continue;
+                                };
+                                uploading += mark.elapsed().as_secs_f64();
+                                let view = texture.create_view(&Default::default());
+                                pictures.insert(*id, (view, (picture.width, picture.height), picture.rotation));
+                            }
+                            if let Some((view, picture_size, rotation)) = pictures.get(id) {
+                                drawn.push((view.clone(), *picture_size, *rotation, false, index));
+                            }
+                        }
+                    }
                 }
-            })
-            .collect();
-        compositor.render(&draws);
-        let pixels = compositor.read_output().map_err(|e| ExportError::Tool(format!("GPU readback failed: {e:?}")))?;
-        encoder.write(&pixels)?;
-        progress("rendering", (frame - range.0 + 1) as f32 / total as f32);
-    }
-    Ok(total as f64 / started.elapsed().as_secs_f64().max(1e-6))
+                let draws: Vec<LayerDraw<'_>> = drawn
+                    .iter()
+                    .map(|(view, picture_size, rotation, title, index)| {
+                        let layer = &layers[*index];
+                        let props = layer.props.as_deref().unwrap_or(&default);
+                        LayerDraw {
+                            view,
+                            size: *picture_size,
+                            rotation: *rotation,
+                            opacity: props.opacity.at(layer.at),
+                            x: props.x.at(layer.at),
+                            y: props.y.at(layer.at),
+                            scale: props.scale.at(layer.at),
+                            turn_degrees: props.rotation.at(layer.at),
+                            crop: props.crop,
+                            natural_size: *title,
+                        }
+                    })
+                    .collect();
+                let mark = Instant::now();
+                compositor.render(&draws);
+                let pixels = compositor
+                    .read_output_nv12()
+                    .map_err(|e| ExportError::Tool(format!("GPU readback failed: {e:?}")))?;
+                compositing += mark.elapsed().as_secs_f64();
+                if pixels_tx.send(pixels).is_err() {
+                    // The encoder stopped reading; the writing stage has the error.
+                    break;
+                }
+                done += 1;
+                progress("rendering", done as f32 / total as f32);
+            }
+            Ok(())
+        };
+        let composited = composite();
+        // Closing both queues lets the other stages end whatever happened here.
+        drop(frames_rx);
+        drop(pixels_tx);
+        (decoding.join(), writing.join(), composited)
+    });
+    let gone = || ExportError::Tool("an export thread stopped unexpectedly".into());
+    let (written, piping) = writing.map_err(|_| gone())?;
+    // A broken pipe comes first: the caller asks the encoder what went wrong.
+    written?;
+    let decoding = decoded.map_err(|_| gone())??;
+    composited?;
+    let per_frame = [decoding, uploading, compositing, piping].map(|s| s * 1e3 / total as f64);
+    Ok((total as f64 / started.elapsed().as_secs_f64().max(1e-6), per_frame))
 }
 
 /// Decodes the whole file once and counts its frames.
@@ -528,12 +642,13 @@ pub fn export(
         let rendered = work.join("render.mp4");
         let mut encoder_name = "hevc_vaapi";
         let mut render_fps = 0.0;
+        let mut stage_ms = [0.0; 4];
         for hardware in [true, false] {
             let mut encoder = Encoder::start(size, sequence.rate, audio, hardware, ten_bit, &rendered)?;
             match render(job, &sequence, range, size, cover, device, queue, &mut encoder, cancel, progress) {
                 Ok(fps) => match encoder.finish() {
                     Ok(()) => {
-                        render_fps = fps;
+                        (render_fps, stage_ms) = fps;
                         encoder_name = if hardware { "hevc_vaapi" } else { "libx264" };
                         break;
                     }
@@ -552,8 +667,12 @@ pub fn export(
                 }
             }
         }
-        progress("checking", 0.0);
-        verify(&rendered, frames, cancel)?;
+        // A master is the same stream remuxed and is checked once, as the
+        // final file; the others are made from this render, so it is checked.
+        if matches!(job.preset, Preset::Share { .. } | Preset::Gif) {
+            progress("checking", 0.0);
+            verify(&rendered, frames, cancel)?;
+        }
         let out = output_path(&job.root, &job.project, &job.preset);
         match &job.preset {
             Preset::Master | Preset::Vertical => {
@@ -594,6 +713,7 @@ pub fn export(
             frames,
             seconds: started.elapsed().as_secs_f64(),
             render_fps,
+            stage_ms,
             encoder: encoder_name,
         })
     })();

@@ -8,6 +8,8 @@
 mod compositor;
 mod plan;
 pub mod text;
+mod yuv;
 
 pub use compositor::{Compositor, LayerDraw};
 pub use plan::{PlanLayer, Source, plan, sequence_frames};
+pub use yuv::{YuvImporter, YuvPlanes};

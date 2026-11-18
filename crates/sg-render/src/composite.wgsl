@@ -68,3 +68,28 @@ fn output_fs(v: V) -> @location(0) vec4<f32> {
     let c = textureSample(picture, picture_sampler, v.uv);
     return vec4<f32>(to_display(c.rgb), 1.0);
 }
+
+// Delivery passes for export: the frame as limited-range BT.709 Y'CbCr,
+// written as the two planes of NV12 so the encoder gets what it wants
+// without a conversion on the CPU.
+fn display_rgb(uv: vec2<f32>) -> vec3<f32> {
+    return to_display(textureSample(picture, picture_sampler, uv).rgb);
+}
+
+@fragment
+fn luma_fs(v: V) -> @location(0) vec4<f32> {
+    let c = display_rgb(v.uv);
+    let y = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return vec4<f32>((16.0 + 219.0 * y) / 255.0, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn chroma_fs(v: V) -> @location(0) vec4<f32> {
+    // Rendered at half size with a linear sampler: each texel is the mean
+    // of the four pixels it covers.
+    let c = display_rgb(v.uv);
+    let y = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let cb = (c.b - y) / 1.8556;
+    let cr = (c.r - y) / 1.5748;
+    return vec4<f32>((128.0 + 224.0 * cb) / 255.0, (128.0 + 224.0 * cr) / 255.0, 0.0, 1.0);
+}

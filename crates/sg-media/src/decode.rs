@@ -12,6 +12,7 @@ use std::ffi::{CStr, CString, c_int};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::{null, null_mut};
+use std::sync::Arc;
 
 use ffmpeg_next::ffi::*;
 
@@ -44,12 +45,44 @@ fn check(code: c_int, what: &'static str) -> Result<c_int, DecodeError> {
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    /// Shared, so that handing a frame on does not copy the picture.
+    pub rgba: Arc<Vec<u8>>,
     /// Index of this frame at the decoder's frame rate.
     pub index: i64,
     /// Degrees the picture must be turned counter-clockwise for display
     /// (0, 90, 180 or 270), from the file's display matrix.
     pub rotation: i32,
+    /// Set instead of `rgba` (which is then empty) after [`VideoDecoder::set_planes`].
+    pub planes: Option<Arc<Planes>>,
+}
+
+/// An 8-bit 4:2:0 picture as decoded: rows tightly packed, top row first.
+pub struct Planes {
+    pub y: Vec<u8>,
+    pub u: Vec<u8>,
+    pub v: Vec<u8>,
+    pub chroma_size: (u32, u32),
+    pub matrix: Matrix,
+    pub full_range: bool,
+}
+
+/// Which standard turns the picture's Y'CbCr into RGB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Matrix {
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+impl Matrix {
+    /// Luma weights of red and blue.
+    pub fn kr_kb(self) -> (f32, f32) {
+        match self {
+            Matrix::Bt601 => (0.299, 0.114),
+            Matrix::Bt709 => (0.2126, 0.0722),
+            Matrix::Bt2020 => (0.2627, 0.0593),
+        }
+    }
 }
 
 pub struct VideoDecoder {
@@ -64,10 +97,13 @@ pub struct VideoDecoder {
     /// `frame` holds a picture decoded since the last seek.
     holding: bool,
     scaler: *mut SwsContext,
+    /// The RGBA picture the scaler writes into.
+    converted: *mut AVFrame,
     /// (width, height, pixel format, colour space, range) the scaler was built for.
     scaler_for: (c_int, c_int, c_int, c_int, c_int),
     /// Longest side of the frames handed out; larger pictures are scaled down.
     max_dim: u32,
+    planes: bool,
     rotation: i32,
     skip_nonref: bool,
     /// While set, packets before this timestamp only feed reference frames.
@@ -122,8 +158,10 @@ impl VideoDecoder {
                 download: null_mut(),
                 holding: false,
                 scaler: null_mut(),
+                converted: null_mut(),
                 scaler_for: (0, 0, 0, 0, 0),
                 max_dim: u32::MAX,
+                planes: false,
                 rotation: 0,
                 skip_nonref: false,
                 skip_before: None,
@@ -166,6 +204,7 @@ impl VideoDecoder {
             dec.frame = av_frame_alloc();
             dec.scratch = av_frame_alloc();
             dec.download = av_frame_alloc();
+            dec.converted = av_frame_alloc();
             dec.time_base = (*stream).time_base;
             dec.start_pts = if (*stream).start_time == AV_NOPTS_VALUE { 0 } else { (*stream).start_time };
             let guessed = av_guess_frame_rate(dec.format, stream, null_mut());
@@ -211,6 +250,13 @@ impl VideoDecoder {
     /// Limits the longest side of decoded frames. Set before the first frame.
     pub fn set_max_dim(&mut self, max_dim: u32) {
         self.max_dim = max_dim;
+    }
+
+    /// Hands out 8-bit 4:2:0 pictures as their planes ([`VideoFrame::planes`])
+    /// instead of converting them to RGBA, for a caller that converts on the
+    /// GPU. Other formats still arrive as RGBA.
+    pub fn set_planes(&mut self, planes: bool) {
+        self.planes = planes;
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -393,25 +439,71 @@ impl VideoDecoder {
             } else {
                 (w, h)
             };
+            let planar = f.format == AVPixelFormat::AV_PIX_FMT_YUV420P as c_int
+                || f.format == AVPixelFormat::AV_PIX_FMT_YUVJ420P as c_int;
+            if self.planes && planar && (ow, oh) == (w, h) && !f.data[1].is_null() && !f.data[2].is_null() {
+                let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+                // Rows are copied without the padding libavcodec keeps after each.
+                let copy = |plane: usize, pw: c_int, ph: c_int| {
+                    let mut out = Vec::with_capacity(pw as usize * ph as usize);
+                    for row in 0..ph as isize {
+                        let line = f.data[plane].offset(row * f.linesize[plane] as isize);
+                        out.extend_from_slice(std::slice::from_raw_parts(line, pw as usize));
+                    }
+                    out
+                };
+                // Untagged video: BT.709 for HD and up, BT.601 below, as players do.
+                let matrix = match f.colorspace {
+                    AVColorSpace::AVCOL_SPC_BT470BG | AVColorSpace::AVCOL_SPC_SMPTE170M => Matrix::Bt601,
+                    AVColorSpace::AVCOL_SPC_BT2020_NCL | AVColorSpace::AVCOL_SPC_BT2020_CL => Matrix::Bt2020,
+                    AVColorSpace::AVCOL_SPC_BT709 => Matrix::Bt709,
+                    _ if h >= 720 => Matrix::Bt709,
+                    _ => Matrix::Bt601,
+                };
+                let planes = Planes {
+                    y: copy(0, w, h),
+                    u: copy(1, cw, ch),
+                    v: copy(2, cw, ch),
+                    chroma_size: (cw as u32, ch as u32),
+                    matrix,
+                    full_range: f.color_range == AVColorRange::AVCOL_RANGE_JPEG
+                        || f.format == AVPixelFormat::AV_PIX_FMT_YUVJ420P as c_int,
+                };
+                return Ok(VideoFrame {
+                    width: w as u32,
+                    height: h as u32,
+                    rgba: Arc::new(Vec::new()),
+                    planes: Some(Arc::new(planes)),
+                    index,
+                    rotation: self.rotation,
+                });
+            }
             let key = (w, h, f.format, f.colorspace as c_int, f.color_range as c_int);
             if self.scaler.is_null() || self.scaler_for != key {
                 sws_freeContext(self.scaler);
                 let src: AVPixelFormat = std::mem::transmute::<c_int, AVPixelFormat>(f.format);
-                self.scaler = sws_getContext(
-                    w,
-                    h,
-                    src,
-                    ow,
-                    oh,
-                    AVPixelFormat::AV_PIX_FMT_RGBA,
-                    SwsFlags::SWS_BILINEAR as c_int,
-                    null_mut(),
-                    null_mut(),
-                    null(),
-                );
+                self.scaler = sws_alloc_context();
                 if self.scaler.is_null() {
+                    return Err(DecodeError::Ffmpeg { what: "convert", message: "out of memory".into() });
+                }
+                {
+                    let s = &mut *self.scaler;
+                    (s.src_w, s.src_h, s.src_format) = (w, h, src as c_int);
+                    (s.dst_w, s.dst_h, s.dst_format) = (ow, oh, AVPixelFormat::AV_PIX_FMT_RGBA as c_int);
+                    s.flags = SwsFlags::SWS_BILINEAR as _;
+                    // Converting a 4K picture on one core takes longer than
+                    // decoding it; small pictures are not worth the hand-over.
+                    s.threads = if w as i64 * h as i64 >= 1920 * 1080 { 8 } else { 1 };
+                }
+                if sws_init_context(self.scaler, null_mut(), null_mut()) < 0 {
+                    sws_freeContext(self.scaler);
+                    self.scaler = null_mut();
                     return Err(DecodeError::Ffmpeg { what: "convert", message: "unsupported pixel format".into() });
                 }
+                av_frame_unref(self.converted);
+                (*self.converted).width = ow;
+                (*self.converted).height = oh;
+                (*self.converted).format = AVPixelFormat::AV_PIX_FMT_RGBA as c_int;
                 // Untagged video: BT.709 for HD and up, BT.601 below, as players do.
                 let matrix = match f.colorspace {
                     AVColorSpace::AVCOL_SPC_BT470BG | AVColorSpace::AVCOL_SPC_SMPTE170M => SWS_CS_ITU601,
@@ -426,20 +518,26 @@ impl VideoDecoder {
                 self.scaler_for = key;
             }
             let stride = ow as usize * 4;
-            let mut rgba = vec![0u8; stride * oh as usize];
-
-            let dst = [rgba.as_mut_ptr(), null_mut(), null_mut(), null_mut()];
-            let dst_stride = [stride as c_int, 0, 0, 0];
-            sws_scale(
-                self.scaler,
-                f.data.as_ptr() as *const *const u8,
-                f.linesize.as_ptr(),
-                0,
-                h,
-                dst.as_ptr(),
-                dst_stride.as_ptr(),
-            );
-            Ok(VideoFrame { width: ow as u32, height: oh as u32, rgba, index, rotation: self.rotation })
+            // The frame-based call is the one that uses the scaler's threads.
+            // `converted` keeps its buffer from one picture to the next.
+            check(sws_scale_frame(self.scaler, self.converted, source), "convert")?;
+            let out = &*self.converted;
+            if out.data[0].is_null() || (out.linesize[0] as usize) < stride {
+                return Err(DecodeError::Empty);
+            }
+            let mut rgba = Vec::with_capacity(stride * oh as usize);
+            for row in 0..oh as usize {
+                let line = std::slice::from_raw_parts(out.data[0].add(row * out.linesize[0] as usize), stride);
+                rgba.extend_from_slice(line);
+            }
+            Ok(VideoFrame {
+                width: ow as u32,
+                height: oh as u32,
+                rgba: Arc::new(rgba),
+                planes: None,
+                index,
+                rotation: self.rotation,
+            })
         }
     }
 }
@@ -451,6 +549,9 @@ impl Drop for VideoDecoder {
         unsafe {
             sws_freeContext(self.scaler);
             av_frame_free(&mut self.frame);
+            av_frame_free(&mut self.scratch);
+            av_frame_free(&mut self.download);
+            av_frame_free(&mut self.converted);
             av_packet_free(&mut self.packet);
             avcodec_free_context(&mut self.codec);
             avformat_close_input(&mut self.format);

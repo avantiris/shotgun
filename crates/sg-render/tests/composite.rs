@@ -148,3 +148,46 @@ fn placement_scale_crop_and_turn() {
     let out = shot(LayerDraw { natural_size: true, ..base });
     assert_eq!((pixel(&out, 200, 98, 50), pixel(&out, 200, 102, 50), pixel(&out, 200, 90, 50)), (red, blue, black));
 }
+
+#[test]
+fn nv12_delivery_matches_bt709() {
+    let Some((device, queue)) = device() else { return };
+    // 1920 is not a multiple of the row alignment: exercises the padding.
+    for (w, h) in [(64u32, 36u32), (1920, 8)] {
+        let mut comp = Compositor::new(device.clone(), queue.clone(), w, h);
+        let cases = [
+            ([255u8, 255, 255, 255], (235, 128, 128)),
+            ([0, 0, 0, 255], (16, 128, 128)),
+            ([255, 0, 0, 255], (63, 102, 240)),
+            ([0, 0, 255, 255], (32, 240, 118)),
+            ([128, 128, 128, 255], (126, 128, 128)),
+        ];
+        for (rgba, (y, cb, cr)) in cases {
+            let tex = Compositor::upload(&device, &queue, 2, 2, &solid(2, 2, |_, _| rgba));
+            let view = tex.create_view(&Default::default());
+            comp.render(&[LayerDraw::fitted(&view, (w, h), 0)]);
+            let nv12 = comp.read_output_nv12().unwrap();
+            assert_eq!(nv12.len(), (w * h * 3 / 2) as usize);
+            let luma = nv12[(h / 2 * w + w / 2) as usize] as i32;
+            let chroma = (w * h + (h / 4) * w + (w / 4) * 2) as usize;
+            let (u, v) = (nv12[chroma] as i32, nv12[chroma + 1] as i32);
+            assert!(
+                (luma - y).abs() <= 1 && (u - cb).abs() <= 1 && (v - cr).abs() <= 1,
+                "{rgba:?} at {w}x{h}: ({luma}, {u}, {v}) instead of ({y}, {cb}, {cr})"
+            );
+        }
+    }
+}
+
+#[test]
+fn nv12_readback_is_complete_for_every_frame() {
+    let Some((device, queue)) = device() else { return };
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 1920, 1080);
+    let tex = Compositor::upload(&device, &queue, 2, 2, &solid(2, 2, |_, _| [200, 100, 50, 255]));
+    let view = tex.create_view(&Default::default());
+    for frame in 0..40 {
+        comp.render(&[LayerDraw::fitted(&view, (1920, 1080), 0)]);
+        let nv12 = comp.read_output_nv12().unwrap();
+        assert_eq!(nv12.len(), 1920 * 1080 * 3 / 2, "frame {frame}");
+    }
+}

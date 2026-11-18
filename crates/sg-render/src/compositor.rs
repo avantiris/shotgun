@@ -77,6 +77,10 @@ pub struct Compositor {
     size: (u32, u32),
     /// Scale 1 fills the frame instead of fitting into it.
     cover: bool,
+    luma_pipeline: wgpu::RenderPipeline,
+    chroma_pipeline: wgpu::RenderPipeline,
+    /// Targets of the NV12 conversion, made on first use.
+    delivery: Option<Delivery>,
 }
 
 fn make_targets(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::Texture) {
@@ -180,6 +184,22 @@ impl Compositor {
             None,
             wgpu::PrimitiveTopology::TriangleList,
         );
+        let luma_pipeline = pipeline(
+            "delivery luma",
+            "output_vs",
+            "luma_fs",
+            wgpu::TextureFormat::R8Unorm,
+            None,
+            wgpu::PrimitiveTopology::TriangleList,
+        );
+        let chroma_pipeline = pipeline(
+            "delivery chroma",
+            "output_vs",
+            "chroma_fs",
+            wgpu::TextureFormat::Rg8Unorm,
+            None,
+            wgpu::PrimitiveTopology::TriangleList,
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("composite"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -208,6 +228,9 @@ impl Compositor {
             output_view,
             size: (width.max(1), height.max(1)),
             cover: false,
+            luma_pipeline,
+            chroma_pipeline,
+            delivery: None,
         }
     }
 
@@ -373,6 +396,102 @@ impl Compositor {
         Ok(pixels)
     }
 
+    /// Converts the last rendered frame to NV12 on the GPU (limited-range
+    /// BT.709, as encoders expect) and reads it back: the luma plane followed
+    /// by the interleaved chroma plane, tightly packed. Width and height must
+    /// be even. Blocks; for export.
+    pub fn read_output_nv12(&mut self) -> Result<Vec<u8>, wgpu::PollError> {
+        let (width, height) = self.size;
+        let (cw, ch) = (width / 2, height / 2);
+        if self.delivery.as_ref().is_none_or(|d| d.size != self.size) {
+            let plane = |label, format, w, h| {
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                })
+            };
+            let luma = plane("delivery luma", wgpu::TextureFormat::R8Unorm, width, height);
+            let chroma = plane("delivery chroma", wgpu::TextureFormat::Rg8Unorm, cw, ch);
+            let rows = |bytes: u32| bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("delivery readback"),
+                size: rows(width) as u64 * height as u64 + rows(cw * 2) as u64 * ch as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.delivery = Some(Delivery {
+                size: self.size,
+                luma_view: luma.create_view(&Default::default()),
+                chroma_view: chroma.create_view(&Default::default()),
+                luma,
+                chroma,
+                buffer,
+            });
+        }
+        let group = self.bind(&self.linear_view);
+        let Some(delivery) = &self.delivery else { return Ok(Vec::new()) };
+        let (luma_row, chroma_row) = (
+            width.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+            (cw * 2).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+        );
+        let chroma_offset = luma_row as u64 * height as u64;
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        for (view, pipeline) in
+            [(&delivery.luma_view, &self.luma_pipeline), (&delivery.chroma_view, &self.chroma_pipeline)]
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("delivery"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &group, &[0]);
+            pass.draw(0..3, 0..1);
+        }
+        for (texture, offset, row) in [(&delivery.luma, 0, luma_row), (&delivery.chroma, chroma_offset, chroma_row)] {
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &delivery.buffer,
+                    layout: wgpu::TexelCopyBufferLayout { offset, bytes_per_row: Some(row), rows_per_image: None },
+                },
+                texture.size(),
+            );
+        }
+        self.queue.submit([encoder.finish()]);
+        delivery.buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None })?;
+        let mut out = Vec::with_capacity((width * height * 3 / 2) as usize);
+        if let Ok(data) = delivery.buffer.slice(..).get_mapped_range() {
+            let (luma, chroma) = data.split_at(chroma_offset as usize);
+            for line in luma.chunks_exact(luma_row as usize) {
+                out.extend_from_slice(&line[..width as usize]);
+            }
+            for line in chroma.chunks_exact(chroma_row as usize) {
+                out.extend_from_slice(&line[..(cw * 2) as usize]);
+            }
+        }
+        delivery.buffer.unmap();
+        Ok(out)
+    }
+
     /// Uploads RGBA pixels as a texture layers can sample.
     pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, rgba: &[u8]) -> wgpu::Texture {
         device.create_texture_with_data(
@@ -391,4 +510,13 @@ impl Compositor {
             rgba,
         )
     }
+}
+
+struct Delivery {
+    size: (u32, u32),
+    luma: wgpu::Texture,
+    luma_view: wgpu::TextureView,
+    chroma: wgpu::Texture,
+    chroma_view: wgpu::TextureView,
+    buffer: wgpu::Buffer,
 }
