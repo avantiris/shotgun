@@ -63,3 +63,43 @@ pub fn journal_file(root: &Path) -> PathBuf {
 pub fn local_file(root: &Path) -> PathBuf {
     root.join(".shotgun/local.toml")
 }
+
+/// Where the files derived from an asset live. All of them can be deleted
+/// and are rebuilt from the original.
+pub mod cache {
+    use std::path::{Path, PathBuf};
+
+    use sg_core::AssetId;
+
+    fn at(root: &Path, dir: &str, id: AssetId, ext: &str) -> PathBuf {
+        root.join(".shotgun/cache").join(dir).join(format!("{id}.{ext}"))
+    }
+
+    /// Raw RGBA, `sg_media::derive::POSTER_W` x `POSTER_H`.
+    pub fn poster(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "thumb", id, "rgba")
+    }
+
+    /// 48 kHz float WAV of the asset's audio.
+    pub fn audio(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "conform", id, "wav")
+    }
+
+    pub fn peaks(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "peaks", id, "pk")
+    }
+
+    /// Result line of the frame-rate scan.
+    pub fn scan(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "conform", id, "scan")
+    }
+
+    /// Constant-rate mezzanine, only present for assets that need one.
+    pub fn conform(root: &Path, id: AssetId, alpha: bool) -> PathBuf {
+        at(root, "conform", id, if alpha { "mkv" } else { "mp4" })
+    }
+
+    pub fn proxy(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "proxy", id, "mp4")
+    }
+}

@@ -10,11 +10,12 @@ publish = false
 
 [workspace.dependencies]
 sg-core = { path = "crates/sg-core" }
+sg-media = { path = "crates/sg-media" }
 sg-project = { path = "crates/sg-project" }
 sg-ui = { path = "crates/sg-ui" }
 
 anyhow = "1"
-blake3 = "1"
+blake3 = { version = "1", features = ["rayon"] }
 bytemuck = { version = "1", features = ["derive"] }
 crossbeam-channel = "0.5"
 # Versions fixed by spike S2 (docs/spikes/s2-ui.md).
@@ -30,6 +31,7 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 toml = "1"
+ureq = "3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

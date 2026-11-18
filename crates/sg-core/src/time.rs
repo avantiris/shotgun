@@ -5,7 +5,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RateError {
@@ -16,7 +16,7 @@ pub enum RateError {
 }
 
 /// A frame rate as an exact fraction, always stored reduced.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Rate {
     num: u32,
     den: u32,
@@ -67,6 +67,20 @@ impl FromStr for Rate {
         let err = || RateError::Parse(s.to_owned());
         let (n, d) = s.split_once('/').ok_or_else(err)?;
         Rate::new(n.parse().map_err(|_| err())?, d.parse().map_err(|_| err())?)
+    }
+}
+
+/// Written as `"60000/1001"`, in the journal and in asset index files.
+impl Serialize for Rate {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Rate {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Rate, D::Error> {
+        let s = std::borrow::Cow::<str>::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 

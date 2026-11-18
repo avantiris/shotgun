@@ -1,12 +1,14 @@
 //! The project snapshot. Everything below `Project` is behind `Arc`, so a new
 //! snapshot made by an edit shares every sequence and track it did not touch.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::asset::Asset;
 use crate::clips::ClipStore;
-use crate::ids::{ProjectId, SequenceId, TrackId};
+use crate::ids::{AssetId, ProjectId, SequenceId, TrackId};
 use crate::time::Rate;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +17,9 @@ pub struct Project {
     pub name: String,
     /// The first sequence is the one opened by default.
     pub sequences: Vec<Arc<Sequence>>,
+    /// Shared as a whole: asset edits are rare, so they copy the map, while
+    /// every other edit just bumps this reference.
+    pub assets: Arc<BTreeMap<AssetId, Arc<Asset>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,7 +68,7 @@ pub struct TrackHeader {
 
 impl Project {
     pub fn new(id: ProjectId, name: impl Into<String>) -> Project {
-        Project { id, name: name.into(), sequences: Vec::new() }
+        Project { id, name: name.into(), sequences: Vec::new(), assets: Arc::default() }
     }
 
     pub fn sequence(&self, id: SequenceId) -> Option<&Arc<Sequence>> {

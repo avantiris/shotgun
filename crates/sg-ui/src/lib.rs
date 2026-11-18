@@ -2,9 +2,10 @@
 //!
 //! Everything here runs on the UI thread and therefore does no I/O: work
 //! that touches the disk leaves as a [`Command`] for the application to run
-//! on a worker thread, and comes back through [`Shell::set_library`] and
-//! [`Shell::opened`].
+//! on a worker thread, and comes back through [`Shell::set_library`],
+//! [`Shell::opened`], [`Shell::import_event`] and [`Shell::poster_loaded`].
 
+mod assets;
 mod editor;
 pub mod keymap;
 mod library;
@@ -12,10 +13,14 @@ mod perf;
 mod session;
 pub mod theme;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use sg_core::Op;
-use sg_project::{Opened, ProjectEntry, ProjectWriter};
+use sg_core::{Asset, AssetId, Op};
+use sg_project::{ImportEvent, ImportSource, Opened, ProjectEntry, ProjectWriter};
+
+use crate::assets::{AssetRequest, JobView};
 
 use crate::editor::{Editor, EditorRequest};
 pub use crate::keymap::{Action, Scope};
@@ -36,6 +41,33 @@ pub enum Command {
     Close {
         writer: ProjectWriter,
     },
+    /// Take a file, link or pasted image into the project at `root`.
+    Import {
+        root: PathBuf,
+        known: Arc<BTreeMap<AssetId, Arc<Asset>>>,
+        source: ImportSource,
+    },
+    CancelImport(u64),
+    /// Rebuild missing cache files and check that media exists, after open.
+    RestoreCache {
+        root: PathBuf,
+        assets: Arc<BTreeMap<AssetId, Arc<Asset>>>,
+    },
+    LoadPoster {
+        root: PathBuf,
+        id: AssetId,
+    },
+    /// Show the system file picker; the chosen files are imported.
+    PickFiles,
+    /// Read the clipboard; the content comes back through [`Shell::incoming`].
+    ReadClipboard,
+}
+
+/// Something that arrived from outside: a drop, a paste, the file picker.
+pub enum Incoming {
+    Paths(Vec<PathBuf>),
+    Text(String),
+    Image { data: Vec<u8>, mime: String },
 }
 
 /// A scripted step, for automated runs that must not inject real input.
@@ -47,6 +79,10 @@ pub enum DevStep {
     Open(String),
     Rename(String),
     Act(Action),
+    /// Import a path or a link, as a drop or paste would.
+    Import(String),
+    /// Select the n-th asset in the panel (0 is the newest).
+    SelectAsset(usize),
 }
 
 #[derive(Default)]
@@ -86,15 +122,22 @@ impl Shell {
         }
     }
 
-    pub fn opened(&mut self, result: Result<Opened, String>) {
+    pub fn opened(&mut self, result: Result<Opened, String>) -> Vec<Command> {
         self.library.pending = None;
         match result {
             Ok(opened) => {
                 self.library.filter.clear();
                 self.editor = Editor::default();
-                self.session = Some(Session::new(opened));
+                let session = Session::new(opened);
+                let restore =
+                    Command::RestoreCache { root: session.root.clone(), assets: session.project().assets.clone() };
+                self.session = Some(session);
+                vec![restore]
             }
-            Err(e) => self.error = Some(e),
+            Err(e) => {
+                self.error = Some(e);
+                Vec::new()
+            }
         }
     }
 
@@ -111,18 +154,34 @@ impl Shell {
             self.act(action, &mut commands);
         }
         self.banner(ui);
+        let mut asset_requests = Vec::new();
         match &mut self.session {
-            Some(session) => match self.editor.ui(ui, session, &mut self.error) {
-                Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
-                Some(EditorRequest::Undo) => self.act(Action::Undo, &mut commands),
-                Some(EditorRequest::Redo) => self.act(Action::Redo, &mut commands),
-                None => {}
-            },
+            Some(session) => {
+                let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests);
+                self.editor.assets.popover(&ctx, &mut asset_requests);
+                self.editor.assets.drop_overlay(&ctx);
+                match request {
+                    Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
+                    Some(EditorRequest::Undo) => self.act(Action::Undo, &mut commands),
+                    Some(EditorRequest::Redo) => self.act(Action::Redo, &mut commands),
+                    Some(EditorRequest::RemoveAsset(id)) => self.remove_asset(id),
+                    None => {}
+                }
+            }
             None => match self.library.ui(ui, now_unix) {
                 Some(LibraryRequest::Open(path)) => self.open(path, &mut commands),
                 Some(LibraryRequest::Create(name)) => self.create(name, &mut commands),
                 None => {}
             },
+        }
+        for request in asset_requests {
+            let Some(root) = self.session.as_ref().map(|s| s.root.clone()) else { break };
+            match request {
+                AssetRequest::LoadPoster(id) => commands.push(Command::LoadPoster { root, id }),
+                AssetRequest::ImportLink(link) => commands.extend(self.incoming(Incoming::Text(link))),
+                AssetRequest::Browse => commands.push(Command::PickFiles),
+                AssetRequest::CancelJob(job) => commands.push(Command::CancelImport(job)),
+            }
         }
         self.perf.ui(&ctx, self.session.as_ref());
         commands
@@ -191,6 +250,21 @@ impl Shell {
                     self.editor.begin_rename(session);
                 }
             }
+            Action::AddAsset => {
+                if self.session.is_some() {
+                    self.editor.assets.open_add();
+                }
+            }
+            Action::Paste => {
+                if self.session.is_some() {
+                    commands.push(Command::ReadClipboard);
+                }
+            }
+            Action::Delete => {
+                if let Some(id) = self.editor.assets.selected {
+                    self.remove_asset(id);
+                }
+            }
         }
     }
 
@@ -215,6 +289,22 @@ impl Shell {
                 }
             }
             DevStep::Act(action) => self.act(action, &mut commands),
+            DevStep::Import(what) => {
+                let incoming = if sg_project::fetch::looks_like_url(&what) {
+                    Incoming::Text(what)
+                } else {
+                    Incoming::Paths(vec![what.into()])
+                };
+                commands.extend(self.incoming(incoming));
+            }
+            DevStep::SelectAsset(n) => {
+                if let Some(session) = &self.session {
+                    let mut assets: Vec<&Arc<Asset>> = session.project().assets.values().collect();
+                    assets
+                        .sort_by(|a, b| b.source.imported.cmp(&a.source.imported).then_with(|| a.label.cmp(&b.label)));
+                    self.editor.assets.selected = assets.get(n).map(|a| a.id);
+                }
+            }
         }
         commands
     }
@@ -224,5 +314,87 @@ impl Shell {
     /// Hands over the writer of the open project at shutdown, if any.
     pub fn take_writer(&mut self) -> Option<ProjectWriter> {
         self.session.take().map(Session::into_writer)
+    }
+}
+
+impl Shell {
+    fn remove_asset(&mut self, id: AssetId) {
+        let Some(session) = &mut self.session else { return };
+        match session.apply(Op::RemoveAsset { id }, None) {
+            Ok(()) => self.editor.assets.selected = None,
+            Err(e) => self.error = Some(format!("Cannot remove: {e}")),
+        }
+    }
+
+    /// Imports what was dropped, pasted or picked into the open project.
+    pub fn incoming(&mut self, incoming: Incoming) -> Vec<Command> {
+        self.editor.assets.drag_hover = false;
+        let Some(session) = &self.session else {
+            self.error = Some("Open a project first, then drop or paste media into it.".to_owned());
+            return Vec::new();
+        };
+        let sources = match incoming {
+            Incoming::Paths(paths) => paths.into_iter().map(ImportSource::Path).collect(),
+            Incoming::Image { data, mime } => vec![ImportSource::Bytes { data, mime }],
+            Incoming::Text(text) if sg_project::fetch::looks_like_url(&text) => {
+                vec![ImportSource::Url(text.trim().to_owned())]
+            }
+            Incoming::Text(_) => {
+                self.error = Some("The clipboard holds text that is not a link.".to_owned());
+                Vec::new()
+            }
+        };
+        let (root, known) = (session.root.clone(), session.project().assets.clone());
+        sources.into_iter().map(|source| Command::Import { root: root.clone(), known: known.clone(), source }).collect()
+    }
+
+    /// A drag from another application entered or left the window.
+    pub fn set_drag_hover(&mut self, hover: bool) {
+        self.editor.assets.drag_hover = hover && self.session.is_some();
+    }
+
+    pub fn import_event(&mut self, event: ImportEvent) {
+        let assets = &mut self.editor.assets;
+        // Events of a project that was closed in the meantime are dropped.
+        let current = |root: &PathBuf| self.session.as_ref().is_some_and(|s| s.root == *root);
+        match event {
+            ImportEvent::Progress { job, label, stage, fraction } => {
+                assets.jobs.insert(job, JobView { label, stage, fraction });
+            }
+            ImportEvent::Finished { job } => {
+                assets.jobs.remove(&job);
+            }
+            ImportEvent::Failed { label, error, .. } => self.error = Some(format!("{label}: {error}")),
+            ImportEvent::Duplicate { label, id, .. } => {
+                assets.selected = Some(id);
+                if let Some(session) = &mut self.session {
+                    session.notice = Some(format!("{label} is already in this project."));
+                }
+            }
+            ImportEvent::Usable { root, asset, .. } if current(&root) => {
+                let id = asset.id;
+                if let Some(session) = &mut self.session {
+                    match session.apply(Op::AddAsset { asset }, None) {
+                        Ok(()) => assets.selected = Some(id),
+                        // Two imports of the same content raced: the first one won.
+                        Err(sg_core::OpError::DuplicateId(_)) => assets.selected = Some(id),
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
+            }
+            ImportEvent::Derived { root, id, what: sg_project::Derived::Poster } if current(&root) => {
+                assets.poster_changed(id)
+            }
+            ImportEvent::Missing { root, id } if current(&root) => {
+                assets.missing.insert(id);
+            }
+            ImportEvent::Usable { .. } | ImportEvent::Derived { .. } | ImportEvent::Missing { .. } => {}
+        }
+    }
+
+    pub fn poster_loaded(&mut self, ctx: &egui::Context, root: &std::path::Path, id: AssetId, rgba: Option<Vec<u8>>) {
+        if self.session.as_ref().is_some_and(|s| s.root == root) {
+            self.editor.assets.set_poster(ctx, id, rgba);
+        }
     }
 }

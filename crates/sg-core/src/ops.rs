@@ -5,12 +5,14 @@
 //! Clips are addressed by track and start position, which is unique on a
 //! track and found in O(log n).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::asset::Asset;
 use crate::clips::{Clip, ClipError, ClipStore};
-use crate::ids::{ClipId, SequenceId, TrackId};
+use crate::ids::{AssetId, ClipId, SequenceId, TrackId};
 use crate::model::{Project, Sequence, SequenceHeader, Track, TrackHeader};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,6 +71,19 @@ pub enum Op {
         from: i64,
         delta: i64,
     },
+    /// Registers an imported asset. The media file is already in the bundle.
+    AddAsset {
+        asset: Box<Asset>,
+    },
+    /// Removes an asset that no clip uses any more. Its file moves to the
+    /// bundle's trash when the project is next saved.
+    RemoveAsset {
+        id: AssetId,
+    },
+    SetAssetLabel {
+        id: AssetId,
+        label: String,
+    },
     /// Several ops as one atomic change. Fails as a whole.
     Batch(Vec<Op>),
 }
@@ -85,6 +100,10 @@ pub enum OpError {
     BadIndex { index: usize, len: usize },
     #[error("cannot remove {0}: it is not empty")]
     NotEmpty(&'static str),
+    #[error("asset {0} does not exist")]
+    NoAsset(AssetId),
+    #[error("asset {0} is still used by a clip")]
+    AssetInUse(AssetId),
     #[error(transparent)]
     Clip(#[from] ClipError),
 }
@@ -189,6 +208,33 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             };
             Ok((next, inverse))
         }),
+        Op::AddAsset { asset } => {
+            if p.assets.contains_key(&asset.id) {
+                return Err(OpError::DuplicateId(asset.id.to_string()));
+            }
+            let mut assets = BTreeMap::clone(&p.assets);
+            assets.insert(asset.id, Arc::new(Asset::clone(asset)));
+            Ok((Project { assets: Arc::new(assets), ..p.clone() }, Op::RemoveAsset { id: asset.id }))
+        }
+        Op::RemoveAsset { id } => {
+            let asset = p.assets.get(id).ok_or(OpError::NoAsset(*id))?;
+            // Visits every clip; acceptable for an explicit, rare action.
+            let used = p.sequences.iter().flat_map(|s| &s.tracks).any(|t| t.clips.iter().any(|c| c.asset == *id));
+            if used {
+                return Err(OpError::AssetInUse(*id));
+            }
+            let inverse = Op::AddAsset { asset: Box::new(Asset::clone(asset)) };
+            let mut assets = BTreeMap::clone(&p.assets);
+            assets.remove(id);
+            Ok((Project { assets: Arc::new(assets), ..p.clone() }, inverse))
+        }
+        Op::SetAssetLabel { id, label } => {
+            let old = p.assets.get(id).ok_or(OpError::NoAsset(*id))?;
+            let inverse = Op::SetAssetLabel { id: *id, label: old.label.clone() };
+            let mut assets = BTreeMap::clone(&p.assets);
+            assets.insert(*id, Arc::new(Asset { label: label.clone(), ..Asset::clone(old) }));
+            Ok((Project { assets: Arc::new(assets), ..p.clone() }, inverse))
+        }
         Op::Batch(ops) => {
             let mut cur = p.clone();
             let mut inverses = Vec::with_capacity(ops.len());
@@ -454,5 +500,63 @@ pub(crate) mod tests {
                 p = after;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::tests::{SEQ, V1, base};
+    use super::*;
+    use crate::asset::tests::sample;
+    use crate::text::{from_files, to_files};
+
+    fn add(id: u128) -> Op {
+        Op::AddAsset { asset: Box::new(sample(id)) }
+    }
+
+    #[test]
+    fn add_relabel_remove_round_trip() {
+        let p0 = base();
+        let (p1, undo_add) = apply(&p0, &add(7)).unwrap();
+        assert_eq!(p1.assets.len(), 1);
+        assert!(matches!(apply(&p1, &add(7)), Err(OpError::DuplicateId(_))));
+        let (p2, undo_label) = apply(&p1, &Op::SetAssetLabel { id: AssetId(7), label: "B-roll".into() }).unwrap();
+        assert_eq!(p2.assets[&AssetId(7)].label, "B-roll");
+        assert_eq!(apply(&p2, &undo_label).unwrap().0, p1);
+        assert_eq!(apply(&p1, &undo_add).unwrap().0, p0);
+        let (p3, undo_remove) = apply(&p2, &Op::RemoveAsset { id: AssetId(7) }).unwrap();
+        assert!(p3.assets.is_empty());
+        assert_eq!(apply(&p3, &undo_remove).unwrap().0, p2);
+        assert_eq!(apply(&p0, &Op::RemoveAsset { id: AssetId(9) }).unwrap_err(), OpError::NoAsset(AssetId(9)));
+    }
+
+    #[test]
+    fn an_asset_in_use_cannot_be_removed() {
+        let (p, _) = apply(&base(), &add(7)).unwrap();
+        let clip = Clip { id: ClipId(1), asset: AssetId(7), start: 0, len: 10, src_in: 0 };
+        let (p, _) = apply(&p, &Op::InsertClip { seq: SEQ, track: V1, clip }).unwrap();
+        assert_eq!(apply(&p, &Op::RemoveAsset { id: AssetId(7) }).unwrap_err(), OpError::AssetInUse(AssetId(7)));
+    }
+
+    #[test]
+    fn clip_edits_share_the_asset_map() {
+        let (p, _) = apply(&base(), &add(7)).unwrap();
+        let clip = Clip { id: ClipId(1), asset: AssetId(7), start: 0, len: 10, src_in: 0 };
+        let (p2, _) = apply(&p, &Op::InsertClip { seq: SEQ, track: V1, clip }).unwrap();
+        assert!(Arc::ptr_eq(&p.assets, &p2.assets));
+    }
+
+    #[test]
+    fn assets_are_index_files() {
+        let (p, _) = apply(&base(), &add(0xABC)).unwrap();
+        let (p, _) = apply(&p, &add(0x123)).unwrap();
+        let files = to_files(&p);
+        assert!(files.contains_key("assets/index/00000000000000000000000000000abc.toml"));
+        assert_eq!(from_files(&files).unwrap(), *p);
+        // An index entry may not point outside the bundle.
+        let mut evil = files.clone();
+        let key = "assets/index/00000000000000000000000000000abc.toml";
+        evil.insert(key.into(), files[key].replace("assets/video/", "assets/../../"));
+        assert!(from_files(&evil).is_err());
     }
 }

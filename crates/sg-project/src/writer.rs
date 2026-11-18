@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
-use sg_core::{Project, Record, text};
+use sg_core::{Asset, AssetId, Project, Record, text};
 
 use crate::journal::Journal;
 use crate::save::{self, SavedMark};
@@ -74,6 +74,7 @@ impl ProjectWriter {
         let worker = Worker {
             root,
             journal,
+            saved_assets: snapshot.assets.clone(),
             snapshot,
             on_disk: on_disk.iter().map(|(k, v)| (k.clone(), blake3::hash(v.as_bytes()))).collect(),
             saved_records,
@@ -120,6 +121,8 @@ struct Worker {
     snapshot: Arc<Project>,
     on_disk: BTreeMap<String, blake3::Hash>,
     saved_records: u64,
+    /// The asset set as of the last save, to move media in and out of the trash.
+    saved_assets: Assets,
     sync_at: Option<Instant>,
     last_edit: Instant,
     first_unsaved: Option<Instant>,
@@ -206,6 +209,10 @@ impl Worker {
             Ok(()) => {
                 self.on_disk = hashes;
                 self.saved_records = mark.records;
+                if !Arc::ptr_eq(&self.saved_assets, &self.snapshot.assets) {
+                    reconcile_media(&self.root, &self.saved_assets, &self.snapshot.assets);
+                    self.saved_assets = self.snapshot.assets.clone();
+                }
                 self.status.saved.store(mark.records, Ordering::Relaxed);
                 self.status.set_error(None);
                 (self.notify)();
@@ -223,5 +230,31 @@ impl Worker {
         log::error!("{}: {message}", self.root.display());
         self.status.set_error(Some(message));
         (self.notify)();
+    }
+}
+
+type Assets = Arc<BTreeMap<AssetId, Arc<Asset>>>;
+
+fn trash_path(root: &std::path::Path, asset: &Asset) -> PathBuf {
+    let name = std::path::Path::new(&asset.file).file_name().unwrap_or_default();
+    root.join(".shotgun/trash").join(name)
+}
+
+/// Media of removed assets moves to the trash and comes back when the asset
+/// does (undo, restore of an older state). Renames on one filesystem, so
+/// both directions are instant and nothing is ever deleted here (spike S5).
+fn reconcile_media(root: &std::path::Path, old: &Assets, new: &Assets) {
+    let moves =
+        old.values().filter(|a| !new.contains_key(&a.id)).map(|a| (root.join(&a.file), trash_path(root, a))).chain(
+            new.values().filter(|a| !old.contains_key(&a.id)).map(|a| (trash_path(root, a), root.join(&a.file))),
+        );
+    for (from, to) in moves {
+        // A freshly imported asset is already in place: only move what is there.
+        if from.exists()
+            && !to.exists()
+            && let Err(e) = std::fs::rename(&from, &to)
+        {
+            log::error!("cannot move {} to {}: {e}", from.display(), to.display());
+        }
     }
 }

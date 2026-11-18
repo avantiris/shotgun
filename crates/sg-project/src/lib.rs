@@ -3,7 +3,9 @@
 //! the job pool or a project's writer thread, never from the UI thread.
 
 mod bundle;
+pub mod fetch;
 mod git;
+pub mod import;
 mod journal;
 mod layout;
 mod library;
@@ -13,7 +15,9 @@ mod writer;
 use std::path::{Path, PathBuf};
 
 pub use bundle::{Created, Opened, create, open};
+pub use import::{Derived, ImportEvent, ImportSource, Importer, read_poster};
 pub use journal::Journal;
+pub use layout::cache;
 pub use library::{ProjectEntry, library_dir, scan};
 pub use writer::{ProjectWriter, WriterStatus};
 

@@ -14,6 +14,11 @@ pub enum Action {
     Undo,
     Redo,
     Rename,
+    AddAsset,
+    /// Import what the clipboard holds.
+    Paste,
+    /// Remove the selected item.
+    Delete,
     TogglePerf,
     Cancel,
 }
@@ -51,6 +56,9 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, true, true, Key::Y, Action::Redo),
     bind(Scope::Editor, true, false, Key::W, Action::CloseProject),
     bind(Scope::Editor, false, false, Key::F2, Action::Rename),
+    bind(Scope::Editor, true, false, Key::Q, Action::AddAsset),
+    bind(Scope::Editor, true, false, Key::V, Action::Paste),
+    bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
 ];
 
 /// The action bound to a key press. While a text field has focus, keys
@@ -65,6 +73,8 @@ pub fn lookup(screen: Scope, typing: bool, key: Key, mods: Modifiers) -> Option<
             (b.scope == Scope::Any || b.scope == screen) && b.key == key && b.ctrl == mods.ctrl && b.shift == mods.shift
         })
         .map(|b| b.action)
+        // In a text field Ctrl+V pastes text into the field, as everywhere.
+        .filter(|action| !(typing && *action == Action::Paste))
 }
 
 /// Removes bound key presses from this frame's input and returns their

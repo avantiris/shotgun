@@ -17,6 +17,12 @@ crossbeam-channel.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true
+libc = "0.2"
+raw-window-handle = "0.6"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+sg-media.workspace = true
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
 log.workspace = true
 png.workspace = true
 pollster.workspace = true

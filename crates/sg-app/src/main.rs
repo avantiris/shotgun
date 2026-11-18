@@ -7,15 +7,18 @@
 mod gfx;
 mod jobs;
 mod script;
+mod wl_data;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use crossbeam_channel::Sender;
 use egui_winit::winit;
-use sg_project::{Opened, ProjectEntry, ProjectError};
-use sg_ui::{Command, DevStep, Shell};
+use sg_core::AssetId;
+use sg_project::{ImportEvent, Importer, Opened, ProjectEntry, ProjectError};
+use sg_ui::{Command, DevStep, Incoming, Shell};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -24,6 +27,7 @@ use winit::window::WindowId;
 use crate::gfx::{Frame, Gfx};
 use crate::jobs::Serial;
 use crate::script::Step;
+use crate::wl_data::{DataEvent, WlData};
 
 const USAGE: &str = "\
 shotgun [options]
@@ -31,7 +35,7 @@ shotgun [options]
   --script <steps>     run scripted steps, e.g. \"new:Demo;wait:500;rename:X;undo;close;quit\"
   --exit-after <secs>  quit after this many seconds
                        script steps: filter:<text> new:<name> open:<folder> rename:<name> undo redo close
-                       perf esc wait:<ms> shot:<file.png> quit
+                       import:<path or link> asset:<n> add del perf esc wait:<ms> shot:<file.png> quit
   --bench-start        print the time to the first library frame and quit
   --bench-open         with --open: print the time to the first editor frame and quit
 Environment: SHOTGUN_LIBRARY (library folder), SHOTGUN_APP_ID (Wayland app id), SHOTGUN_LOG (error..trace)";
@@ -75,6 +79,16 @@ enum UserEvent {
     Opened(Result<Opened, String>),
     /// A scripted step and the channel that tells the script thread it is done.
     Script(Step, Sender<()>),
+    Import(ImportEvent),
+    Poster {
+        root: PathBuf,
+        id: AssetId,
+        rgba: Option<Vec<u8>>,
+    },
+    /// Drag-and-drop or clipboard data from the Wayland data device.
+    Data(DataEvent),
+    /// Files chosen in the file picker.
+    Picked(Vec<PathBuf>),
     Exit,
 }
 
@@ -86,6 +100,12 @@ struct App {
     shell: Shell,
     gfx: Option<Gfx>,
     io: Serial,
+    /// Small reads for the UI (posters), kept off the project I/O queue.
+    reads: Serial,
+    importer: Option<Importer>,
+    /// Running imports and when each was requested.
+    imports: HashMap<u64, Instant>,
+    wl: Option<WlData>,
     library: PathBuf,
     repaint_at: Option<Instant>,
     /// Jobs sent to workers whose result has not come back yet.
@@ -120,11 +140,11 @@ impl App {
 
     fn run_commands(&mut self, commands: Vec<Command>) {
         for command in commands {
-            self.pending_jobs += 1;
             let proxy = self.proxy.clone();
             let library = self.library.clone();
             match command {
                 Command::Create { name } => {
+                    self.pending_jobs += 1;
                     self.open_requested = Some(Instant::now());
                     self.io.run(move || {
                         let result = sg_project::create(&library, &name)
@@ -134,6 +154,7 @@ impl App {
                     });
                 }
                 Command::Open { path } => {
+                    self.pending_jobs += 1;
                     self.open_requested = Some(Instant::now());
                     self.io.run(move || {
                         let result = open_project(&path, &proxy).map_err(|e| e.to_string());
@@ -141,6 +162,7 @@ impl App {
                     });
                 }
                 Command::Close { writer } => {
+                    self.pending_jobs += 1;
                     self.saw_editor_frame = false;
                     self.io.run(move || {
                         if let Some(thread) = writer.close() {
@@ -149,6 +171,47 @@ impl App {
                         let _ = proxy.send_event(scan_library(&library));
                     });
                 }
+                Command::Import { root, known, source } => {
+                    if let Some(importer) = &self.importer {
+                        self.pending_jobs += 1;
+                        self.imports.insert(importer.import(root, known, source), Instant::now());
+                    }
+                }
+                Command::RestoreCache { root, assets } => {
+                    if let Some(importer) = &self.importer {
+                        self.pending_jobs += 1;
+                        self.imports.insert(importer.restore_cache(root, assets), Instant::now());
+                    }
+                }
+                Command::CancelImport(job) => {
+                    if let Some(importer) = &self.importer {
+                        importer.cancel(job);
+                    }
+                }
+                Command::LoadPoster { root, id } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let rgba = sg_project::read_poster(&root, id).ok();
+                        let _ = proxy.send_event(UserEvent::Poster { root, id, rgba });
+                    });
+                }
+                Command::PickFiles => {
+                    // The portal dialog is another process' window; waiting for it
+                    // happens on its own thread.
+                    let spawned = std::thread::Builder::new().name("sg-file-picker".into()).spawn(move || {
+                        let picked =
+                            pollster::block_on(rfd::AsyncFileDialog::new().set_title("Add assets").pick_files());
+                        let paths = picked.unwrap_or_default().iter().map(|f| f.path().to_owned()).collect();
+                        let _ = proxy.send_event(UserEvent::Picked(paths));
+                    });
+                    if let Err(e) = spawned {
+                        self.shell.report_error(format!("Cannot open the file picker: {e}"));
+                    }
+                }
+                Command::ReadClipboard => match &self.wl {
+                    Some(wl) => wl.paste(),
+                    None => self.shell.report_error("The clipboard is not available.".to_owned()),
+                },
             }
         }
     }
@@ -192,8 +255,50 @@ impl App {
         self.request_redraw();
     }
 
+    fn incoming(&mut self, incoming: Incoming) {
+        let commands = self.shell.incoming(incoming);
+        self.run_commands(commands);
+        self.request_redraw();
+    }
+
+    fn data_event(&mut self, event: DataEvent) {
+        match event {
+            DataEvent::DragEnter { on_our_surface, .. } => self.shell.set_drag_hover(on_our_surface),
+            DataEvent::DragLeave => self.shell.set_drag_hover(false),
+            DataEvent::DragMotion { .. } | DataEvent::Selection { .. } => return,
+            DataEvent::Drop { mime, data, .. } | DataEvent::Paste { mime, data } => match incoming_from(&mime, data) {
+                Some(incoming) => return self.incoming(incoming),
+                None => self.shell.report_error("Nothing in there that can be imported.".to_owned()),
+            },
+            DataEvent::PasteEmpty => self.shell.report_error("The clipboard is empty.".to_owned()),
+        }
+        self.request_redraw();
+    }
+
+    fn import_event(&mut self, event: ImportEvent) {
+        match &event {
+            ImportEvent::Usable { job, asset, .. } => {
+                if let Some(started) = self.imports.get(job) {
+                    let ms = started.elapsed().as_secs_f64() * 1000.0;
+                    log::info!("asset usable {ms:.0} ms after the request: {} ({} bytes)", asset.label, asset.size);
+                }
+            }
+            ImportEvent::Finished { job } if self.imports.remove(job).is_some() => {
+                self.shell.import_event(event);
+                return self.job_done();
+            }
+            _ => {}
+        }
+        self.shell.import_event(event);
+        self.request_redraw();
+    }
+
     fn quit(&mut self, el: &ActiveEventLoop) {
-        // The surface must go before the event loop closes the display.
+        // The data device and the surface must go before the event loop closes
+        // the display.
+        if let Some(wl) = self.wl.take() {
+            wl.shutdown();
+        }
         self.gfx = None;
         el.exit();
     }
@@ -261,6 +366,18 @@ impl ApplicationHandler<UserEvent> for App {
         let app_id = std::env::var("SHOTGUN_APP_ID").unwrap_or_else(|_| "shotgun".to_owned());
         match Gfx::new(el, &self.ctx, &app_id) {
             Ok(gfx) => {
+                if let Some((display, surface)) = wl_data::wayland_ptrs(&*gfx.window) {
+                    let proxy = self.proxy.clone();
+                    let sink = move |event| {
+                        let _ = proxy.send_event(UserEvent::Data(event));
+                    };
+                    // SAFETY: the pointers come from the live winit window, and `quit`
+                    // shuts the data thread down before the event loop is dropped.
+                    match unsafe { WlData::spawn(display, surface, sink) } {
+                        Ok(wl) => self.wl = Some(wl),
+                        Err(e) => log::warn!("drag-and-drop and paste are unavailable: {e}"),
+                    }
+                }
                 gfx.window.request_redraw();
                 self.gfx = Some(gfx);
             }
@@ -290,10 +407,22 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Opened(result) => {
-                self.shell.opened(result);
+                let commands = self.shell.opened(result);
+                self.run_commands(commands);
                 self.job_done();
             }
             UserEvent::Script(step, ack) => self.script_step(step, ack),
+            UserEvent::Import(event) => self.import_event(event),
+            UserEvent::Poster { root, id, rgba } => {
+                self.shell.poster_loaded(&self.ctx, &root, id, rgba);
+                self.job_done();
+            }
+            UserEvent::Data(event) => self.data_event(event),
+            UserEvent::Picked(paths) => {
+                if !paths.is_empty() {
+                    self.incoming(Incoming::Paths(paths));
+                }
+            }
             UserEvent::Exit => self.quit(el),
         }
     }
@@ -383,6 +512,12 @@ fn main() -> anyhow::Result<()> {
     // The library is read while the window and GPU come up.
     let library = sg_project::library_dir();
     let io = Serial::spawn("sg-project-io")?;
+    let importer = Importer::new({
+        let proxy = proxy.clone();
+        move |event| {
+            let _ = proxy.send_event(UserEvent::Import(event));
+        }
+    })?;
     io.run({
         let (proxy, library) = (proxy.clone(), library.clone());
         move || {
@@ -416,6 +551,10 @@ fn main() -> anyhow::Result<()> {
         shell: Shell::new(),
         gfx: None,
         io,
+        reads: Serial::spawn("sg-reads")?,
+        importer: Some(importer),
+        imports: HashMap::new(),
+        wl: None,
         library,
         repaint_at: None,
         pending_jobs: 1,
@@ -430,7 +569,7 @@ fn main() -> anyhow::Result<()> {
     event_loop.run_app(&mut app).context("event loop")?;
 
     // The window is gone; finish what is still being written.
-    let App { mut shell, io, init_error, frames, redraws, .. } = app;
+    let App { mut shell, io, reads, importer, init_error, frames, redraws, .. } = app;
     log::info!(
         "presented {frames} frames ({redraws} redraw requests) in {:.1} s, process CPU {:.2} s",
         started.elapsed().as_secs_f64(),
@@ -442,6 +581,10 @@ fn main() -> anyhow::Result<()> {
         let _ = thread.join();
     }
     io.finish();
+    reads.finish();
+    if let Some(importer) = importer {
+        importer.shutdown();
+    }
     init_error.map_or(Ok(()), Err)
 }
 
@@ -462,4 +605,26 @@ enum ScriptWait {
     Start(Step, Sender<()>),
     /// Started: waiting for the jobs it caused.
     Finish(Sender<()>),
+}
+
+/// Turns dropped or pasted data into something to import.
+fn incoming_from(mime: &str, data: Vec<u8>) -> Option<Incoming> {
+    if mime == "text/uri-list" {
+        let entries = wl_data::parse_uri_list(&data);
+        let paths: Vec<PathBuf> = entries.iter().filter(|e| e.starts_with('/')).map(PathBuf::from).collect();
+        if !paths.is_empty() {
+            return Some(Incoming::Paths(paths));
+        }
+        // A link dragged from a browser arrives as a one-line URI list.
+        return entries.into_iter().next().map(Incoming::Text);
+    }
+    if mime.starts_with("image/") {
+        return Some(Incoming::Image { data, mime: mime.to_owned() });
+    }
+    let text = String::from_utf8_lossy(&data).trim().to_owned();
+    // File managers also offer copied files as plain paths.
+    if text.starts_with('/') && text.lines().all(|l| Path::new(l.trim()).exists()) {
+        return Some(Incoming::Paths(text.lines().map(|l| PathBuf::from(l.trim())).collect()));
+    }
+    (!text.is_empty()).then_some(Incoming::Text(text))
 }

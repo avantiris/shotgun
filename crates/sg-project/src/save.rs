@@ -49,7 +49,7 @@ pub fn files_hash(files: &BTreeMap<String, String>) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// Reads `project.toml` and the sequence files it lists.
+/// Reads `project.toml`, the sequence files it lists and every asset index file.
 pub fn read_tracked(root: &Path) -> Result<BTreeMap<String, String>, ProjectError> {
     let project_file = root.join(PROJECT_FILE);
     let toml = match std::fs::read_to_string(&project_file) {
@@ -71,6 +71,11 @@ pub fn read_tracked(root: &Path) -> Result<BTreeMap<String, String>, ProjectErro
             Err(e) => return Err(at(&path)(e)),
         }
     }
+    for rel in tracked_files_on_disk(root).into_iter().filter(|f| f.starts_with(text::ASSET_INDEX_DIR)) {
+        let path = root.join(&rel);
+        let content = std::fs::read_to_string(&path).map_err(at(&path))?;
+        files.insert(rel, content);
+    }
     files.insert(PROJECT_FILE.to_owned(), toml);
     Ok(files)
 }
@@ -80,14 +85,21 @@ pub fn read_mark(root: &Path) -> Option<SavedMark> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Sequence files present on disk, relative to the root.
-fn sequence_files_on_disk(root: &Path) -> Vec<String> {
-    let Ok(dir) = std::fs::read_dir(root.join("sequences")) else { return Vec::new() };
-    dir.flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|name| name.ends_with(".sg"))
-        .map(|name| format!("sequences/{name}"))
-        .collect()
+/// Sequence and asset index files present on disk, relative to the root.
+/// A save deletes those that the new state no longer has.
+fn tracked_files_on_disk(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for (dir, extension) in [("sequences", ".sg"), ("assets/index", ".toml")] {
+        let Ok(entries) = std::fs::read_dir(root.join(dir)) else { continue };
+        found.extend(
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| name.ends_with(extension))
+                .map(|name| format!("{dir}/{name}")),
+        );
+    }
+    found
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), ProjectError> {
@@ -132,7 +144,7 @@ pub fn commit(
     let mark_json = serde_json::to_vec(mark).unwrap_or_default();
     write_synced(&pending.join("mark"), &mark_json)?;
     manifest.writes.push(("mark".to_owned(), MARK_PATH.to_owned()));
-    manifest.deletes = sequence_files_on_disk(root).into_iter().filter(|f| !files.contains_key(f)).collect();
+    manifest.deletes = tracked_files_on_disk(root).into_iter().filter(|f| !files.contains_key(f)).collect();
 
     let tmp = pending.join("commit.json.tmp");
     write_synced(&tmp, &serde_json::to_vec(&manifest).unwrap_or_default())?;
@@ -178,7 +190,7 @@ fn apply(root: &Path, manifest: &Manifest) -> Result<(), ProjectError> {
             _ => {}
         }
     }
-    for dir in [root.join("sequences"), root.to_owned(), journal_dir(root)] {
+    for dir in [root.join("sequences"), root.join("assets/index"), root.to_owned(), journal_dir(root)] {
         sync_dir(&dir)?;
     }
     std::fs::remove_dir_all(&pending).map_err(at(&pending))

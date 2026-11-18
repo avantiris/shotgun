@@ -1,0 +1,217 @@
+//! Files derived from an asset at import. Command lines are the ones measured
+//! in spike S4 (docs/spikes/s4-io.md, D3 and D4); change them there first.
+//!
+//! Every function writes to a temporary name next to the target and renames
+//! on success, so a half-written file is never mistaken for a finished one.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use sg_core::{Rate, VideoInfo};
+
+use crate::tool::{Cancel, ToolError, run_lines};
+
+pub const POSTER_W: u32 = 320;
+pub const POSTER_H: u32 = 180;
+const VAAPI_DEVICE: &str = "/dev/dri/renderD128";
+
+/// Called with 0..=1 while a transcode runs.
+pub type Progress<'a> = &'a mut dyn FnMut(f32);
+
+fn temp_for(out: &Path) -> PathBuf {
+    let name = out.file_name().unwrap_or_default().to_string_lossy();
+    out.with_file_name(format!(".tmp-{name}"))
+}
+
+/// Runs ffmpeg writing to a temporary file, then renames it to `out`.
+/// `args` builds everything between `ffmpeg` and the output path.
+fn ffmpeg_to(
+    out: &Path,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+    args: impl FnOnce(&mut Command),
+) -> Result<(), ToolError> {
+    let tmp = temp_for(out);
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-v", "error", "-nostdin", "-y", "-progress", "pipe:1", "-nostats"]);
+    args(&mut cmd);
+    cmd.arg(&tmp);
+    let result = run_lines(cmd, cancel, |line| {
+        if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok())
+            && total_secs > 0.0
+        {
+            progress((us / 1e6 / total_secs).clamp(0.0, 1.0) as f32);
+        }
+    });
+    match result {
+        Ok(()) => std::fs::rename(&tmp, out).map_err(ToolError::from),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+fn vaapi_input(cmd: &mut Command, src: &Path) {
+    cmd.args(["-hwaccel", "vaapi", "-hwaccel_device", VAAPI_DEVICE, "-hwaccel_output_format", "vaapi", "-i"]).arg(src);
+}
+
+/// One frame as raw RGBA, [`POSTER_W`] x [`POSTER_H`], letterboxed.
+pub fn poster(src: &Path, out: &Path, at_secs: f64, cancel: &Cancel) -> Result<(), ToolError> {
+    let filter = format!(
+        "scale={POSTER_W}:{POSTER_H}:force_original_aspect_ratio=decrease,\
+         pad={POSTER_W}:{POSTER_H}:(ow-iw)/2:(oh-ih)/2:color=black,format=rgba"
+    );
+    ffmpeg_to(out, 0.0, cancel, &mut |_| {}, |cmd| {
+        cmd.args(["-ss", &format!("{at_secs:.3}"), "-i"]).arg(src).args([
+            "-frames:v",
+            "1",
+            "-vf",
+            &filter,
+            "-f",
+            "rawvideo",
+        ]);
+    })
+}
+
+/// A waveform picture in the poster format, for audio-only assets.
+pub fn wave_poster(wav: &Path, out: &Path, cancel: &Cancel) -> Result<(), ToolError> {
+    let filter = format!("showwavespic=s={POSTER_W}x{POSTER_H}:colors=0x57B894,format=rgba");
+    ffmpeg_to(out, 0.0, cancel, &mut |_| {}, |cmd| {
+        cmd.arg("-i").arg(wav).args(["-filter_complex", &filter, "-frames:v", "1", "-f", "rawvideo"]);
+    })
+}
+
+/// The first audio stream as 48 kHz 32-bit float WAV, mono kept mono,
+/// everything else mixed to stereo. The timeline only ever reads this file.
+pub fn audio_wav(
+    src: &Path,
+    out: &Path,
+    channels: u16,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    let ac = if channels == 1 { "1" } else { "2" };
+    ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        cmd.arg("-i").arg(src).args([
+            "-vn",
+            "-map",
+            "0:a:0",
+            "-ac",
+            ac,
+            "-ar",
+            "48000",
+            "-c:a",
+            "pcm_f32le",
+            "-rf64",
+            "auto",
+        ]);
+    })
+}
+
+/// Constant-frame-rate mezzanine of a VFR or otherwise awkward video:
+/// HEVC on the GPU at CQP 14, short GOP. Falls back to x264 in software if
+/// the GPU path fails (codec the GPU cannot decode, no VAAPI).
+pub fn conform_video(
+    src: &Path,
+    out: &Path,
+    info: &VideoInfo,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    let fps = format!("fps={}", info.rate);
+    let tags = |cmd: &mut Command| {
+        for (flag, value) in [
+            ("-color_primaries", &info.color_primaries),
+            ("-color_trc", &info.color_transfer),
+            ("-colorspace", &info.color_space),
+            ("-color_range", &info.color_range),
+        ] {
+            if let Some(v) = value.as_deref().filter(|v| *v != "unknown") {
+                cmd.args([flag, v]);
+            }
+        }
+    };
+    let hardware = ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        vaapi_input(cmd, src);
+        cmd.arg("-an");
+        if info.bit_depth > 8 {
+            cmd.args(["-vf", &format!("{fps},scale_vaapi=format=p010"), "-c:v", "hevc_vaapi", "-profile:v", "main10"]);
+        } else {
+            cmd.args(["-vf", &fps, "-c:v", "hevc_vaapi"]);
+        }
+        // Never add -tag:v hvc1 here: the output is undecodable on this GPU (S4, 5.3).
+        cmd.args(["-rc_mode", "CQP", "-qp", "14", "-g", "15", "-bf", "0"]);
+        tags(cmd);
+    });
+    match hardware {
+        Err(ToolError::Failed { stderr, .. }) => {
+            log::warn!("GPU conform of {} failed, using software: {stderr}", src.display());
+            ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+                cmd.arg("-i").arg(src).args(["-an", "-vf", &fps]);
+                cmd.args([
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-g", "15", "-bf", "0", "-pix_fmt",
+                    "yuv420p",
+                ]);
+                tags(cmd);
+            })
+        }
+        other => other,
+    }
+}
+
+/// Lossless RGBA mezzanine for animated pictures with transparency.
+pub fn conform_alpha(
+    src: &Path,
+    out: &Path,
+    rate: Rate,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        cmd.arg("-i").arg(src).args(["-an", "-vf", &format!("fps={rate}"), "-c:v", "utvideo", "-pix_fmt", "gbrap"]);
+    })
+}
+
+/// 540p all-intra H.264 proxy for scrubbing.
+pub fn proxy(
+    src: &Path,
+    out: &Path,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    const ENCODE: [&str; 14] = [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-tune",
+        "fastdecode",
+        "-crf",
+        "20",
+        "-g",
+        "1",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+    ];
+    let hardware = ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        vaapi_input(cmd, src);
+        cmd.args(["-an", "-vf", "scale_vaapi=w=-2:h=540,hwdownload,format=nv12"]).args(ENCODE);
+    });
+    match hardware {
+        Err(ToolError::Failed { stderr, .. }) => {
+            log::warn!("GPU-decoded proxy of {} failed, using software decode: {stderr}", src.display());
+            ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+                cmd.arg("-i").arg(src).args(["-an", "-vf", "scale=-2:540"]).args(ENCODE);
+            })
+        }
+        other => other,
+    }
+}

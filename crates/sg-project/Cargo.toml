@@ -7,6 +7,8 @@ publish.workspace = true
 [dependencies]
 sg-core.workspace = true
 blake3.workspace = true
+sg-media.workspace = true
+ureq.workspace = true
 crossbeam-channel.workspace = true
 log.workspace = true
 serde.workspace = true

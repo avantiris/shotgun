@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::asset::Asset;
 use crate::clips::{Clip, ClipStore};
 use crate::ids::ProjectId;
 use crate::model::{Project, Sequence, Track, TrackKind};
@@ -18,6 +19,13 @@ use crate::model::{Project, Sequence, Track, TrackKind};
 pub const FORMAT_VERSION: u32 = 1;
 pub const PROJECT_FILE: &str = "project.toml";
 const SEQUENCE_MAGIC: &str = "shotgun-sequence";
+/// Asset index files live here, one per asset.
+pub const ASSET_INDEX_DIR: &str = "assets/index/";
+
+/// An asset file must stay inside `assets/`: no absolute path, no `..`.
+fn is_bundle_path(path: &str) -> bool {
+    path.starts_with("assets/") && !path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TextError {
@@ -126,6 +134,10 @@ pub fn to_files(p: &Project) -> BTreeMap<String, String> {
     // Serialising a struct of strings and integers cannot fail.
     let text = toml::to_string(&header).unwrap_or_default();
     files.insert(PROJECT_FILE.to_owned(), text);
+    for (id, asset) in p.assets.iter() {
+        // Plain strings, integers and tables: serialising cannot fail.
+        files.insert(Asset::index_path(*id), toml::to_string(&**asset).unwrap_or_default());
+    }
     files
 }
 
@@ -138,7 +150,19 @@ pub fn from_files(files: &BTreeMap<String, String>) -> Result<Project, TextError
         let text = files.get(&file).ok_or_else(|| TextError::Missing { file: file.clone() })?;
         sequences.push(Arc::new(parse_sequence(&file, text)?));
     }
-    Ok(Project { id: header.id, name: header.name, sequences })
+    let mut assets = BTreeMap::new();
+    for (file, text) in files.range(ASSET_INDEX_DIR.to_owned()..).take_while(|(k, _)| k.starts_with(ASSET_INDEX_DIR)) {
+        let asset: Asset = toml::from_str(text)
+            .map_err(|e| TextError::File { file: file.clone(), message: e.message().to_owned() })?;
+        if *file != Asset::index_path(asset.id) || !is_bundle_path(&asset.file) {
+            return Err(TextError::File {
+                file: file.clone(),
+                message: "asset id or file path is not valid".to_owned(),
+            });
+        }
+        assets.insert(asset.id, Arc::new(asset));
+    }
+    Ok(Project { id: header.id, name: header.name, sequences, assets: Arc::new(assets) })
 }
 
 fn write_sequence(seq: &Sequence) -> String {
