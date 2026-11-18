@@ -99,3 +99,28 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
 - Not built yet: audio grains while scrubbing, plugin delay compensation,
   the user-adjustable A/V offset, sidechain and event ports (the `Processor`
   trait has only audio in/out so far), allocation asserts in debug builds.
+
+## As built after feedback round 3 (mixer)
+
+- Every audio track has mixer settings in the project (`TrackSettings`:
+  fader in dB, pan, mute, solo, low cut, noise reduction) and the sequence
+  has a master fader; each change is an operation with an inverse
+  (`SetTrackMix`, `SetMasterGain`) and is written to the `.sg` file as a
+  `mix {json}` line under the track and a `master <dB>` line.
+- Fader, pan and mute (and solo, which mutes the others) act at once: the
+  realtime thread reads them from atomics and spreads a change over one
+  block. No new graph is built for them, so nothing is refilled.
+- Low cut (second-order high-pass) and noise reduction run on the disk
+  thread, before the ring buffer, not in the realtime graph. `PROPOSED`
+  reason: the noise reduction is RNNoise (crate `nnnoiseless`), a neural
+  network made for speech with 20 ms of delay and an FFT that may allocate.
+  On the disk thread its delay is hidden by reading the source 960 samples
+  ahead, so tracks stay aligned without delay compensation in the graph. The
+  price: a change of these two settings is heard after the buffered half
+  second. Switching noise reduction on or off builds a new graph.
+- Meters: the realtime thread keeps the peak per track (first 32 audio
+  tracks) and of the mix in atomics; the UI reads and resets them each frame.
+- Export renders sound through the same engine, so the mixer is in the file.
+- Not built: EQ, compressor, limiter, sends and buses, volume automation,
+  loudness (LUFS) metering, a noise reduction suited to music, the
+  `Processor` chain being editable by the user.

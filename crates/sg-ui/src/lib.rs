@@ -12,6 +12,7 @@ mod export_panel;
 mod history;
 pub mod keymap;
 mod library;
+mod mixer;
 mod perf;
 mod session;
 mod stage;
@@ -129,6 +130,8 @@ pub enum DevStep {
     AddTrack(sg_core::TrackKind),
     /// Drop the selected asset on the timeline at a frame, over a track row or ("new") outside the tracks.
     Drop(i64, Option<usize>, Option<sg_core::TrackKind>),
+    /// Set a mixer field of the n-th audio track (`master` for the master fader).
+    Mix(String, String, f32),
     /// Set the sequence frame size.
     Size(u32, u32),
     /// Export with a preset: master, vertical, gif or share:<megabytes>.
@@ -241,6 +244,7 @@ impl Shell {
                 self.editor.assets.drop_overlay(&ctx);
                 match request {
                     Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
+                    Some(EditorRequest::Export) => self.act(Action::Export, &mut commands),
                     Some(EditorRequest::Undo) => self.act(Action::Undo, &mut commands),
                     Some(EditorRequest::Redo) => self.act(Action::Redo, &mut commands),
                     Some(EditorRequest::RemoveAsset(id)) => self.remove_asset(id),
@@ -434,6 +438,7 @@ impl Shell {
                     self.history.begin_checkpoint();
                 }
             }
+            Action::Mixer => self.editor.mixer.open = !self.editor.mixer.open,
             Action::History => {
                 if let Some(session) = &self.session {
                     self.history.open();
@@ -483,6 +488,31 @@ impl Shell {
                     match session.drop_asset(&asset, frame, row, only) {
                         Ok(_) => self.editor.timeline.select_dropped(session, asset.id, frame),
                         Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
+            }
+            DevStep::Mix(which, field, value) => {
+                if let Some(session) = &mut self.session {
+                    let project = session.project().clone();
+                    let sequence = project.sequences.first();
+                    let audio =
+                        |n: usize| sequence?.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n);
+                    let op = match (sequence, which.parse().ok().and_then(audio)) {
+                        (Some(seq), _) if which == "master" => Some(Op::SetMasterGain { id: seq.id, db: value }),
+                        (Some(seq), Some(track)) => {
+                            let mut mix = track.mix;
+                            mixer::set_field(&mut mix, &field, value).then_some(Op::SetTrackMix {
+                                seq: seq.id,
+                                track: track.id,
+                                mix,
+                            })
+                        }
+                        _ => None,
+                    };
+                    match op.map(|op| session.apply(op, None)) {
+                        Some(Ok(())) => {}
+                        Some(Err(e)) => self.error = Some(e.to_string()),
+                        None => self.error = Some(format!("mix: no track or field {which}:{field}")),
                     }
                 }
             }

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipStore};
 use crate::ids::ProjectId;
-use crate::model::{Marker, Project, Sequence, Track, TrackHeader, TrackKind};
+use crate::model::{Marker, Project, Sequence, Track, TrackHeader, TrackKind, TrackSettings};
 use crate::props::ClipProps;
 
 pub const FORMAT_VERSION: u32 = 1;
@@ -174,6 +174,9 @@ fn write_sequence(seq: &Sequence) -> String {
     let _ = writeln!(out, "name {}", quote(&seq.name));
     let _ = writeln!(out, "rate {}", seq.rate);
     let _ = writeln!(out, "size {}x{}", seq.width, seq.height);
+    if seq.master_db != 0.0 {
+        let _ = writeln!(out, "master {}", seq.master_db);
+    }
     for marker in seq.markers.iter() {
         let _ = writeln!(out, "marker {} {}", marker.frame, quote(&marker.label));
     }
@@ -183,6 +186,9 @@ fn write_sequence(seq: &Sequence) -> String {
             TrackKind::Audio => "audio",
         };
         let _ = writeln!(out, "\ntrack {} {kind} {}", track.id, quote(&track.name));
+        if !track.mix.is_default() {
+            let _ = writeln!(out, "mix {}", serde_json::to_string(&track.mix).unwrap_or_default());
+        }
         for c in track.clips.iter() {
             let _ = writeln!(out, "clip {} {} {} {} {}", c.id, c.asset, c.start, c.len, c.src_in);
         }
@@ -209,6 +215,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
     }
 
     let (mut id, mut name, mut rate, mut size) = (None, None, None, None);
+    let mut master_db = 0.0f32;
     let mut markers: Vec<Marker> = Vec::new();
     // The track being read: its header and clips so far.
     let mut current: Option<(Track, Vec<Clip>)> = None;
@@ -254,6 +261,13 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                 let track_name = parts.next().and_then(unquote).ok_or_else(|| err(n, "bad track name"))?;
                 current = Some((Track::from(TrackHeader { id: track_id, kind, name: track_name }), Vec::new()));
             }
+            "mix" => {
+                let (track, _) = current.as_mut().ok_or_else(|| err(n, "mix before any track"))?;
+                let mix: TrackSettings =
+                    serde_json::from_str(rest).map_err(|e| err(n, &format!("bad track settings: {e}")))?;
+                track.mix = mix.clamped();
+            }
+            "master" => master_db = rest.parse::<f32>().map_err(|_| err(n, "bad master level"))?.clamp(-60.0, 12.0),
             "id" => id = Some(rest.parse().map_err(|_| err(n, "bad sequence id"))?),
             "name" => name = Some(unquote(rest).ok_or_else(|| err(n, "bad name"))?),
             "rate" => rate = Some(rest.parse().map_err(|_| err(n, "bad rate"))?),
@@ -284,6 +298,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
         width,
         height,
         tracks,
+        master_db,
         markers: Arc::new(markers),
     })
 }
@@ -365,6 +380,19 @@ mod tests {
         assert_eq!(unquote("no quotes"), None);
         assert_eq!(unquote("\"bad \\x\""), None);
         assert_eq!(unquote("\"a\"b\""), None);
+    }
+
+    #[test]
+    fn mixer_settings_survive_the_files() {
+        use crate::ops::tests::{A1, SEQ};
+        let mix = TrackSettings { gain_db: -4.5, pan: -0.25, mute: false, solo: true, low_cut_hz: 90.0, denoise: 0.6 };
+        let (p, _) = apply(&base(), &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
+        let (p, _) = apply(&p, &Op::SetMasterGain { id: SEQ, db: -2.0 }).unwrap();
+        let files = to_files(&p);
+        assert_eq!(from_files(&files).unwrap(), *p);
+        // A project without any of it writes no extra lines.
+        let plain: String = to_files(&base()).values().cloned().collect();
+        assert!(!plain.contains("mix ") && !plain.contains("master "));
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub struct Sequence {
     pub height: u32,
     /// Top of the timeline first.
     pub tracks: Vec<Arc<Track>>,
+    /// Master fader in decibels.
+    pub master_db: f32,
     /// Sorted by frame, at most one per frame.
     pub markers: Arc<Vec<Marker>>,
 }
@@ -45,6 +47,8 @@ pub struct Track {
     /// Properties of the clips that have any, by clip id. An entry may
     /// outlive its clip (a removed clip comes back with its properties on undo).
     pub props: Arc<BTreeMap<ClipId, Arc<ClipProps>>>,
+    /// Mixer settings (audio tracks).
+    pub mix: TrackSettings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +113,7 @@ impl From<SequenceHeader> for Sequence {
             width: h.width,
             height: h.height,
             tracks: Vec::new(),
+            master_db: 0.0,
             markers: Arc::default(),
         }
     }
@@ -122,7 +127,14 @@ impl Track {
 
 impl From<TrackHeader> for Track {
     fn from(h: TrackHeader) -> Track {
-        Track { id: h.id, kind: h.kind, name: h.name, clips: ClipStore::new(), props: Arc::default() }
+        Track {
+            id: h.id,
+            kind: h.kind,
+            name: h.name,
+            clips: ClipStore::new(),
+            props: Arc::default(),
+            mix: TrackSettings::default(),
+        }
     }
 }
 
@@ -138,5 +150,40 @@ impl Track {
     /// The properties of a clip, if it has any that differ from the defaults.
     pub fn props_of(&self, clip: ClipId) -> Option<&Arc<ClipProps>> {
         self.props.get(&clip)
+    }
+}
+
+/// Mixer settings of a track. The default is a track that changes nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrackSettings {
+    /// Fader in decibels.
+    pub gain_db: f32,
+    /// -1 (left) to 1 (right).
+    pub pan: f32,
+    pub mute: bool,
+    /// While any track is soloed, only soloed tracks are heard.
+    pub solo: bool,
+    /// Low cut in hertz; 0 is off.
+    pub low_cut_hz: f32,
+    /// Noise reduction, 0 (off) to 1 (only the treated sound).
+    pub denoise: f32,
+}
+
+impl TrackSettings {
+    pub fn is_default(&self) -> bool {
+        *self == TrackSettings::default()
+    }
+
+    /// Values a hand-edited file or a script may not have kept in range.
+    pub fn clamped(self) -> TrackSettings {
+        let finite = |v: f32, low: f32, high: f32| if v.is_finite() { v.clamp(low, high) } else { 0.0 };
+        TrackSettings {
+            gain_db: finite(self.gain_db, -60.0, 12.0),
+            pan: finite(self.pan, -1.0, 1.0),
+            low_cut_hz: finite(self.low_cut_hz, 0.0, 1000.0),
+            denoise: finite(self.denoise, 0.0, 1.0),
+            ..self
+        }
     }
 }

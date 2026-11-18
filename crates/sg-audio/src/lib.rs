@@ -15,6 +15,7 @@
 //! output delay reported by the device taken off (spike S3, section 4).
 
 mod disk;
+mod fx;
 pub mod graph;
 mod null;
 mod pw;
@@ -30,6 +31,8 @@ pub use graph::{Processor, Transport};
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Requested PipeWire quantum (06-audio.md).
 pub const DEFAULT_QUANTUM: u32 = 256;
+/// Tracks that have a level meter.
+pub const MAX_METERS: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -66,12 +69,24 @@ pub struct TrackMix {
     /// -1 (left) to 1 (right).
     pub pan: f32,
     pub mute: bool,
+    /// Low cut in hertz; 0 is off.
+    pub low_cut_hz: f32,
+    /// Noise reduction: the share of the treated sound, 0 (off) to 1.
+    pub denoise: f32,
 }
 
 /// What to play: derived from the project snapshot by the caller.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mix {
     pub tracks: Vec<TrackMix>,
+    /// Linear gain of the master fader.
+    pub master_gain: f32,
+}
+
+impl Default for Mix {
+    fn default() -> Mix {
+        Mix { tracks: Vec::new(), master_gain: 1.0 }
+    }
 }
 
 pub enum Backend {
@@ -125,6 +140,9 @@ pub(crate) struct Shared {
     sched_policy: AtomicI64,
     /// Bumped by the realtime thread when it adopts a new graph.
     adopted: AtomicU64,
+    /// Peak level per track since it was last read (f32 bits), then of the mix.
+    meters: [AtomicU32; MAX_METERS],
+    master_meter: AtomicU32,
 }
 
 pub(crate) fn monotonic_ns() -> u64 {
@@ -264,5 +282,43 @@ impl Drop for Engine {
         // The PipeWire thread stops in its own drop.
         self.backend.take();
         self.null.take();
+    }
+}
+
+impl Engine {
+    /// Peak levels (linear, 1.0 is full scale) since the last call: one per
+    /// track into `tracks`, the mix as the return value.
+    pub fn take_meters(&self, tracks: &mut [f32]) -> f32 {
+        self.meters().take(tracks)
+    }
+}
+
+impl TrackMix {
+    /// A track at unity gain, centred, with no clean-up.
+    pub fn plain(clips: Vec<ClipSpan>) -> TrackMix {
+        TrackMix { clips, gain: 1.0, pan: 0.0, mute: false, low_cut_hz: 0.0, denoise: 0.0 }
+    }
+}
+
+/// Reads the level meters from any thread without touching the engine.
+#[derive(Clone)]
+pub struct Meters {
+    shared: Arc<Shared>,
+}
+
+impl Meters {
+    /// Peak levels (linear, 1.0 is full scale) since the last call: one per
+    /// track into `tracks`, the mix as the return value.
+    pub fn take(&self, tracks: &mut [f32]) -> f32 {
+        for (out, meter) in tracks.iter_mut().zip(&self.shared.meters) {
+            *out = f32::from_bits(meter.swap(0, Ordering::Relaxed));
+        }
+        f32::from_bits(self.shared.master_meter.swap(0, Ordering::Relaxed))
+    }
+}
+
+impl Engine {
+    pub fn meters(&self) -> Meters {
+        Meters { shared: self.shared.clone() }
     }
 }

@@ -5,7 +5,7 @@
 //! block boundary and parks the old one for the disk thread to free.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 use crate::Shared;
 
@@ -38,29 +38,72 @@ pub trait Processor: Send {
     }
 }
 
-/// Track fader and pan (constant power).
-pub struct GainPan {
-    left: f32,
-    right: f32,
+/// Fader settings that change while the graph plays: written by the disk
+/// thread, read by the realtime thread, no graph swap in between.
+#[derive(Default)]
+pub struct Live {
+    gain: AtomicU32,
+    pan: AtomicU32,
+    mute: AtomicBool,
 }
 
-impl GainPan {
-    pub fn new(gain: f32, pan: f32) -> GainPan {
+impl Live {
+    pub fn new(gain: f32, pan: f32, mute: bool) -> Arc<Live> {
+        let live = Arc::new(Live::default());
+        live.set(gain, pan, mute);
+        live
+    }
+
+    pub fn set(&self, gain: f32, pan: f32, mute: bool) {
+        self.gain.store(gain.to_bits(), Ordering::Relaxed);
+        self.pan.store(pan.to_bits(), Ordering::Relaxed);
+        self.mute.store(mute, Ordering::Relaxed);
+    }
+
+    /// Left and right factors (constant-power pan; centre is unity on both).
+    fn factors(&self) -> [f32; 2] {
+        if self.mute.load(Ordering::Relaxed) {
+            return [0.0; 2];
+        }
+        let gain = f32::from_bits(self.gain.load(Ordering::Relaxed));
+        let pan = f32::from_bits(self.pan.load(Ordering::Relaxed));
         let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
-        // Centre keeps unity gain on both sides.
         let norm = std::f32::consts::SQRT_2;
-        GainPan { left: gain * angle.cos() * norm, right: gain * angle.sin() * norm }
+        [gain * angle.cos() * norm, gain * angle.sin() * norm]
     }
 }
 
-impl Processor for GainPan {
+/// Track or master fader with pan and mute. A change is spread over one
+/// block so that it does not click.
+pub struct Fader {
+    live: Arc<Live>,
+    now: [f32; 2],
+}
+
+impl Fader {
+    pub fn new(live: Arc<Live>) -> Fader {
+        let now = live.factors();
+        Fader { live, now }
+    }
+}
+
+impl Processor for Fader {
     fn prepare(&mut self, _sample_rate: u32, _max_block: usize) {}
 
     fn process(&mut self, audio: &mut [f32], _transport: Transport) {
-        for frame in audio.as_chunks_mut::<2>().0 {
-            frame[0] *= self.left;
-            frame[1] *= self.right;
+        let target = self.live.factors();
+        let frames = audio.as_chunks_mut::<2>().0;
+        let step = [
+            (target[0] - self.now[0]) / frames.len().max(1) as f32,
+            (target[1] - self.now[1]) / frames.len().max(1) as f32,
+        ];
+        for frame in frames {
+            self.now[0] += step[0];
+            self.now[1] += step[1];
+            frame[0] *= self.now[0];
+            frame[1] *= self.now[1];
         }
+        self.now = target;
     }
 }
 
@@ -69,7 +112,6 @@ pub struct Track {
     /// position onwards.
     pub ring: rtrb::Consumer<f32>,
     pub chain: Vec<Box<dyn Processor>>,
-    pub mute: bool,
 }
 
 pub struct Graph {
@@ -187,7 +229,7 @@ impl Rt {
             let len = out.len();
             for chunk_start in (0..len).step_by(MAX_BLOCK * 2) {
                 let block = &mut out[chunk_start..(chunk_start + MAX_BLOCK * 2).min(len)];
-                for track in &mut graph.tracks {
+                for (index, track) in graph.tracks.iter_mut().enumerate() {
                     let scratch = &mut self.scratch[..block.len()];
                     let available = track.ring.slots().min(block.len());
                     if let Ok(chunk) = track.ring.read_chunk(available) {
@@ -199,19 +241,24 @@ impl Rt {
                     // The disk thread fell behind: the rest of the block is silence.
                     scratch[available..].fill(0.0);
                     dry |= available < block.len();
-                    if track.mute {
-                        continue;
-                    }
                     for processor in &mut track.chain {
                         processor.process(scratch, transport);
                     }
+                    let mut peak = 0.0f32;
                     for (o, s) in block.iter_mut().zip(scratch.iter()) {
                         *o += *s;
+                        peak = peak.max(s.abs());
+                    }
+                    // Non-negative floats order like their bits: a lock-free maximum.
+                    if let Some(meter) = self.shared.meters.get(index) {
+                        meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
                     }
                 }
                 for processor in &mut graph.master {
                     processor.process(block, transport);
                 }
+                let peak = block.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+                self.shared.master_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
             }
             if dry {
                 self.shared.underruns.fetch_add(1, Ordering::Relaxed);

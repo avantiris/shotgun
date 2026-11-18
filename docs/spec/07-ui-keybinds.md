@@ -48,6 +48,9 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Drop files from another application onto the timeline | import them and place them there, one after the other |
 | `+ Video` / `+ Audio` above the track names | add a track (video on top, audio at the bottom) |
 | Right click on the timeline | add a video or audio track, remove the empty track under the pointer |
+| Right click on a clip | remove its sound and keep the picture, or the reverse; delete it |
+| Shift while dragging an asset onto a track | place only the part that belongs there (the sound on an audio track, the picture on a video track) |
+| Right click on an asset | place it, or only its sound or picture, at the playhead; remove it from the project |
 
 ## Keys (left hand, bound by physical position)
 
@@ -107,6 +110,7 @@ Panels and output
 | Ctrl + S | name a checkpoint (saving itself is automatic) |
 | Ctrl + H | history: saved states and checkpoints, restore any of them |
 | Ctrl + W | close project, back to library |
+| M, or the Mixer button | mixer in place of the inspector: per audio track a level meter, fader (double-click: 0 dB), pan, mute, solo, low cut, noise reduction; master fader |
 | ` (key left of 1) | performance overlay (with Ctrl while a text field has focus, e.g. in the library) |
 | F2 | rename the project |
 | Esc | cancel / close popover |

@@ -10,6 +10,7 @@ libc = "0.2"
 log.workspace = true
 # Versions and features fixed by spike S3 (docs/spikes/s3-audio.md).
 pipewire = { version = "0.10.1", features = ["v1_2_0"] }
+nnnoiseless = { version = "0.5", default-features = false }
 rtrb = "0.4.1"
 thiserror.workspace = true
 

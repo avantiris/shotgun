@@ -20,6 +20,7 @@ pub enum EditorRequest {
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
     SetSize(u32, u32),
+    Export,
 }
 
 #[derive(Default)]
@@ -30,6 +31,7 @@ pub struct Editor {
     pub assets: AssetsPanel,
     pub timeline: Timeline,
     pub clip_panel: ClipPanel,
+    pub mixer: crate::mixer::Mixer,
     was_playing: bool,
     /// The label being typed for the selected asset.
     asset_label: Option<(AssetId, String)>,
@@ -86,7 +88,11 @@ impl Editor {
         egui::Panel::right("inspector").default_size(300.0).min_size(200.0).show(ui, |ui| {
             // The content can be taller than a small window.
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                self.inspector(ui, session, sequence, target.as_ref(), error, &mut request);
+                if self.mixer.open {
+                    self.mixer.ui(ui, session, sequence, view, error);
+                } else {
+                    self.inspector(ui, session, sequence, target.as_ref(), error, &mut request);
+                }
             });
         });
         let recording = self.clip_panel.recording;
@@ -145,6 +151,17 @@ impl Editor {
                 None if saved == appended => ui.label(RichText::new("Saved").color(theme::DIM)),
                 None => ui.label(RichText::new("Saving...").color(theme::ACCENT)),
             };
+            ui.add_space(8.0);
+            if ui
+                .selectable_label(self.mixer.open, "Mixer")
+                .on_hover_text("Levels, pan, mute, solo and clean-up per audio track (M)")
+                .clicked()
+            {
+                self.mixer.open = !self.mixer.open;
+            }
+            if ui.button("Export").on_hover_text("Ctrl+E").clicked() {
+                *request = Some(EditorRequest::Export);
+            }
         });
     }
 

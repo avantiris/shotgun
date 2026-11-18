@@ -13,6 +13,9 @@ pub struct ViewerState {
     /// Playhead in sequence frames.
     pub frame: i64,
     pub playing: bool,
+    /// Peak level per audio track since the last frame (linear), and of the mix.
+    pub meters: Vec<f32>,
+    pub master_meter: f32,
     /// Lines for the performance overlay.
     pub stats: Vec<String>,
 }

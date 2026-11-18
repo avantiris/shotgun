@@ -56,6 +56,13 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             let row = if row == "new" { None } else { Some(row.parse()?) };
             Step::Dev(DevStep::Drop(frame.parse()?, row, only))
         }
+        "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
+        "mix" => {
+            // mix:<audio track number or master>:<field>=<value>
+            let (which, rest) = arg.split_once(':').ok_or_else(|| anyhow!("mix needs <track>:<field>=<value>"))?;
+            let (field, value) = rest.split_once('=').ok_or_else(|| anyhow!("mix needs <field>=<value>"))?;
+            Step::Dev(DevStep::Mix(which.to_owned(), field.to_owned(), value.parse()?))
+        }
         "size" => {
             let (w, h) = arg.split_once('x').ok_or_else(|| anyhow!("size needs <width>x<height>"))?;
             Step::Dev(DevStep::Size(w.parse()?, h.parse()?))

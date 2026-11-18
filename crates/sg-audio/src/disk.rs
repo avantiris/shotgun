@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
-use crate::graph::{GainPan, Graph, MAX_BLOCK, Processor, Slot, Track};
+use crate::fx::TrackFx;
+use crate::graph::{Fader, Graph, Live, MAX_BLOCK, Processor, Slot, Track};
 use crate::{ClipSpan, Mix, SAMPLE_RATE, Shared};
 
 pub enum Control {
@@ -117,6 +118,11 @@ struct Feed {
     clips: Vec<ClipSpan>,
     /// Timeline sample of the next frame to write.
     next: i64,
+    fx: TrackFx,
+    /// Settings of the clean-up, read at every fill.
+    low_cut_hz: f32,
+    denoise: f32,
+    live: Arc<Live>,
 }
 
 struct Disk {
@@ -125,6 +131,7 @@ struct Disk {
     activate: Option<Box<dyn Fn(bool) + Send>>,
     mix: Mix,
     feeds: Vec<Feed>,
+    master: Arc<Live>,
     files: HashMap<PathBuf, Option<Arc<Wav>>>,
     playing: bool,
     block: Vec<f32>,
@@ -132,6 +139,14 @@ struct Disk {
     /// Scratch for one clip's stretch of a block before gain and fades.
     segment: Vec<f32>,
     offered: u64,
+}
+
+/// True if going from `a` to `b` needs no new graph: the same clips on the
+/// same tracks, and noise reduction (which changes how far a feed reads
+/// ahead) on the same tracks. Faders and amounts may differ.
+fn same_structure(a: &Mix, b: &Mix) -> bool {
+    a.tracks.len() == b.tracks.len()
+        && a.tracks.iter().zip(&b.tracks).all(|(x, y)| x.clips == y.clips && (x.denoise > 0.0) == (y.denoise > 0.0))
 }
 
 impl Disk {
@@ -150,15 +165,10 @@ impl Disk {
         opened
     }
 
-    /// Writes up to `limit` frames into feed `index`.
-    fn fill(&mut self, index: usize, limit: usize) {
-        let frames = (self.feeds[index].producer.slots() / 2).min(limit).min(MAX_BLOCK);
-        if frames == 0 {
-            return;
-        }
-        let start = self.feeds[index].next;
+    /// Lays the clips of feed `index` into `block` (interleaved stereo)
+    /// from timeline sample `start` and runs the track's clean-up over it.
+    fn render(&mut self, index: usize, start: i64, block: &mut Vec<f32>, frames: usize) {
         let end = start + frames as i64;
-        let mut block = std::mem::take(&mut self.block);
         let mut raw = std::mem::take(&mut self.raw);
         block.clear();
         block.resize(frames * 2, 0.0);
@@ -178,15 +188,30 @@ impl Disk {
             i += 1;
         }
         let feed = &mut self.feeds[index];
+        feed.fx.process(block, feed.low_cut_hz, feed.denoise);
+        self.raw = raw;
+    }
+
+    /// Writes up to `limit` frames into feed `index`.
+    fn fill(&mut self, index: usize, limit: usize) {
+        let frames = (self.feeds[index].producer.slots() / 2).min(limit).min(MAX_BLOCK);
+        if frames == 0 {
+            return;
+        }
+        // The clean-up hands sound back late; reading that much ahead puts
+        // it where it belongs.
+        let start = self.feeds[index].next + self.feeds[index].fx.delay() as i64;
+        let mut block = std::mem::take(&mut self.block);
+        self.render(index, start, &mut block, frames);
+        let feed = &mut self.feeds[index];
         if let Ok(mut chunk) = feed.producer.write_chunk(frames * 2) {
             let (a, b) = chunk.as_mut_slices();
             a.copy_from_slice(&block[..a.len()]);
             b.copy_from_slice(&block[a.len()..]);
             chunk.commit_all();
-            feed.next = end;
+            feed.next += frames as i64;
         }
         self.block = block;
-        self.raw = raw;
     }
 
     fn fill_all(&mut self, limit: usize) {
@@ -204,15 +229,37 @@ impl Disk {
         self.feeds.clear();
         for track in &self.mix.tracks {
             let (producer, ring) = rtrb::RingBuffer::new(RING_FRAMES * 2);
-            let mut fader: Box<dyn Processor> = Box::new(GainPan::new(track.gain, track.pan));
+            let live = Live::new(track.gain, track.pan, track.mute);
+            let mut fader: Box<dyn Processor> = Box::new(Fader::new(live.clone()));
             fader.prepare(SAMPLE_RATE, MAX_BLOCK);
-            tracks.push(Track { ring, chain: vec![fader], mute: track.mute });
-            self.feeds.push(Feed { producer, clips: track.clips.clone(), next: pos });
+            tracks.push(Track { ring, chain: vec![fader] });
+            self.feeds.push(Feed {
+                producer,
+                clips: track.clips.clone(),
+                next: pos,
+                fx: TrackFx::new(track.denoise > 0.0),
+                low_cut_hz: track.low_cut_hz,
+                denoise: track.denoise,
+                live,
+            });
         }
         if playing {
+            // Run the clean-up over the stretch it will hold back, so that
+            // what comes out first is the sound at `pos`.
+            let mut block = std::mem::take(&mut self.block);
+            for index in 0..self.feeds.len() {
+                let delay = self.feeds[index].fx.delay();
+                if delay > 0 {
+                    self.render(index, pos, &mut block, delay);
+                }
+            }
+            self.block = block;
             self.fill_all(PREFILL_FRAMES);
         }
-        let graph = Box::new(Graph { tracks, master: Vec::new(), start: pos, playing });
+        self.master = Live::new(self.mix.master_gain, 0.0, false);
+        let mut master: Box<dyn Processor> = Box::new(Fader::new(self.master.clone()));
+        master.prepare(SAMPLE_RATE, MAX_BLOCK);
+        let graph = Box::new(Graph { tracks, master: vec![master], start: pos, playing });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
         self.offered += 1;
@@ -222,8 +269,17 @@ impl Disk {
     fn handle(&mut self, control: Control) -> bool {
         match control {
             Control::Mix(mix) => {
+                let live_only = self.playing && same_structure(&self.mix, &mix);
                 self.mix = mix;
-                if self.playing {
+                if live_only {
+                    // A fader moved: no new graph, so nothing is refilled
+                    // and nothing can click.
+                    for (feed, track) in self.feeds.iter_mut().zip(&self.mix.tracks) {
+                        feed.live.set(track.gain, track.pan, track.mute);
+                        (feed.low_cut_hz, feed.denoise) = (track.low_cut_hz, track.denoise);
+                    }
+                    self.master.set(self.mix.master_gain, 0.0, false);
+                } else if self.playing {
                     // Continue from what the callback will render next.
                     let pos = self.shared.clock_pos.load(Ordering::Relaxed)
                         + self.shared.quantum.load(Ordering::Relaxed) as i64;
@@ -280,6 +336,7 @@ pub fn run(
         activate,
         mix: Mix::default(),
         feeds: Vec::new(),
+        master: Live::new(1.0, 0.0, false),
         files: HashMap::new(),
         playing: false,
         block: Vec::new(),

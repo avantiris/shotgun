@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipError, ClipStore};
 use crate::ids::{AssetId, ClipId, SequenceId, TrackId};
-use crate::model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader};
+use crate::model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader, TrackSettings};
 use crate::props::ClipProps;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,6 +71,17 @@ pub enum Op {
         track: TrackId,
         from: i64,
         delta: i64,
+    },
+    /// Sets the mixer settings of a track.
+    SetTrackMix {
+        seq: SequenceId,
+        track: TrackId,
+        mix: TrackSettings,
+    },
+    /// Sets the master fader of a sequence, in decibels.
+    SetMasterGain {
+        id: SequenceId,
+        db: f32,
     },
     /// Changes the frame size of a sequence.
     SetSequenceSize {
@@ -149,6 +160,8 @@ impl Op {
             Op::RemoveClip { .. } => "remove clip",
             Op::SetClip { .. } => "trim or move clip",
             Op::ShiftFrom { .. } => "ripple",
+            Op::SetTrackMix { .. } => "adjust track",
+            Op::SetMasterGain { .. } => "adjust master",
             Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
             Op::AddMarker { .. } => "add marker",
@@ -221,7 +234,13 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             if !seq.tracks.is_empty() {
                 return Err(OpError::NotEmpty("sequence"));
             }
-            let inverse = Op::AddSequence { index, sequence: seq.header() };
+            let add = Op::AddSequence { index, sequence: seq.header() };
+            // The header carries no master fader: put it back separately.
+            let inverse = if seq.master_db == 0.0 {
+                add
+            } else {
+                Op::Batch(vec![add, Op::SetMasterGain { id: *id, db: seq.master_db }])
+            };
             let mut next = p.clone();
             next.sequences.remove(index);
             Ok((next, inverse))
@@ -244,7 +263,13 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
                 return Err(OpError::NotEmpty("track"));
             }
             let track = s.tracks.remove(index);
-            Ok(Op::AddTrack { seq: *seq, index, track: track.header() })
+            let add = Op::AddTrack { seq: *seq, index, track: track.header() };
+            // A track's header carries no mixer settings: put them back separately.
+            Ok(if track.mix.is_default() {
+                add
+            } else {
+                Op::Batch(vec![add, Op::SetTrackMix { seq: *seq, track: track.id, mix: track.mix }])
+            })
         }),
         Op::InsertClip { seq, track, clip } => with_clips(p, *seq, *track, |clips| {
             let inverse = Op::RemoveClip { seq: *seq, track: *track, start: clip.start };
@@ -268,6 +293,19 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
                 None => Op::Batch(Vec::new()),
             };
             Ok((next, inverse))
+        }),
+        Op::SetTrackMix { seq, track, mix } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let inverse = Op::SetTrackMix { seq: *seq, track: *track, mix: old.mix };
+            // The clips and their properties stay shared.
+            s.tracks[index] = Arc::new(Track { mix: mix.clamped(), ..Track::clone(old) });
+            Ok(inverse)
+        }),
+        Op::SetMasterGain { id, db } => with_sequence(p, *id, |s| {
+            let inverse = Op::SetMasterGain { id: *id, db: s.master_db };
+            s.master_db = if db.is_finite() { db.clamp(-60.0, 12.0) } else { 0.0 };
+            Ok(inverse)
         }),
         Op::SetSequenceSize { id, width, height } => with_sequence(p, *id, |s| {
             if *width < 16 || *height < 16 || *width > 16384 || *height > 16384 {
@@ -381,8 +419,14 @@ fn with_clips(
         let index = s.tracks.iter().position(|t| t.id == track).ok_or(OpError::NoTrack(track))?;
         let old = &s.tracks[index];
         let (clips, inverse) = f(&old.clips)?;
-        s.tracks[index] =
-            Arc::new(Track { id: old.id, kind: old.kind, name: old.name.clone(), clips, props: old.props.clone() });
+        s.tracks[index] = Arc::new(Track {
+            id: old.id,
+            kind: old.kind,
+            name: old.name.clone(),
+            clips,
+            props: old.props.clone(),
+            mix: old.mix,
+        });
         Ok(inverse)
     })
 }
@@ -743,5 +787,38 @@ mod size_tests {
             apply(&p, &Op::SetSequenceSize { id: SEQ, width: 0, height: 100 }).unwrap_err(),
             OpError::BadSize(0, 100)
         );
+    }
+}
+
+#[cfg(test)]
+mod mix_tests {
+    use super::tests::{A1, SEQ, base};
+    use super::*;
+
+    #[test]
+    fn track_settings_and_master_change_and_undo() {
+        let p = base();
+        let mix = TrackSettings { gain_db: -6.0, pan: 0.5, mute: true, solo: false, low_cut_hz: 80.0, denoise: 0.7 };
+        let (p2, undo) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
+        assert_eq!(p2.sequences[0].track(A1).unwrap().mix, mix);
+        assert_eq!(apply(&p2, &undo).unwrap().0, p);
+        let (p3, undo) = apply(&p2, &Op::SetMasterGain { id: SEQ, db: -3.0 }).unwrap();
+        assert_eq!(p3.sequences[0].master_db, -3.0);
+        assert_eq!(apply(&p3, &undo).unwrap().0, p2);
+        // Out-of-range and non-numbers are brought back into range.
+        let wild = TrackSettings { gain_db: 99.0, pan: f32::NAN, denoise: 7.0, ..mix };
+        let (p4, _) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix: wild }).unwrap();
+        let kept = p4.sequences[0].track(A1).unwrap().mix;
+        assert_eq!((kept.gain_db, kept.pan, kept.denoise), (12.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn removing_a_track_remembers_its_settings() {
+        let p = base();
+        let mix = TrackSettings { gain_db: -12.0, ..TrackSettings::default() };
+        let (with_mix, _) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
+        let (without, undo) = apply(&with_mix, &Op::RemoveTrack { seq: SEQ, id: A1 }).unwrap();
+        assert!(without.sequences[0].track(A1).is_none());
+        assert_eq!(apply(&without, &undo).unwrap().0, with_mix);
     }
 }

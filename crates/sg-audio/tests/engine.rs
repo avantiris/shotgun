@@ -38,7 +38,7 @@ fn wav(dir: &Path, name: &str, channels: u16, frames: usize, f: impl Fn(usize, u
 }
 
 fn track(clips: Vec<ClipSpan>) -> TrackMix {
-    TrackMix { clips, gain: 1.0, pan: 0.0, mute: false }
+    TrackMix::plain(clips)
 }
 
 fn pull(engine: &Engine, frames: usize) -> Vec<f32> {
@@ -63,6 +63,7 @@ fn clips_land_on_their_timeline_samples() {
     let engine = Engine::start(Backend::Manual).unwrap();
     // The clip sits at timeline sample 1000 and starts 200 samples into its file.
     engine.set_mix(Mix {
+        master_gain: 1.0,
         tracks: vec![track(vec![ClipSpan {
             start: 1000,
             len: 600,
@@ -114,7 +115,11 @@ fn mono_gain_pan_mute_and_mixing() {
     };
     let engine = Engine::start(Backend::Manual).unwrap();
     let mix = |pan: f32, mute: bool| Mix {
-        tracks: vec![TrackMix { clips: vec![clip(&mono, 0.5)], gain: 2.0, pan, mute }, track(vec![clip(&other, 1.0)])],
+        tracks: vec![
+            TrackMix { gain: 2.0, pan, mute, ..TrackMix::plain(vec![clip(&mono, 0.5)]) },
+            track(vec![clip(&other, 1.0)]),
+        ],
+        master_gain: 1.0,
     };
     // Mono 0.5, clip gain 0.5, track gain 2, centre: 0.5 on both sides, plus 0.25.
     engine.set_mix(mix(0.0, false));
@@ -143,6 +148,7 @@ fn pause_seek_and_resume_are_sample_accurate() {
     let file = wav(dir.path(), "r.wav", 1, 48_000, |n, _| ramp(n));
     let engine = Engine::start(Backend::Manual).unwrap();
     engine.set_mix(Mix {
+        master_gain: 1.0,
         tracks: vec![track(vec![ClipSpan {
             start: 0,
             len: 48_000,
@@ -188,6 +194,7 @@ fn a_missing_file_is_silence_until_it_appears() {
     let path = dir.path().join("later.wav");
     let engine = Engine::start(Backend::Manual).unwrap();
     let mix = Mix {
+        master_gain: 1.0,
         tracks: vec![track(vec![ClipSpan {
             start: 0,
             len: 1000,
@@ -241,7 +248,7 @@ fn fades_and_speed() {
     // A 1000-sample clip of constant 1.0 with 100-sample fades.
     let faded =
         ClipSpan { start: 0, len: 1000, src_in: 0, wav: flat, gain: 1.0, fade_in: 100, fade_out: 100, speed: (1, 1) };
-    engine.set_mix(Mix { tracks: vec![track(vec![faded])] });
+    engine.set_mix(Mix { tracks: vec![track(vec![faded])], master_gain: 1.0 });
     engine.play(0);
     engine.settle();
     let out = pull(&engine, 1024);
@@ -267,7 +274,7 @@ fn fades_and_speed() {
             fade_out: 0,
             speed,
         };
-        engine.set_mix(Mix { tracks: vec![track(vec![clip])] });
+        engine.set_mix(Mix { tracks: vec![track(vec![clip])], master_gain: 1.0 });
         engine.play(0);
         engine.settle();
         let out = pull(&engine, 600);
@@ -276,4 +283,77 @@ fn fades_and_speed() {
             assert!((out[n * 2] - expected).abs() < 1e-5, "speed {speed:?} sample {n}: {} vs {expected}", out[n * 2]);
         }
     }
+}
+
+/// Renders `frames` frames of a mix from position 0 with the manual backend.
+fn rendered(mix: Mix, frames: usize) -> Vec<f32> {
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(mix);
+    engine.play(0);
+    let mut out = vec![0.0f32; frames * 2];
+    for block in out.chunks_mut(512) {
+        engine.settle();
+        engine.pull(block);
+    }
+    out
+}
+
+#[test]
+fn noise_reduction_keeps_the_track_in_time() {
+    let dir = tempfile::tempdir().unwrap();
+    // Silence, then a click-free burst of a gliding tone starting at 0.5 s.
+    let samples: Vec<f32> = (0..48_000)
+        .map(|i| {
+            let t = (i as f32 - 24_000.0) / 48_000.0;
+            if t < 0.0 {
+                0.0
+            } else {
+                0.5 * (2.0 * std::f32::consts::PI * (200.0 * t + 300.0 * t * t)).sin() * (t * 40.0).min(1.0)
+            }
+        })
+        .collect();
+    let path = wav(dir.path(), "burst.wav", 1, samples.len(), |i, _| samples[i]);
+    let span =
+        ClipSpan { start: 0, len: 48_000, src_in: 0, wav: path, gain: 1.0, fade_in: 0, fade_out: 0, speed: (1, 1) };
+    let plain = rendered(Mix { tracks: vec![track(vec![span.clone()])], master_gain: 1.0 }, 48_000);
+    // Blended half and half, the treated sound must line up with the plain
+    // one: if it were late, the two halves would cancel in places.
+    let half = TrackMix { denoise: 0.0001, ..track(vec![span]) };
+    let treated = rendered(Mix { tracks: vec![half], master_gain: 1.0 }, 48_000);
+    let worst = plain.iter().zip(&treated).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 0.01, "a nearly dry noise reduction changed the sound by {worst}");
+    // And the burst starts where it starts in the file.
+    let onset = |v: &[f32]| v.iter().step_by(2).position(|s| s.abs() > 0.05).unwrap();
+    assert!(onset(&treated).abs_diff(onset(&plain)) <= 2);
+}
+
+#[test]
+fn faders_move_without_a_new_graph_and_meters_follow() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = wav(dir.path(), "dc.wav", 1, 48_000, |_, _| 0.5);
+    let span =
+        ClipSpan { start: 0, len: 48_000, src_in: 0, wav: path, gain: 1.0, fade_in: 0, fade_out: 0, speed: (1, 1) };
+    let mix = |gain: f32, master: f32| Mix {
+        tracks: vec![TrackMix { gain, ..track(vec![span.clone()]) }],
+        master_gain: master,
+    };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(mix(1.0, 1.0));
+    engine.play(0);
+    engine.settle();
+    let mut block = vec![0.0f32; 512];
+    engine.pull(&mut block);
+    assert!((block[500] - 0.5).abs() < 1e-4);
+    let mut meters = [0.0f32; 2];
+    assert!((engine.take_meters(&mut meters) - 0.5).abs() < 1e-4);
+    assert!((meters[0] - 0.5).abs() < 1e-4 && meters[1] == 0.0);
+    // Halve the track, double nothing: the position keeps counting on.
+    engine.set_mix(mix(0.5, 0.5));
+    engine.settle();
+    engine.pull(&mut block);
+    engine.pull(&mut block);
+    assert!((block[500] - 0.125).abs() < 1e-4, "{}", block[500]);
+    // The clock is where the third block began: nothing was restarted.
+    assert_eq!(engine.position(), 256 * 2);
+    assert!((engine.take_meters(&mut meters) - 0.5).abs() < 0.01, "the ramp starts at the old level");
 }

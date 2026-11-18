@@ -23,7 +23,7 @@ use sg_render::{Compositor, LayerDraw, Source, plan, sequence_frames};
 
 use crate::frames::{Decoded, FrameKey, Pool, Quality, TextureCache};
 
-pub use sg_audio::{AudioError, Backend, DEFAULT_QUANTUM, Stats as AudioStats};
+pub use sg_audio::{AudioError, Backend, DEFAULT_QUANTUM, MAX_METERS, Stats as AudioStats};
 
 /// VRAM spent on decoded preview frames.
 const TEXTURE_BUDGET: u64 = 768 << 20;
@@ -74,6 +74,7 @@ struct Shared {
 }
 
 pub struct Player {
+    meters: sg_audio::Meters,
     commands: Sender<Command>,
     shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -89,6 +90,7 @@ impl Player {
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Result<Player, AudioError> {
         let audio = Engine::start(backend)?;
+        let meters = audio.meters();
         let compositor = Compositor::new(device.clone(), queue.clone(), 1920, 1080);
         let shared = Arc::new(Shared {
             frame: AtomicI64::new(0),
@@ -123,7 +125,7 @@ impl Player {
         };
         let thread =
             std::thread::Builder::new().name("sg-player".into()).spawn(move || state.run(command_rx, result_rx))?;
-        Ok(Player { commands, shared, thread: Some(thread) })
+        Ok(Player { meters, commands, shared, thread: Some(thread) })
     }
 
     fn send(&self, command: Command) {
@@ -185,6 +187,12 @@ impl Player {
     pub fn output(&self) -> (wgpu::TextureView, u64) {
         let view = self.shared.output.lock().unwrap_or_else(PoisonError::into_inner).clone();
         (view, self.shared.output_generation.load(Ordering::Relaxed))
+    }
+
+    /// Peak levels since the last call: per audio track into `tracks`, the
+    /// mix as the return value. Only atomics are read: fine on the UI thread.
+    pub fn take_meters(&self, tracks: &mut [f32]) -> f32 {
+        self.meters.take(tracks)
     }
 
     pub fn stats(&self) -> PlayStats {
@@ -611,6 +619,8 @@ type Drawable = (wgpu::TextureView, (u32, u32), i32, usize, bool);
 /// What a sequence sounds like: its audio tracks as the engine wants them.
 /// Preview and export both build their mix here, so they cannot differ.
 pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
+    let db = |decibels: f32| 10f32.powf(decibels / 20.0);
+    let any_solo = sequence.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.mix.solo);
     let tracks = sequence
         .tracks
         .iter()
@@ -636,10 +646,13 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                     }
                 })
                 .collect(),
-            gain: 1.0,
-            pan: 0.0,
-            mute: false,
+            gain: db(track.mix.gain_db),
+            pan: track.mix.pan,
+            // While any track is soloed, the others are silent.
+            mute: track.mix.mute || (any_solo && !track.mix.solo),
+            low_cut_hz: track.mix.low_cut_hz,
+            denoise: track.mix.denoise,
         })
         .collect();
-    Mix { tracks }
+    Mix { tracks, master_gain: db(sequence.master_db) }
 }

@@ -40,6 +40,8 @@ pub enum Action {
     ExportGif,
     /// Name the current state (a git tag).
     Checkpoint,
+    /// Show or hide the mixer.
+    Mixer,
     /// Show saved states and checkpoints.
     History,
     /// Fix the selected clip's placement at the playhead.
@@ -118,6 +120,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::F, Action::KeyframeSet),
     bind(Scope::Editor, false, true, Key::F, Action::KeyframeRemove),
     bind(Scope::Editor, false, false, Key::T, Action::AddTitle),
+    bind(Scope::Editor, false, false, Key::M, Action::Mixer),
     bind(Scope::Editor, false, false, Key::R, Action::LiveRecord),
     bind(Scope::Editor, true, false, Key::V, Action::Paste),
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),

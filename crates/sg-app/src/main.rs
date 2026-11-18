@@ -123,6 +123,8 @@ struct App {
     viewer_texture: Option<(egui::TextureId, u64)>,
     /// The snapshot the player was last given.
     synced: Option<(PathBuf, std::sync::Arc<sg_core::Project>)>,
+    /// Scratch for the level meters read each frame.
+    meters: Vec<f32>,
     /// Stops the running export.
     export_cancel: Option<sg_media::Cancel>,
     library: PathBuf,
@@ -430,6 +432,8 @@ impl App {
             frame: player.frame(),
             playing: player.is_playing(),
             stats: player_lines(player),
+            master_meter: player.take_meters(&mut self.meters),
+            meters: self.meters.clone(),
         }
     }
 
@@ -773,6 +777,7 @@ fn main() -> anyhow::Result<()> {
         player: None,
         viewer_texture: None,
         synced: None,
+        meters: vec![0.0; sg_play::MAX_METERS],
         export_cancel: None,
         library,
         repaint_at: None,
