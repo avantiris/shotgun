@@ -56,7 +56,10 @@ Automated runs: `SHOTGUN_LIBRARY=<temp dir> SHOTGUN_APP_ID=shotgun-dev` plus
 (`--help` lists the steps; `open:` takes the project folder name). The script waits
 for background jobs between steps, `shot` renders off-screen, and the
 `shotgun-dev` window rules (see `docs/spikes/README.md`) keep the window on a
-hidden workspace. Temporary libraries go in `/disk/shotgun-dev/tmp`.
+hidden workspace. Start automated runs only with
+`scripts/run-hidden.sh <library> --script "..."`: it sets those rules (they
+vanish on a Hyprland reload), the null audio backend and the clipboard guard.
+Temporary libraries go in `/disk/shotgun-dev/tmp`.
 Automated runs must also set `SHOTGUN_AUDIO=null` (or `sink:<a null sink>`):
 never play test sound through the user's speakers. They must also set
 `SHOTGUN_NO_CLIPBOARD=1`: exports of share copies and GIFs otherwise replace

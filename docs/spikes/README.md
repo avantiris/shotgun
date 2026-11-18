@@ -43,6 +43,12 @@ Rules for spike work:
     Rule syntax on Hyprland 0.56: `hyprctl keyword windowrule 'match:class
     ^(name)$, <effect> <value>'`; `noinitialfocus` is spelled
     `no_initial_focus`.
+    These are runtime rules and are gone after a Hyprland config reload.
+    Incident (2026-11-18, evening): the rules had vanished, and one scripted
+    run opened as a normal tiled window on the user's workspace for about two
+    seconds. Since then every automated run goes through
+    `scripts/run-hidden.sh`, which sets the rules before each start; do not
+    start the app for an automated check in any other way.
   - Anything that injects pointer/keyboard input or writes the clipboard runs
     inside a nested or headless compositor with its own `WAYLAND_DISPLAY`,
     never on the real session. If that is not possible, do not run it: leave a

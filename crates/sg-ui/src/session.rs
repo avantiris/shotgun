@@ -96,7 +96,12 @@ impl Session {
     /// playhead if there is room for it there and otherwise at the end:
     /// its picture on the video track, its sound on the audio track, both
     /// starting at the same time. Returns the frame it starts at.
-    pub fn place_asset(&mut self, asset: &Asset, playhead: i64) -> Result<Option<i64>, OpError> {
+    pub fn place_asset(
+        &mut self,
+        asset: &Asset,
+        playhead: i64,
+        only: Option<TrackKind>,
+    ) -> Result<Option<i64>, OpError> {
         let project = self.project().clone();
         let Some(seq) = project.sequences.first() else { return Ok(None) };
         let rate = seq.rate;
@@ -125,8 +130,10 @@ impl Session {
             }
             tracks.iter().find(|t| free(t)).or(tracks.first()).copied()
         };
-        let video_track = pick(TrackKind::Video, true).filter(|_| asset.video.is_some());
-        let audio_track = pick(TrackKind::Audio, false).filter(|_| asset.audio.is_some());
+        let video_track =
+            pick(TrackKind::Video, true).filter(|_| asset.video.is_some() && only != Some(TrackKind::Audio));
+        let audio_track =
+            pick(TrackKind::Audio, false).filter(|_| asset.audio.is_some() && only != Some(TrackKind::Video));
         // After everything that is already on the tracks this asset uses.
         let video_end = video_track.map_or(0, |t| t.clips.end());
         let audio_end = audio_track.map_or(0, |t| {
@@ -231,7 +238,14 @@ pub struct Placement {
 /// asset it can hold if it is free there; otherwise the nearest free track
 /// of the right kind; if there is none, a new track. A drop therefore never
 /// fails for lack of room and nobody has to make tracks by hand first.
-pub fn place_at(sequence: &sg_core::Sequence, asset: &Asset, frame: i64, row: Option<usize>) -> Placement {
+/// `only` limits the drop to the picture or the sound of the asset.
+pub fn place_at(
+    sequence: &sg_core::Sequence,
+    asset: &Asset,
+    frame: i64,
+    row: Option<usize>,
+    only: Option<TrackKind>,
+) -> Placement {
     let rate = sequence.rate;
     let start = frame.clamp(0, 1 << 40);
     // A still gets five seconds.
@@ -261,8 +275,8 @@ pub fn place_at(sequence: &sg_core::Sequence, asset: &Asset, frame: i64, row: Op
     Placement {
         start,
         frames,
-        video: asset.video.is_some().then(|| slot(TrackKind::Video)),
-        audio: asset.audio.is_some().then(|| slot(TrackKind::Audio)),
+        video: (asset.video.is_some() && only != Some(TrackKind::Audio)).then(|| slot(TrackKind::Video)),
+        audio: (asset.audio.is_some() && only != Some(TrackKind::Video)).then(|| slot(TrackKind::Audio)),
     }
 }
 
@@ -289,11 +303,17 @@ impl Session {
 
     /// Puts an asset where [`place_at`] says, creating the tracks it needs,
     /// as one undo step. Returns the frame it starts at.
-    pub fn drop_asset(&mut self, asset: &Asset, frame: i64, row: Option<usize>) -> Result<Option<i64>, OpError> {
+    pub fn drop_asset(
+        &mut self,
+        asset: &Asset,
+        frame: i64,
+        row: Option<usize>,
+        only: Option<TrackKind>,
+    ) -> Result<Option<i64>, OpError> {
         let project = self.project().clone();
         let Some(sequence) = project.sequences.first() else { return Ok(None) };
         let rate = sequence.rate;
-        let placement = place_at(sequence, asset, frame, row);
+        let placement = place_at(sequence, asset, frame, row, only);
         let mut ops = Vec::new();
         let mut len = sequence.tracks.len();
         let mut track_of = |session: &mut Session, slot: Slot, kind: TrackKind, ops: &mut Vec<Op>| match slot {

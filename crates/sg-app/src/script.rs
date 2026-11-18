@@ -31,6 +31,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "open" => Step::Dev(DevStep::Open(need()?)),
         "rename" => Step::Dev(DevStep::Rename(need()?)),
         "import" => Step::Dev(DevStep::Import(need()?)),
+        "importsound" => Step::Dev(DevStep::ImportSound(need()?)),
         "asset" => Step::Dev(DevStep::SelectAsset(need()?.parse().map_err(|_| anyhow!("asset needs a number"))?)),
         "add" => Step::Dev(DevStep::Act(Action::AddAsset)),
         "insert" => Step::Dev(DevStep::Act(Action::InsertAsset)),
@@ -47,8 +48,13 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "export" => Step::Dev(DevStep::Export(need()?)),
         "drop" => {
             let (frame, row) = arg.split_once(':').ok_or_else(|| anyhow!("drop needs <frame>:<row or new>"))?;
+            let (row, only) = match row.split_once(':') {
+                Some((row, "sound")) => (row, Some(sg_core::TrackKind::Audio)),
+                Some((row, "picture")) => (row, Some(sg_core::TrackKind::Video)),
+                _ => (row, None),
+            };
             let row = if row == "new" { None } else { Some(row.parse()?) };
-            Step::Dev(DevStep::Drop(frame.parse()?, row))
+            Step::Dev(DevStep::Drop(frame.parse()?, row, only))
         }
         "size" => {
             let (w, h) = arg.split_once('x').ok_or_else(|| anyhow!("size needs <width>x<height>"))?;

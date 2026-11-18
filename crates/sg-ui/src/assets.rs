@@ -26,11 +26,15 @@ enum Poster {
 
 pub enum AssetRequest {
     LoadPoster(AssetId),
-    ImportLink(String),
+    /// A link, and whether only its sound is wanted.
+    ImportLink(String, bool),
     Browse,
     CancelJob(u64),
-    /// Put the selected asset on the timeline (double-click).
-    Insert,
+    /// Put the selected asset on the timeline (double-click), or only its
+    /// picture or sound.
+    Insert(Option<sg_core::TrackKind>),
+    /// Remove the selected asset from the project.
+    Remove,
 }
 
 #[derive(Default)]
@@ -44,6 +48,8 @@ pub struct AssetsPanel {
     add_open: bool,
     focus_link: bool,
     link: String,
+    /// Import only the sound of the link.
+    sound_only: bool,
     /// A drag from another application is over the window.
     pub drag_hover: bool,
 }
@@ -122,7 +128,7 @@ impl AssetsPanel {
             ui.label(RichText::new("ASSETS").size(11.0).strong().color(theme::DIM));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .small_button("Add")
+                    .button("Add")
                     .on_hover_text("Paste a link or pick files (Ctrl+Q). Dropping files anywhere works too.")
                     .clicked()
                 {
@@ -148,7 +154,7 @@ impl AssetsPanel {
         let mut cancel = None;
         for (job, view) in &self.jobs {
             ui.horizontal(|ui| {
-                if ui.small_button("x").on_hover_text("Cancel").clicked() {
+                if ui.button("x").on_hover_text("Cancel").clicked() {
                     cancel = Some(*job);
                 }
                 let text = format!("{}: {}", view.stage, view.label);
@@ -195,8 +201,31 @@ impl AssetsPanel {
                     }
                     if response.double_clicked() {
                         self.selected = Some(asset.id);
-                        out.push(AssetRequest::Insert);
+                        out.push(AssetRequest::Insert(None));
                     }
+                    if response.secondary_clicked() {
+                        self.selected = Some(asset.id);
+                    }
+                    response.context_menu(|ui| {
+                        let both = asset.video.is_some() && asset.audio.is_some();
+                        if ui.button("Place at the playhead (Enter)").clicked() {
+                            out.push(AssetRequest::Insert(None));
+                            ui.close();
+                        }
+                        if both && ui.button("Place only the sound").clicked() {
+                            out.push(AssetRequest::Insert(Some(sg_core::TrackKind::Audio)));
+                            ui.close();
+                        }
+                        if both && ui.button("Place only the picture").clicked() {
+                            out.push(AssetRequest::Insert(Some(sg_core::TrackKind::Video)));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Remove from project (Del)").clicked() {
+                            out.push(AssetRequest::Remove);
+                            ui.close();
+                        }
+                    });
                     if ui.is_rect_visible(rect) {
                         if let std::collections::hash_map::Entry::Vacant(e) = self.posters.entry(asset.id) {
                             e.insert(Poster::Requested);
@@ -305,7 +334,7 @@ impl AssetsPanel {
                             if (ui.add_enabled(!link.is_empty(), egui::Button::new("Import link")).clicked() || entered)
                                 && !link.is_empty()
                             {
-                                out.push(AssetRequest::ImportLink(link));
+                                out.push(AssetRequest::ImportLink(link, self.sound_only));
                                 self.link.clear();
                                 self.add_open = false;
                             }
@@ -313,6 +342,8 @@ impl AssetsPanel {
                                 out.push(AssetRequest::Browse);
                                 self.add_open = false;
                             }
+                            ui.checkbox(&mut self.sound_only, "Sound only")
+                                .on_hover_text("Take only the sound of the link, for music from a video site.");
                             ui.label(RichText::new("Esc to close").color(theme::DIM));
                         });
                     });

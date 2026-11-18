@@ -124,7 +124,7 @@ impl ClipPanel {
             });
             ui.horizontal(|ui| {
                 if ui
-                    .small_button("Keyframe (F)")
+                    .button("Keyframe (F)")
                     .on_hover_text("Fix position, scale, rotation and opacity at the playhead")
                     .clicked()
                 {
@@ -134,7 +134,7 @@ impl ClipPanel {
                     }
                     changed = true;
                 }
-                if ui.small_button("Remove (Shift+F)").clicked() {
+                if ui.button("Remove (Shift+F)").clicked() {
                     for param in props.picture_params() {
                         changed |= param.remove_key(at);
                     }

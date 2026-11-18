@@ -248,6 +248,7 @@ fn google_photos(
 
 fn yt_dlp(
     url: &str,
+    sound_only: bool,
     dir: &Path,
     cancel: &Cancel,
     progress: &mut dyn FnMut(Option<f32>),
@@ -256,6 +257,10 @@ fn yt_dlp(
     cmd.args(["--no-playlist", "--newline", "--no-simulate", "--write-info-json"]);
     // No HDR pipeline yet (05-color): take the SDR rendition.
     cmd.args(["-S", "hdr:SDR"]);
+    if sound_only {
+        // The best sound stream as the site has it; nothing is re-encoded.
+        cmd.args(["-f", "bestaudio/best"]);
+    }
     cmd.args([
         "--progress-template",
         "download:SGPROG %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
@@ -302,6 +307,7 @@ fn yt_dlp(
 /// Downloads what `url` points to into `dir` (which exists and is empty).
 pub fn fetch(
     url: &str,
+    sound_only: bool,
     dir: &Path,
     cancel: &Cancel,
     progress: &mut dyn FnMut(Option<f32>),
@@ -313,7 +319,7 @@ pub fn fetch(
             Ok(Some(path)) => Ok(vec![Fetched { label: stem(&path), path, uploader: None }]),
             Err(ToolError::Cancelled) => Err(ToolError::Cancelled),
             // Not media, or the server dislikes plain clients: yt-dlp knows more sites.
-            Ok(None) | Err(_) => yt_dlp(url, dir, cancel, progress),
+            Ok(None) | Err(_) => yt_dlp(url, sound_only, dir, cancel, progress),
         },
     }
 }

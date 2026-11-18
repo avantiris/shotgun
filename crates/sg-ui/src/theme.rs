@@ -28,6 +28,18 @@ pub fn apply(ctx: &egui::Context) {
         v.widgets.inactive.weak_bg_fill = RAISED;
         style.visuals = v;
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(10.0, 4.0);
+        // Room around button labels (feedback F3.5): text never touches the edge.
+        style.spacing.button_padding = egui::vec2(12.0, 6.0);
+        style.spacing.interact_size.y = 26.0;
+        style.spacing.menu_margin = egui::Margin::same(8);
+        let radius = egui::CornerRadius::same(5);
+        for widget in [
+            &mut style.visuals.widgets.inactive,
+            &mut style.visuals.widgets.hovered,
+            &mut style.visuals.widgets.active,
+            &mut style.visuals.widgets.open,
+        ] {
+            widget.corner_radius = radius;
+        }
     });
 }

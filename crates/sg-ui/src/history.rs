@@ -131,7 +131,7 @@ impl HistoryPanel {
                                                 ui.with_layout(
                                                     egui::Layout::right_to_left(egui::Align::Center),
                                                     |ui| {
-                                                        if ui.small_button("Restore").clicked() {
+                                                        if ui.button("Restore").clicked() {
                                                             let description = entry
                                                                 .checkpoints
                                                                 .first()

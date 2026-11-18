@@ -9,11 +9,13 @@
 //! Units: the view and the playhead are in sequence frames. Video tracks
 //! store frames, audio tracks store samples; `Lane` converts.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2};
 use sg_core::time::SAMPLE_RATE;
 use sg_core::{Asset, AssetId, Clip, ClipId, Marker, Op, Project, Rate, Sequence, Track, TrackId, TrackKind, Visible};
+use sg_media::peaks::Peaks;
 
 use crate::keymap::Action;
 use crate::session::{Placement, Session, Slot, place_at};
@@ -133,6 +135,12 @@ pub struct Timeline {
     rect: Rect,
     /// Where an asset being dragged over the timeline would land.
     drop_ghost: Option<Placement>,
+    /// Waveform data per asset, loaded off this thread on first sight.
+    waves: HashMap<AssetId, Wave>,
+    /// Assets whose peaks should be loaded; drained by the shell.
+    pub wave_requests: Vec<AssetId>,
+    /// The clip the context menu was opened on, with its row.
+    menu_clip: Option<(usize, Clip)>,
     /// The track row the context menu was opened on.
     menu_row: Option<usize>,
     /// Quads drawn in the last frame, for the performance overlay.
@@ -158,8 +166,78 @@ impl Default for Timeline {
             rect: Rect::NOTHING,
             drop_ghost: None,
             menu_row: None,
+            menu_clip: None,
+            waves: HashMap::new(),
+            wave_requests: Vec::new(),
             quads: 0,
         }
+    }
+}
+
+/// Waveform colour: dark on the clip's fill, like ink on the track colour.
+const WAVE: Color32 = Color32::from_rgb(10, 38, 30);
+
+enum Wave {
+    /// Asked for; nothing to draw yet.
+    Requested,
+    Ready(Arc<Peaks>),
+}
+
+/// The clip a waveform is drawn for.
+struct WaveSpan<'a> {
+    clip: &'a Clip,
+    /// Source samples per timeline sample.
+    speed: f64,
+    /// Top and bottom of the drawing area in points.
+    y: (f32, f32),
+}
+
+/// One vertical line per physical pixel between `x.0` and `x.1`, from the
+/// peak level whose blocks are about a pixel wide: the cost depends on the
+/// width on screen, not on the length of the sound.
+fn wave_columns(
+    peaks: &Peaks,
+    span: &WaveSpan<'_>,
+    x: (f32, f32),
+    ppp: f32,
+    units_at: &dyn Fn(f32) -> f64,
+    units_per_pixel: f64,
+    line: &mut dyn FnMut(f32, f32, f32),
+) {
+    // Peaks are in the file's own rate; the timeline counts 48 kHz samples.
+    let rate = peaks.sample_rate as f64 / SAMPLE_RATE as f64 * span.speed;
+    let per_pixel = (units_per_pixel * rate).max(1e-9);
+    let level = peaks.level_for(per_pixel);
+    let block = peaks.block_len(level) as f64;
+    let blocks = peaks.blocks(level);
+    let (mid, half) = ((span.y.0 + span.y.1) / 2.0, ((span.y.1 - span.y.0) / 2.0).max(1.0));
+    let (first, last) = ((x.0 * ppp).ceil() as i64, (x.1 * ppp).floor() as i64);
+    for px in first..last {
+        let at = px as f32 / ppp;
+        let source = (span.clip.src_in as f64 + (units_at(at) - span.clip.start as f64)) * rate;
+        if source < 0.0 {
+            continue;
+        }
+        let (b0, b1) = ((source / block) as usize, ((source + per_pixel) / block) as usize);
+        if b0 >= blocks {
+            break;
+        }
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        // A pixel covers at most a few blocks of the chosen level.
+        for b in b0..=b1.min(b0 + 8).min(blocks - 1) {
+            for channel in 0..peaks.channels as usize {
+                if let Some((min, max)) = peaks.get(level, channel, b) {
+                    low = low.min(min);
+                    high = high.max(max);
+                }
+            }
+        }
+        if low > high {
+            continue;
+        }
+        let (top, bottom) = (mid - high.clamp(-1.0, 1.0) * half, mid - low.clamp(-1.0, 1.0) * half);
+        // Silence still shows as a thin line.
+        line(at, top.min(bottom - 1.0 / ppp), bottom);
     }
 }
 
@@ -368,13 +446,16 @@ impl Timeline {
         let released = response.dnd_release_payload::<AssetId>();
         let Some(id) = released.clone().or_else(|| response.dnd_hover_payload::<AssetId>()) else { return };
         let Some(asset) = project.assets.get(&*id) else { return };
-        let (pos, alt) = ui.input(|i| (i.pointer.interact_pos(), i.modifiers.alt));
+        let (pos, alt, shift) = ui.input(|i| (i.pointer.interact_pos(), i.modifiers.alt, i.modifiers.shift));
         let Some((frame, row)) = pos.and_then(|p| self.drop_target(sequence, view.frame, p, !alt)) else { return };
+        // Shift: only the part that belongs on the track under the pointer
+        // (the sound of a video dropped on an audio track, say).
+        let only = row.filter(|_| shift).and_then(|r| sequence.tracks.get(r)).map(|t| t.kind);
         if released.is_none() {
-            self.drop_ghost = Some(place_at(sequence, asset, frame, row));
+            self.drop_ghost = Some(place_at(sequence, asset, frame, row, only));
             return;
         }
-        match session.drop_asset(asset, frame, row) {
+        match session.drop_asset(asset, frame, row, only) {
             Ok(_) => self.select_dropped(session, asset.id, frame),
             Err(e) => *error = Some(e.to_string()),
         }
@@ -422,11 +503,45 @@ impl Timeline {
             }
         });
         if response.secondary_clicked() {
-            let row = response.interact_pointer_pos().map_or(-1.0, |p| row_at(p.y));
+            let pos = response.interact_pointer_pos();
+            let row = pos.map_or(-1.0, |p| row_at(p.y));
             self.menu_row = (row >= 0.0 && (row as usize) < sequence.tracks.len()).then_some(row as usize);
+            let frame = pos.map_or(0.0, |p| self.left + (p.x - rect.left() - HEADER_W) as f64 * self.frames_per_point);
+            let on_lanes = pos.is_some_and(|p| p.x >= rect.left() + HEADER_W);
+            self.menu_clip = self.hit(sequence, row, frame).filter(|_| on_lanes).map(|(row, clip, _)| (row, clip));
+            // The menu acts on what is shown as selected.
+            if let Some((row, clip)) = self.menu_clip {
+                self.select(sequence, &sequence.tracks[row], &clip, false, false);
+            }
         }
         let mut remove = None;
+        let mut delete: Vec<Sel> = Vec::new();
         response.context_menu(|ui| {
+            if let Some((track, clip)) = self.menu_clip.and_then(|(row, clip)| Some((sequence.tracks.get(row)?, clip)))
+            {
+                let this = Sel { track: track.id, start: clip.start, id: clip.id };
+                let partners = Timeline::partners(sequence, track, &clip);
+                let kind_of = |sel: &Sel| sequence.track(sel.track).map(|t| t.kind);
+                let all: Vec<Sel> = std::iter::once(this).chain(partners.iter().copied()).collect();
+                // A take with picture and sound: either part can go alone.
+                if !partners.is_empty() {
+                    for (label, kind) in [
+                        ("Remove sound, keep picture", TrackKind::Audio),
+                        ("Remove picture, keep sound", TrackKind::Video),
+                    ] {
+                        let part: Vec<Sel> = all.iter().copied().filter(|s| kind_of(s) == Some(kind)).collect();
+                        if !part.is_empty() && part.len() < all.len() && ui.button(label).clicked() {
+                            delete = part;
+                            ui.close();
+                        }
+                    }
+                }
+                if ui.button("Delete clip (Shift+X)").clicked() {
+                    delete = all;
+                    ui.close();
+                }
+                ui.separator();
+            }
             if ui.button("Add video track").clicked() {
                 add = Some(TrackKind::Video);
                 ui.close();
@@ -446,6 +561,14 @@ impl Timeline {
             }
         });
         let result = match (add, remove) {
+            _ if !delete.is_empty() => {
+                let ops = delete
+                    .iter()
+                    .map(|s| Op::RemoveClip { seq: sequence.id, track: s.track, start: s.start })
+                    .collect();
+                self.selection.retain(|s| !delete.contains(s));
+                session.apply(Op::Batch(ops), None)
+            }
             (Some(kind), _) => session.add_track(kind),
             (None, Some(id)) => session.apply(Op::RemoveTrack { seq: sequence.id, id }, None),
             (None, None) => Ok(()),
@@ -806,6 +929,9 @@ impl Timeline {
             0.0,
         ));
         let mut labels: Vec<(f32, f32, f32, &str)> = Vec::new();
+        // Assets whose waveform is not loaded yet.
+        let mut wanted: Vec<AssetId> = Vec::new();
+        let left = self.left;
 
         for (row, track) in sequence.tracks.iter().enumerate() {
             let top = rect.top() + RULER_H + row as f32 * row_h;
@@ -843,6 +969,35 @@ impl Timeline {
                         px(3.0),
                         if selected { 0.0 } else { 1.0 },
                     ));
+                    if track.kind == TrackKind::Audio && row_h >= 14.0 && x1 - x0 >= 4.0 {
+                        match self.waves.get(&clip.asset) {
+                            Some(Wave::Ready(peaks)) => {
+                                let speed = track
+                                    .props_of(clip.id)
+                                    .filter(|p| p.speed_valid())
+                                    .map_or(1.0, |p| p.speed.0 as f64 / p.speed.1 as f64);
+                                let span = WaveSpan { clip: &clip, speed, y: (y0 + 2.0, y1 - 2.0) };
+                                wave_columns(
+                                    peaks,
+                                    &span,
+                                    (x0.max(lanes.left()), x1.min(lanes.right())),
+                                    ppp,
+                                    &|x| (left + (x - lanes.left()) as f64 * fpp) * per,
+                                    fpp * per / ppp as f64,
+                                    &mut |x, top, bottom| {
+                                        instances.push(Instance::new(
+                                            quad(x, top, x + 1.0 / ppp, bottom),
+                                            WAVE,
+                                            0.0,
+                                            0.0,
+                                        ));
+                                    },
+                                );
+                            }
+                            Some(Wave::Requested) => {}
+                            None => wanted.push(clip.asset),
+                        }
+                    }
                     if selected {
                         instances.push(Instance::new(quad(x0, y1 - 2.0, x1, y1), theme::ACCENT, 0.0, 0.0));
                     }
@@ -880,6 +1035,11 @@ impl Timeline {
         ));
         self.quads = instances.len();
         drop(instances);
+        for id in wanted {
+            if self.waves.insert(id, Wave::Requested).is_none() {
+                self.wave_requests.push(id);
+            }
+        }
         painter.add(egui_wgpu::Callback::new_paint_callback(
             rect,
             TimelineCallback { instances: self.instances.clone(), size: [px(rect.width()), px(rect.height())] },
@@ -1260,6 +1420,22 @@ impl Timeline {
     }
 }
 
+impl Timeline {
+    /// Peaks read from the cache; `None` if the file is not there yet, in
+    /// which case the asset stays "requested" until the importer reports
+    /// new peaks.
+    pub fn set_peaks(&mut self, id: AssetId, peaks: Option<Peaks>) {
+        if let Some(peaks) = peaks {
+            self.waves.insert(id, Wave::Ready(Arc::new(peaks)));
+        }
+    }
+
+    /// The peaks of this asset were (re)built: load them at the next sight.
+    pub fn peaks_changed(&mut self, id: AssetId) {
+        self.waves.remove(&id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sg_core::{AssetId, AssetKind, AudioInfo, Source, VideoInfo};
@@ -1307,7 +1483,7 @@ mod tests {
             session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
             // The playhead is at 0: the first take lands there, the second
             // finds it taken and goes to the end.
-            session.place_asset(&asset, 0).unwrap();
+            session.place_asset(&asset, 0, None).unwrap();
         }
         (dir, session)
     }
@@ -1481,7 +1657,7 @@ mod tests {
         let (_dir, mut session) = session();
         let asset = take(3);
         session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
-        assert_eq!(session.drop_asset(&asset, 1500, Some(0)).unwrap(), Some(1500));
+        assert_eq!(session.drop_asset(&asset, 1500, Some(0), None).unwrap(), Some(1500));
         assert_eq!(
             tracks(&session),
             vec![
@@ -1501,9 +1677,9 @@ mod tests {
         // Over the first take, on the video track, and again outside every track.
         for row in [Some(0), None] {
             let seq = session.project().sequences[0].clone();
-            let planned = place_at(&seq, &asset, 100, row);
+            let planned = place_at(&seq, &asset, 100, row, None);
             assert_eq!((planned.video, planned.audio), (Some(Slot::New), Some(Slot::New)));
-            session.drop_asset(&asset, 100, row).unwrap();
+            session.drop_asset(&asset, 100, row, None).unwrap();
             assert_eq!(
                 tracks(&session),
                 vec![
@@ -1528,12 +1704,12 @@ mod tests {
         session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
         // Dropped on the taken V1 (row 1 now): the picture goes up to the free V2.
         let seq = session.project().sequences[0].clone();
-        let planned = place_at(&seq, &asset, 100, Some(1));
+        let planned = place_at(&seq, &asset, 100, Some(1), None);
         assert_eq!((planned.video, planned.audio), (Some(Slot::Row(0)), Some(Slot::New)));
         // A sound-only asset dropped on a video track still finds an audio track.
         let mut sound = take(4);
         sound.video = None;
-        let planned = place_at(&seq, &sound, 2000, Some(0));
+        let planned = place_at(&seq, &sound, 2000, Some(0), None);
         assert_eq!((planned.video, planned.audio), (None, Some(Slot::Row(2))));
     }
 
@@ -1553,6 +1729,72 @@ mod tests {
         assert_eq!(timeline.drop_target(&seq, 0, pos2(HEADER_W + 303.0, 560.0), true), Some((600, Some(0))));
     }
 
+    /// One second of a full-scale square wave, then one second at a quarter.
+    fn square_peaks() -> Peaks {
+        let mut sent = false;
+        Peaks::build(48_000, 1, |buf| {
+            if std::mem::replace(&mut sent, true) {
+                return Ok(false);
+            }
+            buf.extend((0..96_000).map(|i| {
+                let level = if i < 48_000 { 1.0 } else { 0.25 };
+                if (i / 100) % 2 == 0 { level } else { -level }
+            }));
+            Ok(true)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn waveform_has_one_column_per_pixel_whatever_the_zoom() {
+        let peaks = square_peaks();
+        let clip = Clip { id: ClipId(1), asset: AssetId(1), start: 0, len: 96_000, src_in: 0 };
+        let span = WaveSpan { clip: &clip, speed: 1.0, y: (0.0, 40.0) };
+        // 200 points wide at 480 samples per point, then zoomed out tenfold.
+        for (width, per_point) in [(200.0f32, 480.0f64), (20.0, 4800.0)] {
+            let mut columns = Vec::new();
+            wave_columns(
+                &peaks,
+                &span,
+                (0.0, width),
+                1.0,
+                &|x| x as f64 * per_point,
+                per_point,
+                &mut |x, top, bottom| columns.push((x, top, bottom)),
+            );
+            assert_eq!(columns.len(), width as usize);
+            // Loud half: the full height. Quiet half: a quarter of it.
+            let (_, top, bottom) = columns[columns.len() / 4];
+            assert!(top < 1.0 && bottom > 39.0, "{top} {bottom}");
+            let (_, top, bottom) = columns[columns.len() * 3 / 4];
+            assert!((top - 15.0).abs() < 1.0 && (bottom - 25.0).abs() < 1.0, "{top} {bottom}");
+        }
+        // A clip that starts later in its source shows that part.
+        let late = Clip { src_in: 48_000, len: 48_000, ..clip };
+        let span = WaveSpan { clip: &late, speed: 1.0, y: (0.0, 40.0) };
+        // (The very first column still touches the block that ends the loud half.)
+        let mut tops = Vec::new();
+        wave_columns(&peaks, &span, (0.0, 100.0), 1.0, &|x| x as f64 * 480.0, 480.0, &mut |_, top, _| {
+            tops.push(top);
+        });
+        assert!((tops[5] - 15.0).abs() < 1.0, "{tops:?}");
+    }
+
+    #[test]
+    fn a_drop_can_take_only_the_sound_or_only_the_picture() {
+        let (_dir, mut session) = session();
+        let asset = take(3);
+        session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
+        session.drop_asset(&asset, 1500, Some(1), Some(TrackKind::Audio)).unwrap();
+        session.drop_asset(&asset, 2500, Some(0), Some(TrackKind::Video)).unwrap();
+        assert_eq!(
+            tracks(&session),
+            vec![
+                (TrackKind::Video, "V1".to_owned(), vec![0, 600, 2500]),
+                (TrackKind::Audio, "A1".to_owned(), vec![0, 600, 1500]),
+            ]
+        );
+    }
     /// The whole gesture through egui's own input handling: press on an
     /// asset tile, move over the timeline, let go.
     #[test]

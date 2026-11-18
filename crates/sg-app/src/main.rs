@@ -85,6 +85,11 @@ enum UserEvent {
     /// A scripted step and the channel that tells the script thread it is done.
     Script(Step, Sender<()>),
     Import(ImportEvent),
+    Peaks {
+        root: PathBuf,
+        id: AssetId,
+        peaks: Option<sg_media::peaks::Peaks>,
+    },
     Poster {
         root: PathBuf,
         id: AssetId,
@@ -245,6 +250,13 @@ impl App {
                     if let Some(importer) = &self.importer {
                         importer.cancel(job);
                     }
+                }
+                Command::LoadPeaks { root, id } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let peaks = sg_media::peaks::Peaks::read(&sg_project::cache::peaks(&root, id)).ok();
+                        let _ = proxy.send_event(UserEvent::Peaks { root, id, peaks });
+                    });
                 }
                 Command::LoadPoster { root, id } => {
                     self.pending_jobs += 1;
@@ -611,6 +623,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Script(step, ack) => self.script_step(step, ack),
             UserEvent::Import(event) => self.import_event(event),
+            UserEvent::Peaks { root, id, peaks } => {
+                self.shell.peaks_loaded(&root, id, peaks);
+                self.job_done();
+            }
             UserEvent::Poster { root, id, rgba } => {
                 self.shell.poster_loaded(&self.ctx, &root, id, rgba);
                 self.job_done();

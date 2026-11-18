@@ -170,7 +170,7 @@ impl Editor {
         section(ui, "PROJECT");
         row(ui, "Name", &project.name);
         row(ui, "Folder", &session.root.display().to_string());
-        if ui.small_button("Rename (F2)").clicked() {
+        if ui.button("Rename (F2)").clicked() {
             self.begin_rename(session);
         }
         ui.add_space(10.0);
@@ -192,10 +192,10 @@ impl Editor {
         row(ui, "Tracks", &sequence.tracks.len().to_string());
         row(ui, "Clips", &sequence.clip_count().to_string());
         ui.horizontal(|ui| {
-            if ui.small_button("Add video track").clicked() {
+            if ui.button("Add video track").clicked() {
                 *request = Some(EditorRequest::AddTrack(sg_core::TrackKind::Video));
             }
-            if ui.small_button("Add audio track").clicked() {
+            if ui.button("Add audio track").clicked() {
                 *request = Some(EditorRequest::AddTrack(sg_core::TrackKind::Audio));
             }
         });
@@ -287,7 +287,7 @@ impl Editor {
         if self.assets.missing.contains(&asset.id) {
             ui.label(RichText::new("The media file is missing from the project folder.").color(theme::ERROR));
         }
-        if ui.small_button("Remove from project (Del)").clicked() {
+        if ui.button("Remove from project (Del)").clicked() {
             *request = Some(EditorRequest::RemoveAsset(asset.id));
         }
     }

@@ -32,6 +32,8 @@ pub enum ImportSource {
     /// A file or folder on this machine (drop, file picker, pasted file).
     Path(PathBuf),
     Url(String),
+    /// A link of which only the sound is wanted (music from a video site).
+    UrlSound(String),
     /// Pasted image data.
     Bytes {
         data: Vec<u8>,
@@ -249,7 +251,7 @@ impl Inner {
             ImportSource::Path(p) => {
                 p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
             }
-            ImportSource::Url(url) => url.clone(),
+            ImportSource::Url(url) | ImportSource::UrlSound(url) => url.clone(),
             ImportSource::Bytes { .. } => "pasted image".to_owned(),
         };
         match self.stage(job, &staging, source, &label, cancel) {
@@ -295,6 +297,7 @@ impl Inner {
         label: &str,
         cancel: &Cancel,
     ) -> Result<Vec<Staged>, ToolError> {
+        let sound_only = matches!(source, ImportSource::UrlSound(_));
         match source {
             ImportSource::Path(path) => {
                 let mut files = Vec::new();
@@ -313,11 +316,12 @@ impl Inner {
                     })
                     .collect())
             }
-            ImportSource::Url(url) => {
+            ImportSource::Url(url) | ImportSource::UrlSound(url) => {
                 std::fs::create_dir_all(staging)?;
                 self.progress(job, label, "downloading", None);
-                let fetched =
-                    fetch::fetch(&url, staging, cancel, &mut |f| self.progress(job, label, "downloading", f))?;
+                let fetched = fetch::fetch(&url, sound_only, staging, cancel, &mut |f| {
+                    self.progress(job, label, "downloading", f)
+                })?;
                 Ok(fetched
                     .into_iter()
                     .map(|Fetched { path, label, uploader }| Staged {

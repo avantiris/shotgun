@@ -63,6 +63,11 @@ pub enum Command {
         root: PathBuf,
         assets: Arc<BTreeMap<AssetId, Arc<Asset>>>,
     },
+    /// Read the waveform peaks of an asset; answered with [`Shell::peaks_loaded`].
+    LoadPeaks {
+        root: PathBuf,
+        id: AssetId,
+    },
     LoadPoster {
         root: PathBuf,
         id: AssetId,
@@ -97,7 +102,12 @@ pub enum Command {
 pub enum Incoming {
     Paths(Vec<PathBuf>),
     Text(String),
-    Image { data: Vec<u8>, mime: String },
+    /// A link of which only the sound is imported.
+    Sound(String),
+    Image {
+        data: Vec<u8>,
+        mime: String,
+    },
 }
 
 /// A scripted step, for automated runs that must not inject real input.
@@ -118,7 +128,7 @@ pub enum DevStep {
     Prop(String, String),
     AddTrack(sg_core::TrackKind),
     /// Drop the selected asset on the timeline at a frame, over a track row or ("new") outside the tracks.
-    Drop(i64, Option<usize>),
+    Drop(i64, Option<usize>, Option<sg_core::TrackKind>),
     /// Set the sequence frame size.
     Size(u32, u32),
     /// Export with a preset: master, vertical, gif or share:<megabytes>.
@@ -129,6 +139,8 @@ pub enum DevStep {
     TimelineView(f64, f64),
     /// The scripted zoom-and-scroll of the frame-time benchmark at this time in seconds.
     TimelineBench(f64),
+    /// Import only the sound of a link.
+    ImportSound(String),
     /// Select the n-th asset in the panel (0 is the newest).
     SelectAsset(usize),
 }
@@ -217,6 +229,14 @@ impl Shell {
         match &mut self.session {
             Some(session) => {
                 let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests, view, &mut transport);
+                let root = session.root.clone();
+                commands.extend(
+                    self.editor
+                        .timeline
+                        .wave_requests
+                        .drain(..)
+                        .map(|id| Command::LoadPeaks { root: root.clone(), id }),
+                );
                 self.editor.assets.popover(&ctx, &mut asset_requests);
                 self.editor.assets.drop_overlay(&ctx);
                 match request {
@@ -247,10 +267,16 @@ impl Shell {
             let Some(root) = self.session.as_ref().map(|s| s.root.clone()) else { break };
             match request {
                 AssetRequest::LoadPoster(id) => commands.push(Command::LoadPoster { root, id }),
-                AssetRequest::ImportLink(link) => commands.extend(self.incoming(Incoming::Text(link))),
+                AssetRequest::ImportLink(link, false) => commands.extend(self.incoming(Incoming::Text(link))),
+                AssetRequest::ImportLink(link, true) => commands.extend(self.incoming(Incoming::Sound(link))),
                 AssetRequest::Browse => commands.push(Command::PickFiles),
                 AssetRequest::CancelJob(job) => commands.push(Command::CancelImport(job)),
-                AssetRequest::Insert => self.insert_selected(&mut commands),
+                AssetRequest::Insert(only) => self.insert_selected(only, &mut commands),
+                AssetRequest::Remove => {
+                    if let Some(id) = self.editor.assets.selected {
+                        self.remove_asset(id);
+                    }
+                }
             }
         }
         commands.extend(transport.into_iter().map(Command::Transport));
@@ -361,7 +387,7 @@ impl Shell {
             Action::StepForward => commands.push(Command::Transport(Transport::Step(1))),
             Action::ToStart => commands.push(Command::Transport(Transport::Seek(0))),
             Action::ToEnd => commands.push(Command::Transport(Transport::Seek(i64::MAX))),
-            Action::InsertAsset => self.insert_selected(commands),
+            Action::InsertAsset => self.insert_selected(None, commands),
             Action::Split
             | Action::RippleStart
             | Action::RippleEnd
@@ -449,12 +475,12 @@ impl Shell {
                     self.editor.add_track(session, kind, &mut self.error);
                 }
             }
-            DevStep::Drop(frame, row) => {
+            DevStep::Drop(frame, row, only) => {
                 if let Some(session) = &mut self.session
                     && let Some(asset) =
                         self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned())
                 {
-                    match session.drop_asset(&asset, frame, row) {
+                    match session.drop_asset(&asset, frame, row, only) {
                         Ok(_) => self.editor.timeline.select_dropped(session, asset.id, frame),
                         Err(e) => self.error = Some(e.to_string()),
                     }
@@ -502,6 +528,7 @@ impl Shell {
                 };
                 commands.extend(self.incoming(incoming));
             }
+            DevStep::ImportSound(link) => commands.extend(self.incoming(Incoming::Sound(link))),
             DevStep::SelectAsset(n) => {
                 if let Some(session) = &self.session {
                     let mut assets: Vec<&Arc<Asset>> = session.project().assets.values().collect();
@@ -544,6 +571,7 @@ impl Shell {
         let sources = match incoming {
             Incoming::Paths(paths) => paths.into_iter().map(ImportSource::Path).collect(),
             Incoming::Image { data, mime } => vec![ImportSource::Bytes { data, mime }],
+            Incoming::Sound(link) => vec![ImportSource::UrlSound(link.trim().to_owned())],
             Incoming::Text(text) if sg_project::fetch::looks_like_url(&text) => {
                 vec![ImportSource::Url(text.trim().to_owned())]
             }
@@ -601,6 +629,9 @@ impl Shell {
                     }
                 }
             }
+            ImportEvent::Derived { root, id, what: sg_project::Derived::Peaks } if current(&root) => {
+                self.editor.timeline.peaks_changed(id);
+            }
             ImportEvent::Derived { root, id, what: sg_project::Derived::Poster } if current(&root) => {
                 assets.poster_changed(id)
             }
@@ -623,12 +654,12 @@ impl Shell {
 
 impl Shell {
     /// Appends the selected asset to the timeline and moves the playhead to it.
-    fn insert_selected(&mut self, commands: &mut Vec<Command>) {
+    fn insert_selected(&mut self, only: Option<sg_core::TrackKind>, commands: &mut Vec<Command>) {
         let Some(session) = &mut self.session else { return };
         let Some(asset) = self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned()) else {
             return;
         };
-        match session.place_asset(&asset, self.playhead) {
+        match session.place_asset(&asset, self.playhead, only) {
             Ok(Some(start)) => commands.push(Command::Transport(Transport::Seek(start))),
             Ok(None) => {}
             Err(e) => self.error = Some(e.to_string()),
@@ -740,7 +771,7 @@ impl Shell {
         let (Some((frame, row, left)), Some(session)) = (self.dropped_at, &mut self.session) else { return };
         let Some(asset) = session.project().assets.get(&id).cloned() else { return };
         self.dropped_at = (left > 1).then_some((frame, row, left - 1));
-        match session.drop_asset(&asset, frame, row) {
+        match session.drop_asset(&asset, frame, row, None) {
             Ok(Some(start)) => {
                 self.editor.timeline.select_dropped(session, id, start);
                 // The next file of the same drop follows this one.
@@ -751,6 +782,14 @@ impl Shell {
             }
             Ok(None) => {}
             Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+}
+
+impl Shell {
+    pub fn peaks_loaded(&mut self, root: &std::path::Path, id: AssetId, peaks: Option<sg_media::peaks::Peaks>) {
+        if self.session.as_ref().is_some_and(|s| s.root == root) {
+            self.editor.timeline.set_peaks(id, peaks);
         }
     }
 }
