@@ -97,6 +97,25 @@ Text-based, diff-friendly, stable ordering so git diffs are meaningful.
 Clips reference assets by id only. Times are stored as rational numbers
 (frames at the sequence rate for video edits, samples for audio), never floats.
 
+Format as built in M1 (`sg-core/src/text.rs`), `PROPOSED`:
+
+```
+shotgun-sequence 1
+id 3f2a9c0d11e4b7a6
+name "Main"
+rate 60/1
+size 1920x1080
+
+track 5d0c... video "V1"
+clip <clip id> <asset id> <start> <length> <source offset>
+```
+
+One clip per line, sorted by start, so an edit changes only the lines it
+touches. `project.toml` holds `format`, `id`, `name` and the ordered list of
+sequence file names. The file name of a sequence is the slug of its name.
+A new project gets one sequence "Main", 1920x1080 at 60 fps, with tracks V1
+and A1 (`PROPOSED`; adopting the format of the first clip comes with M2/M4).
+
 ## Autosave and undo/redo
 
 - Every edit is an **operation** (`sg-core`) with an inverse. Operations are
@@ -108,6 +127,33 @@ Clips reference assets by id only. Times are stored as rational numbers
   turns) become one undo step.
 - Sequence/scenario files are rewritten from the snapshot on a debounce
   (proposed: 2 s idle, at most every 10 s while editing), atomically.
+
+How this is built (M1, `sg-project`):
+
+- `.shotgun/journal/journal.log`: one JSON line per record
+  (`{"t": unix seconds, "r": record}`), where a record is `do` (op, its
+  inverse, optional gesture group), `undo` or `redo`. Undo and redo are
+  records too, so replaying the file reproduces the project **and** the
+  position in the history. A torn last line (crash during a write) is cut
+  off on open.
+- The edit is applied in memory on the UI thread (microseconds) and handed
+  to the project's writer thread, which appends it at once, fsyncs within
+  1 s, and does the debounced save.
+- A save writes several files plus `.shotgun/journal/saved.json` (which
+  journal position the files reflect, and a hash of them). To make that one
+  atomic step, the new contents go to `.shotgun/journal/pending/` first, a
+  manifest is committed with a single rename, then the files are moved into
+  place. An interrupted save is finished or discarded on the next open.
+- Open: load the text files; if their hash matches `saved.json`, rebuild the
+  history from the journal and re-execute the records the files do not
+  contain yet (edits made in the seconds before a crash). If the hash does
+  not match, or there is no `.shotgun/` (git checkout, edit by hand, unzip
+  without the local folder), **the text files win**: the old journal is
+  renamed to `journal.<time>.bak` and a new history starts.
+- `.shotgun/local.toml` holds per-machine state (last opened time for the
+  library order). It is not part of the project.
+- Not built yet: compaction. Open reads the whole journal, so open time
+  grows with history length until it exists (see `docs/perf-log.md`).
 
 ## Git
 

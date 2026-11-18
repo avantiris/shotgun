@@ -5,7 +5,11 @@ after the user's first test.
 
 ## One window, three states
 
-1. **Library**: grid of projects. Type to filter, Enter/click opens, `N` new.
+1. **Library**: grid of projects. Type to filter, Enter/click opens the
+   selected one (arrows select), `Ctrl + N` creates a project named after
+   the typed text (Enter does the same when nothing matches). Changed in M1
+   from a plain `N`: typing must go to the filter, so a bare letter cannot
+   also be a command there.
 2. **Project**: the editor.
 3. No modal dialogs. Export, add-asset and history are panels/popovers that
    close with `Esc`.
@@ -95,11 +99,16 @@ Panels and output
 | Ctrl + G | export selection/range as GIF to the clipboard |
 | Ctrl + S | name a checkpoint (saving itself is automatic) |
 | Ctrl + W | close project, back to library |
-| ` (key left of 1) | performance overlay |
+| ` (key left of 1) | performance overlay (with Ctrl while a text field has focus, e.g. in the library) |
+| F2 | rename the project |
 | Esc | cancel / close popover |
 
 Modifiers follow one rule: **Shift = bigger/alternate, Ctrl = ripple or
 app-level, Alt = disable snapping / fine adjustment.**
 
 The key map lives in one table in code and is written to a config file so it
-can be changed without rebuilding.
+can be changed without rebuilding. (M1: the table exists in
+`sg-ui/src/keymap.rs`; the config file is not written yet.)
+
+Rule for text fields: while one has focus, keys without Ctrl go to the text;
+Ctrl bindings and Esc keep working.

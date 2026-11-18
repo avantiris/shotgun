@@ -28,8 +28,21 @@ Rules for spike work:
     "no missed vblank at 144 Hz" budget), unfocused and self-closing: a single
     run when a milestone needs the number, never repeated loops or long
     sessions. The user must be able to keep working most of the time.
-    Untested option to evaluate first: a Hyprland headless output
-    (`hyprctl output create headless`) so no physical monitor is used at all.
+    **Do not use a Hyprland headless output** (`hyprctl output create
+    headless`). Tried on 2026-11-18 during M1: after creating one, moving it
+    away with `hyprctl keyword monitor` and opening a window on it, the
+    user's pointer and the monitor focus were on the invisible output
+    (cursor at 20960,20540) until they were moved back by hand. Which of the
+    three steps caused it was not investigated.
+  - The product app needs no visible window for automated checks: run it with
+    `SHOTGUN_APP_ID=shotgun-dev` (rules: `workspace special:sgdev silent`,
+    `no_initial_focus on`, `no_focus on`, `float on`, `size 1600 900`; set by
+    `scripts/bench-m1.sh`) and drive it with `--script`, whose `shot:<file>`
+    step renders the UI off-screen into a PNG. A hidden window gets exactly
+    one presented frame; everything after it is only visible through `shot`.
+    Rule syntax on Hyprland 0.56: `hyprctl keyword windowrule 'match:class
+    ^(name)$, <effect> <value>'`; `noinitialfocus` is spelled
+    `no_initial_focus`.
   - Anything that injects pointer/keyboard input or writes the clipboard runs
     inside a nested or headless compositor with its own `WAYLAND_DISPLAY`,
     never on the real session. If that is not possible, do not run it: leave a

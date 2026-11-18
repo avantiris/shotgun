@@ -19,12 +19,21 @@ measured and logged in `docs/perf-log.md`, and a commit is made.
 
 | M | Scope | Proves |
 |---|-------|--------|
-| M1 | Workspace + crates, window, library view, create/open project, bundle layout, journal + snapshot model in `sg-core` | start/open budgets, edit-op budget |
+| M1 (done) | Workspace + crates, window, library view, create/open project, bundle layout, journal + snapshot model in `sg-core` | start/open budgets, edit-op budget |
 | M2 | Import: drag-drop, file picker, paste link/file/image, yt-dlp, probe, hash, thumbnails, peaks, conform, proxy; asset panel | asset-usable budget |
 | M3 | Playback: decode pool, GPU viewer, audio engine on PipeWire, A/V sync, scrubbing, frame cache | scrub/play budgets, audio latency numbers |
 | M4 | Timeline: multi-track, split/trim/ripple/move/snap, selection, markers, undo/redo, autosave, git auto-commits + checkpoints | 50k-clip UI budget |
 | M5 | Compositing: transform, crop, opacity, speed, titles, keyframes (classic + live record), basic audio fades/gain | realtime with layers |
 | M6 | Export: 16:9 master, 9:16 with reframe, compressed share copy, GIF to clipboard; export panel + repeat-last | export speed, output verified by probing the file |
+
+Status:
+
+- **M1 done 2026-11-18** (commit `bd69f81`, numbers in `docs/perf-log.md`).
+  Deliberately left for later milestones: git auto-commits and checkpoints
+  (M4, only `git init` + the first commit exist), gesture coalescing in the UI
+  (the journal format has the `group` field for it), journal compaction, the
+  key map config file (the table is in `sg-ui/src/keymap.rs`), poster frames
+  in the library (M2, tiles are coloured placeholders).
 
 Then the user tests and gives feedback. Feedback is triaged into fixes before
 stage 2 starts.

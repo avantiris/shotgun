@@ -41,9 +41,15 @@ nix develop --command cargo nextest run --workspace
 nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 nix develop --command cargo fmt --all
 nix develop --command cargo run -p sg-app --release
+nix develop --command bash scripts/bench-m1.sh        # M1 budgets
 ```
 
-(The workspace is created in milestone M1; until then only `spikes/` builds.)
+The binary is `shotgun` (`$CARGO_TARGET_DIR/release/shotgun --help`).
+Automated runs: `SHOTGUN_LIBRARY=<temp dir> SHOTGUN_APP_ID=shotgun-dev` plus
+`--script "new:Demo;rename:X;undo;shot:/path/a.png;quit"`. The script waits
+for background jobs between steps, `shot` renders off-screen, and the
+`shotgun-dev` window rules (see `docs/spikes/README.md`) keep the window on a
+hidden workspace. Temporary libraries go in `/disk/shotgun-dev/tmp`.
 
 ## Rules that are easy to break
 

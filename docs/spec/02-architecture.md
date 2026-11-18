@@ -46,6 +46,25 @@ crates/
   sg-app       Binary: wiring, startup, config.
 ```
 
+Also in the workspace: `sg-bench` (benchmarks for the budgets in 04).
+
+As built in M1:
+
+- A track's clips are a sorted, non-overlapping store of shared chunks (up to
+  512 clips each) with a per-chunk time offset (`sg-core/src/clips.rs`). An
+  edit copies one chunk and a short vector of chunk references; a ripple
+  changes offsets and copies nothing. Lookup by time is two binary searches.
+  Clips are addressed by track and start position.
+- The open project's `Document` (snapshot + undo history) lives on the UI
+  thread, which applies edit ops itself: they are pure, in memory and take
+  microseconds. Each record then goes through a channel to that project's
+  writer thread (journal, saves). Create, open and close run on one serial
+  project I/O thread, so a close has finished writing before a later open
+  reads the same folder.
+- `shotgun --script "<steps>"` drives the app through the same code paths as
+  keys and clicks and can write off-screen screenshots (`shot:<file>`).
+  Automated checks use this instead of injecting input.
+
 Dependency direction: `sg-core` at the bottom, `sg-app` at the top. `sg-render`
 and `sg-audio` do not depend on `sg-ui`. `sg-core` depends on nothing internal.
 
