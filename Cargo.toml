@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+sg-core = { path = "crates/sg-core" }
+sg-project = { path = "crates/sg-project" }
+sg-ui = { path = "crates/sg-ui" }
+
+anyhow = "1"
+blake3 = "1"
+bytemuck = { version = "1", features = ["derive"] }
+crossbeam-channel = "0.5"
+# Versions fixed by spike S2 (docs/spikes/s2-ui.md).
+egui = { version = "0.37", features = ["default_fonts"] }
+egui-wgpu = "0.37"
+egui-winit = "0.37"
+log = "0.4"
+png = "0.18"
+pollster = "1"
+proptest = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+toml = "1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+debug = "line-tables-only"
+codegen-units = 16

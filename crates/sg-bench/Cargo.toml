@@ -1,0 +1,13 @@
+[package]
+name = "sg-bench"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sg-core.workspace = true
+sg-project.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

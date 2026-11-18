@@ -1,0 +1,458 @@
+//! Edit operations. Every change to a project is an [`Op`]; applying one
+//! yields the new snapshot and the op that undoes it. Ops are plain data so
+//! they can be journalled and replayed.
+//!
+//! Clips are addressed by track and start position, which is unique on a
+//! track and found in O(log n).
+
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::clips::{Clip, ClipError, ClipStore};
+use crate::ids::{ClipId, SequenceId, TrackId};
+use crate::model::{Project, Sequence, SequenceHeader, Track, TrackHeader};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Op {
+    SetProjectName {
+        name: String,
+    },
+    /// Adds an empty sequence at `index`.
+    AddSequence {
+        index: usize,
+        sequence: SequenceHeader,
+    },
+    /// Removes a sequence, which must have no tracks left.
+    RemoveSequence {
+        id: SequenceId,
+    },
+    SetSequenceName {
+        id: SequenceId,
+        name: String,
+    },
+    /// Adds an empty track at `index` (0 is the top of the timeline).
+    AddTrack {
+        seq: SequenceId,
+        index: usize,
+        track: TrackHeader,
+    },
+    /// Removes a track, which must have no clips left.
+    RemoveTrack {
+        seq: SequenceId,
+        id: TrackId,
+    },
+    InsertClip {
+        seq: SequenceId,
+        track: TrackId,
+        clip: Clip,
+    },
+    RemoveClip {
+        seq: SequenceId,
+        track: TrackId,
+        start: i64,
+    },
+    /// Replaces the clip starting at `start` with `clip`: a move along the
+    /// track, a trim, or both.
+    SetClip {
+        seq: SequenceId,
+        track: TrackId,
+        start: i64,
+        clip: Clip,
+    },
+    /// Moves every clip on the track that starts at or after `from` by
+    /// `delta` (ripple).
+    ShiftFrom {
+        seq: SequenceId,
+        track: TrackId,
+        from: i64,
+        delta: i64,
+    },
+    /// Several ops as one atomic change. Fails as a whole.
+    Batch(Vec<Op>),
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
+pub enum OpError {
+    #[error("sequence {0} does not exist")]
+    NoSequence(SequenceId),
+    #[error("track {0} does not exist")]
+    NoTrack(TrackId),
+    #[error("an item with id {0} already exists")]
+    DuplicateId(String),
+    #[error("index {index} is out of range (length {len})")]
+    BadIndex { index: usize, len: usize },
+    #[error("cannot remove {0}: it is not empty")]
+    NotEmpty(&'static str),
+    #[error(transparent)]
+    Clip(#[from] ClipError),
+}
+
+impl Op {
+    /// Cuts `clip` in two at `at`. The left part keeps the clip's id, the
+    /// right part gets `right_id`. `None` if `at` is not strictly inside.
+    pub fn split(seq: SequenceId, track: TrackId, clip: &Clip, at: i64, right_id: ClipId) -> Option<Op> {
+        if at <= clip.start || at >= clip.end() {
+            return None;
+        }
+        let left = Clip { len: at - clip.start, ..*clip };
+        let right = Clip { id: right_id, start: at, len: clip.end() - at, src_in: clip.src_in + left.len, ..*clip };
+        Some(Op::Batch(vec![
+            Op::SetClip { seq, track, start: clip.start, clip: left },
+            Op::InsertClip { seq, track, clip: right },
+        ]))
+    }
+
+    /// Removes the clip at `start` and closes the gap on its track.
+    pub fn ripple_delete(seq: SequenceId, track: TrackId, clip: &Clip) -> Op {
+        Op::Batch(vec![
+            Op::RemoveClip { seq, track, start: clip.start },
+            Op::ShiftFrom { seq, track, from: clip.end(), delta: -clip.len },
+        ])
+    }
+}
+
+/// Applies `op` to `project`. Returns the new snapshot and the inverse op.
+/// On error nothing has changed (the input snapshot is immutable).
+pub fn apply(project: &Arc<Project>, op: &Op) -> Result<(Arc<Project>, Op), OpError> {
+    let (next, inverse) = apply_inner(project, op)?;
+    Ok((Arc::new(next), inverse))
+}
+
+fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
+    match op {
+        Op::SetProjectName { name } => {
+            let inverse = Op::SetProjectName { name: p.name.clone() };
+            Ok((Project { name: name.clone(), ..p.clone() }, inverse))
+        }
+        Op::AddSequence { index, sequence } => {
+            if p.sequence(sequence.id).is_some() {
+                return Err(OpError::DuplicateId(sequence.id.to_string()));
+            }
+            check_index(*index, p.sequences.len())?;
+            let mut next = p.clone();
+            next.sequences.insert(*index, Arc::new(Sequence::from(sequence.clone())));
+            Ok((next, Op::RemoveSequence { id: sequence.id }))
+        }
+        Op::RemoveSequence { id } => {
+            let index = sequence_index(p, *id)?;
+            let seq = &p.sequences[index];
+            if !seq.tracks.is_empty() {
+                return Err(OpError::NotEmpty("sequence"));
+            }
+            let inverse = Op::AddSequence { index, sequence: seq.header() };
+            let mut next = p.clone();
+            next.sequences.remove(index);
+            Ok((next, inverse))
+        }
+        Op::SetSequenceName { id, name } => with_sequence(p, *id, |s| {
+            let old = std::mem::replace(&mut s.name, name.clone());
+            Ok(Op::SetSequenceName { id: *id, name: old })
+        }),
+        Op::AddTrack { seq, index, track } => with_sequence(p, *seq, |s| {
+            if s.track(track.id).is_some() {
+                return Err(OpError::DuplicateId(track.id.to_string()));
+            }
+            check_index(*index, s.tracks.len())?;
+            s.tracks.insert(*index, Arc::new(Track::from(track.clone())));
+            Ok(Op::RemoveTrack { seq: *seq, id: track.id })
+        }),
+        Op::RemoveTrack { seq, id } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *id).ok_or(OpError::NoTrack(*id))?;
+            if !s.tracks[index].clips.is_empty() {
+                return Err(OpError::NotEmpty("track"));
+            }
+            let track = s.tracks.remove(index);
+            Ok(Op::AddTrack { seq: *seq, index, track: track.header() })
+        }),
+        Op::InsertClip { seq, track, clip } => with_clips(p, *seq, *track, |clips| {
+            let inverse = Op::RemoveClip { seq: *seq, track: *track, start: clip.start };
+            Ok((clips.insert(*clip)?, inverse))
+        }),
+        Op::RemoveClip { seq, track, start } => with_clips(p, *seq, *track, |clips| {
+            let (next, clip) = clips.remove(*start)?;
+            Ok((next, Op::InsertClip { seq: *seq, track: *track, clip }))
+        }),
+        Op::SetClip { seq, track, start, clip } => with_clips(p, *seq, *track, |clips| {
+            let (without, old) = clips.remove(*start)?;
+            let inverse = Op::SetClip { seq: *seq, track: *track, start: clip.start, clip: old };
+            Ok((without.insert(*clip)?, inverse))
+        }),
+        Op::ShiftFrom { seq, track, from, delta } => with_clips(p, *seq, *track, |clips| {
+            let (next, first_moved) = clips.shift_from(*from, *delta)?;
+            // The inverse starts at the new position of the first moved clip,
+            // not at `from + delta`: an unmoved clip may start in between.
+            let inverse = match first_moved {
+                Some(first) => Op::ShiftFrom { seq: *seq, track: *track, from: first + delta, delta: -delta },
+                None => Op::Batch(Vec::new()),
+            };
+            Ok((next, inverse))
+        }),
+        Op::Batch(ops) => {
+            let mut cur = p.clone();
+            let mut inverses = Vec::with_capacity(ops.len());
+            for op in ops {
+                let (next, inverse) = apply_inner(&cur, op)?;
+                cur = next;
+                inverses.push(inverse);
+            }
+            inverses.reverse();
+            Ok((cur, Op::Batch(inverses)))
+        }
+    }
+}
+
+fn check_index(index: usize, len: usize) -> Result<(), OpError> {
+    if index > len { Err(OpError::BadIndex { index, len }) } else { Ok(()) }
+}
+
+fn sequence_index(p: &Project, id: SequenceId) -> Result<usize, OpError> {
+    p.sequences.iter().position(|s| s.id == id).ok_or(OpError::NoSequence(id))
+}
+
+/// Copies the path project -> sequence, lets `f` edit the sequence copy and
+/// shares everything else with `p`.
+fn with_sequence(
+    p: &Project,
+    id: SequenceId,
+    f: impl FnOnce(&mut Sequence) -> Result<Op, OpError>,
+) -> Result<(Project, Op), OpError> {
+    let index = sequence_index(p, id)?;
+    let mut seq = Sequence::clone(&p.sequences[index]);
+    let inverse = f(&mut seq)?;
+    let mut next = p.clone();
+    next.sequences[index] = Arc::new(seq);
+    Ok((next, inverse))
+}
+
+fn with_clips(
+    p: &Project,
+    seq: SequenceId,
+    track: TrackId,
+    f: impl FnOnce(&ClipStore) -> Result<(ClipStore, Op), OpError>,
+) -> Result<(Project, Op), OpError> {
+    with_sequence(p, seq, |s| {
+        let index = s.tracks.iter().position(|t| t.id == track).ok_or(OpError::NoTrack(track))?;
+        let old = &s.tracks[index];
+        let (clips, inverse) = f(&old.clips)?;
+        s.tracks[index] = Arc::new(Track { id: old.id, kind: old.kind, name: old.name.clone(), clips });
+        Ok(inverse)
+    })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::ids::{AssetId, ProjectId};
+    use crate::model::TrackKind;
+    use crate::time::Rate;
+
+    pub(crate) const SEQ: SequenceId = SequenceId(1);
+    pub(crate) const V1: TrackId = TrackId(10);
+    pub(crate) const A1: TrackId = TrackId(11);
+
+    pub(crate) fn clip(id: u64, start: i64, len: i64) -> Clip {
+        Clip { id: ClipId(id), asset: AssetId(0xA55E7), start, len, src_in: 0 }
+    }
+
+    /// A project with one sequence and an empty video and audio track.
+    pub(crate) fn base() -> Arc<Project> {
+        let mut p = Arc::new(Project::new(ProjectId(42), "Test"));
+        let header = SequenceHeader { id: SEQ, name: "Main".into(), rate: Rate::FPS_60, width: 1920, height: 1080 };
+        for op in [
+            Op::AddSequence { index: 0, sequence: header },
+            Op::AddTrack {
+                seq: SEQ,
+                index: 0,
+                track: TrackHeader { id: V1, kind: TrackKind::Video, name: "V1".into() },
+            },
+            Op::AddTrack {
+                seq: SEQ,
+                index: 1,
+                track: TrackHeader { id: A1, kind: TrackKind::Audio, name: "A1".into() },
+            },
+        ] {
+            p = apply(&p, &op).unwrap().0;
+        }
+        p
+    }
+
+    fn starts(p: &Project, track: TrackId) -> Vec<(i64, i64)> {
+        let t = p.sequence(SEQ).unwrap().track(track).unwrap();
+        t.clips.iter().map(|c| (c.start, c.len)).collect()
+    }
+
+    /// Applies `op`, checks that the inverse restores the input exactly and
+    /// that the inverse of the inverse redoes the op.
+    fn round_trip(p: &Arc<Project>, op: &Op) -> Arc<Project> {
+        let (after, inverse) = apply(p, op).unwrap();
+        let (back, redo) = apply(&after, &inverse).unwrap();
+        assert_eq!(&back, p, "inverse of {op:?}");
+        let (again, _) = apply(&back, &redo).unwrap();
+        assert_eq!(again, after, "redo of {op:?}");
+        after
+    }
+
+    #[test]
+    fn rename_project_and_sequence() {
+        let p = base();
+        let p2 = round_trip(&p, &Op::SetProjectName { name: "Other".into() });
+        assert_eq!(p2.name, "Other");
+        let p3 = round_trip(&p2, &Op::SetSequenceName { id: SEQ, name: "Cut 2".into() });
+        assert_eq!(p3.sequences[0].name, "Cut 2");
+    }
+
+    #[test]
+    fn structure_ops_validate() {
+        let p = base();
+        let dup = Op::AddTrack {
+            seq: SEQ,
+            index: 0,
+            track: TrackHeader { id: V1, kind: TrackKind::Video, name: "x".into() },
+        };
+        assert!(matches!(apply(&p, &dup), Err(OpError::DuplicateId(_))));
+        let far = Op::AddTrack {
+            seq: SEQ,
+            index: 9,
+            track: TrackHeader { id: TrackId(99), kind: TrackKind::Video, name: "x".into() },
+        };
+        assert_eq!(apply(&p, &far).unwrap_err(), OpError::BadIndex { index: 9, len: 2 });
+        assert_eq!(apply(&p, &Op::RemoveSequence { id: SEQ }).unwrap_err(), OpError::NotEmpty("sequence"));
+        assert_eq!(
+            apply(&p, &Op::RemoveTrack { seq: SequenceId(5), id: V1 }).unwrap_err(),
+            OpError::NoSequence(SequenceId(5))
+        );
+        let p2 = round_trip(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(1, 0, 10) });
+        assert_eq!(apply(&p2, &Op::RemoveTrack { seq: SEQ, id: V1 }).unwrap_err(), OpError::NotEmpty("track"));
+        let p3 = round_trip(&p, &Op::RemoveTrack { seq: SEQ, id: V1 });
+        assert_eq!(p3.sequences[0].tracks.len(), 1);
+    }
+
+    #[test]
+    fn clip_ops() {
+        let p = base();
+        let p = round_trip(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(1, 0, 100) });
+        let p = round_trip(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(2, 100, 50) });
+        // Trim the head of the second clip by 10 and move it right.
+        let trimmed = Clip { start: 120, len: 40, src_in: 10, ..clip(2, 0, 0) };
+        let p = round_trip(&p, &Op::SetClip { seq: SEQ, track: V1, start: 100, clip: trimmed });
+        assert_eq!(starts(&p, V1), [(0, 100), (120, 40)]);
+        let bad = Op::SetClip { seq: SEQ, track: V1, start: 120, clip: clip(2, 50, 40) };
+        assert!(matches!(apply(&p, &bad), Err(OpError::Clip(ClipError::Overlap { .. }))));
+        let p = round_trip(&p, &Op::RemoveClip { seq: SEQ, track: V1, start: 0 });
+        assert_eq!(starts(&p, V1), [(120, 40)]);
+        assert_eq!(starts(&p, A1), []);
+    }
+
+    #[test]
+    fn split_keeps_source_continuity() {
+        let p = base();
+        let c = Clip { src_in: 30, ..clip(1, 100, 60) };
+        let p = round_trip(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: c });
+        let op = Op::split(SEQ, V1, &c, 120, ClipId(2)).unwrap();
+        let p = round_trip(&p, &op);
+        let clips: Vec<Clip> = p.sequences[0].tracks[0].clips.iter().collect();
+        assert_eq!((clips[0].start, clips[0].len, clips[0].src_in, clips[0].id), (100, 20, 30, ClipId(1)));
+        assert_eq!((clips[1].start, clips[1].len, clips[1].src_in, clips[1].id), (120, 40, 50, ClipId(2)));
+        assert!(Op::split(SEQ, V1, &c, 100, ClipId(3)).is_none());
+        assert!(Op::split(SEQ, V1, &c, 160, ClipId(3)).is_none());
+    }
+
+    #[test]
+    fn ripple_delete_closes_the_gap() {
+        let mut p = base();
+        for (i, s) in [0, 100, 250].into_iter().enumerate() {
+            p = round_trip(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(i as u64 + 1, s, 100) });
+        }
+        let victim = p.sequences[0].tracks[0].clips.get(100).unwrap();
+        let p = round_trip(&p, &Op::ripple_delete(SEQ, V1, &victim));
+        assert_eq!(starts(&p, V1), [(0, 100), (150, 100)]);
+    }
+
+    #[test]
+    fn shift_inverse_ignores_unmoved_clip_in_between() {
+        // Clip at 70 stays; the clip at 200 moves to 100. A naive inverse
+        // "shift from 100 - ..." must not pick up the clip at 70.
+        let mut p = base();
+        for (i, (s, l)) in [(70, 10), (200, 10)].into_iter().enumerate() {
+            p = round_trip(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(i as u64 + 1, s, l) });
+        }
+        let p2 = round_trip(&p, &Op::ShiftFrom { seq: SEQ, track: V1, from: 150, delta: -100 });
+        assert_eq!(starts(&p2, V1), [(70, 10), (100, 10)]);
+        let (same, inverse) = apply(&p, &Op::ShiftFrom { seq: SEQ, track: V1, from: 500, delta: 5 }).unwrap();
+        assert_eq!(same, p);
+        assert_eq!(inverse, Op::Batch(Vec::new()));
+    }
+
+    #[test]
+    fn failed_batch_changes_nothing() {
+        let p = base();
+        let batch = Op::Batch(vec![
+            Op::InsertClip { seq: SEQ, track: V1, clip: clip(1, 0, 10) },
+            Op::InsertClip { seq: SEQ, track: V1, clip: clip(2, 5, 10) },
+        ]);
+        assert!(apply(&p, &batch).is_err());
+        assert_eq!(starts(&p, V1), []);
+    }
+
+    #[test]
+    fn untouched_tracks_are_shared() {
+        let p = base();
+        let (p2, _) = apply(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(1, 0, 10) }).unwrap();
+        assert!(Arc::ptr_eq(&p.sequences[0].tracks[1], &p2.sequences[0].tracks[1]));
+        assert!(!Arc::ptr_eq(&p.sequences[0].tracks[0], &p2.sequences[0].tracks[0]));
+    }
+
+    #[test]
+    fn ops_survive_json() {
+        let c = clip(1, 0, 10);
+        let ops = vec![
+            Op::SetProjectName { name: "a \"b\"\n".into() },
+            Op::split(SEQ, V1, &Clip { len: 100, ..c }, 40, ClipId(u64::MAX)).unwrap(),
+            Op::ShiftFrom { seq: SEQ, track: A1, from: 5, delta: -5 },
+            Op::RemoveTrack { seq: SEQ, id: A1 },
+        ];
+        let json = serde_json::to_string(&ops).unwrap();
+        assert_eq!(serde_json::from_str::<Vec<Op>>(&json).unwrap(), ops);
+    }
+
+    /// An op on the two test tracks, valid or not. `pick` selects an
+    /// existing clip where one is needed.
+    pub(crate) fn any_op() -> impl Strategy<Value = (u8, bool, i64, i64, usize, u64)> {
+        (0u8..6, any::<bool>(), 0i64..2000, 1i64..60, any::<usize>(), 1u64..u64::MAX)
+    }
+
+    pub(crate) fn make_op(p: &Project, (kind, video, a, b, pick, id): (u8, bool, i64, i64, usize, u64)) -> Op {
+        let track = if video { V1 } else { A1 };
+        let clips = &p.sequence(SEQ).unwrap().track(track).unwrap().clips;
+        let existing = (!clips.is_empty()).then(|| clips.iter().nth(pick % clips.len()).unwrap());
+        match (kind, existing) {
+            (0, _) | (_, None) => Op::InsertClip { seq: SEQ, track, clip: clip(id, a, b) },
+            (1, Some(c)) => Op::RemoveClip { seq: SEQ, track, start: c.start },
+            (2, Some(c)) => Op::SetClip { seq: SEQ, track, start: c.start, clip: Clip { start: a, len: b, ..c } },
+            (3, Some(c)) => Op::split(SEQ, track, &c, c.start + b % c.len, ClipId(id))
+                .unwrap_or(Op::SetProjectName { name: format!("p{id}") }),
+            (4, Some(c)) => Op::ripple_delete(SEQ, track, &c),
+            (_, Some(_)) => Op::ShiftFrom { seq: SEQ, track, from: a, delta: b - 30 },
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn every_op_is_undone_by_its_inverse(seeds in prop::collection::vec(any_op(), 1..200)) {
+            let mut p = base();
+            for seed in seeds {
+                let op = make_op(&p, seed);
+                let Ok((after, inverse)) = apply(&p, &op) else { continue };
+                let (back, redo) = apply(&after, &inverse).unwrap();
+                prop_assert_eq!(&back, &p, "inverse of {:?}", op);
+                let (again, _) = apply(&back, &redo).unwrap();
+                prop_assert_eq!(&again, &after, "redo of {:?}", op);
+                p = after;
+            }
+        }
+    }
+}

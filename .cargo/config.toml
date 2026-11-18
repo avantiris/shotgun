@@ -1,0 +1,4 @@
+# mold links the debug binary in well under a second; clang is in the dev shell.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
