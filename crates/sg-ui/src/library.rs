@@ -104,6 +104,8 @@ impl Library {
         }
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(GAP, GAP);
+            // The scroll area clips at its edge: keep the tiles clear of it.
+            ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 for (slot, &index) in matches.iter().enumerate() {
                     let entry = &self.entries[index];
@@ -183,7 +185,7 @@ fn tile(
             None
         };
         if let Some(stroke) = stroke {
-            painter.rect_stroke(poster_rect, 6.0, stroke, StrokeKind::Outside);
+            painter.rect_stroke(poster_rect, 6.0, stroke, StrokeKind::Inside);
         }
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
