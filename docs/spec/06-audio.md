@@ -78,3 +78,24 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
 - Plugin hosting: CLAP and VST3 (native Linux builds), LV2; Windows-only VSTs
   via a bridge such as yabridge. Plugins run with crash isolation where possible.
 - Mixing/mastering tools, loudness (LUFS) metering and targets.
+
+## As built in M3 (`sg-audio`)
+
+- Backends behind one engine: PipeWire stream (default), `null` (a thread
+  that keeps time and discards the sound; `SHOTGUN_AUDIO=null`) and `manual`
+  (the caller pulls blocks; tests). `SHOTGUN_AUDIO=sink:<node name>` targets a
+  specific sink.
+- The stream is active only while playing, so the desktop's audio graph runs
+  at our quantum only then and an idle app costs no callbacks.
+- The disk thread keeps one ring buffer **per track** (half a second ahead),
+  not per clip as written above: it lays the track's clips into the stream
+  itself. The realtime thread runs each track's insert chain (today: gain and
+  pan) and sums. Clip gain is applied by the disk thread.
+- A seek, a start or an edit builds a new graph with fresh buffers on the disk
+  thread and hands it over through one atomic slot; the callback adopts it at
+  a block boundary and parks the old one for the disk thread to free.
+- Clock: the callback publishes (position, monotonic time, delay) behind a
+  sequence lock; `Engine::position()` extrapolates from it.
+- Not built yet: audio grains while scrubbing, plugin delay compensation,
+  the user-adjustable A/V offset, sidechain and event ports (the `Processor`
+  trait has only audio in/out so far), allocation asserts in debug builds.

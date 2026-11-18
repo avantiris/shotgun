@@ -21,7 +21,7 @@ measured and logged in `docs/perf-log.md`, and a commit is made.
 |---|-------|--------|
 | M1 (done) | Workspace + crates, window, library view, create/open project, bundle layout, journal + snapshot model in `sg-core` | start/open budgets, edit-op budget |
 | M2 (done) | Import: drag-drop, file picker, paste link/file/image, yt-dlp, probe, hash, thumbnails, peaks, conform, proxy; asset panel | asset-usable budget |
-| M3 | Playback: decode pool, GPU viewer, audio engine on PipeWire, A/V sync, scrubbing, frame cache | scrub/play budgets, audio latency numbers |
+| M3 (done) | Playback: decode pool, GPU viewer, audio engine on PipeWire, A/V sync, scrubbing, frame cache | scrub/play budgets, audio latency numbers |
 | M4 | Timeline: multi-track, split/trim/ripple/move/snap, selection, markers, undo/redo, autosave, git auto-commits + checkpoints | 50k-clip UI budget |
 | M5 | Compositing: transform, crop, opacity, speed, titles, keyframes (classic + live record), basic audio fades/gain | realtime with layers |
 | M6 | Export: 16:9 master, 9:16 with reframe, compressed share copy, GIF to clipboard; export panel + repeat-last | export speed, output verified by probing the file |
@@ -42,6 +42,18 @@ Status:
   Google Photos videos (still unverified, see 01), tags in the UI, the
   cancel-and-captured-stderr rule is met but a failed step only shows its
   last error line in the banner.
+
+- **M3 done 2026-11-18** (commit `417b707`), with one missed budget: the
+  full-quality frame after a seek into 4K HEVC takes 175 ms (p50) and 332 ms
+  (p95) against 150 ms, because the decode hardware slows down when it idles
+  between seeks (`docs/perf-log.md`). Built differently from the spikes'
+  plan, on purpose: frames are decoded to system memory and uploaded
+  (software for proxies, VAAPI with read-back for full-quality frames); the
+  zero-copy import of S1 is left for M5, where three 4K layers must play in
+  real time. Playback shows proxies. Not built: audio grains while
+  scrubbing, plugin delay compensation (no processor with latency exists
+  yet), the user-adjustable A/V offset. Not verifiable without a person:
+  sound through the real device, A/V sync, smoothness on a real monitor.
 
 Then the user tests and gives feedback. Feedback is triaged into fixes before
 stage 2 starts.

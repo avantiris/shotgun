@@ -95,6 +95,20 @@ and `sg-audio` do not depend on `sg-ui`. `sg-core` depends on nothing internal.
   hardware cannot decode use software decode + `write_texture`.
 - FFmpeg bindings: `ffmpeg-next` 9.1 / `ffmpeg-sys-next` 9.1 (the only crate
   that binds the VAAPI/DRM hwcontext structs for FFmpeg 9).
+- As built in M3 (differs from the plan above on purpose, see 08): frames
+  reach the compositor as 8-bit RGBA textures uploaded from system memory.
+  Proxies and stills are decoded in software; full-quality frames of video
+  are decoded through VAAPI and only the wanted frame is read back. The
+  zero-copy DMA-BUF import above replaces this for full-resolution playback
+  in M5. The compositor already works in linear light in `Rgba16Float`; the
+  input transform is the sRGB curve for every source until 05 is built.
+- The preview engine (`sg-play`) is the render thread: it reads the audio
+  engine's heard position, plans the layers at that frame, asks a pool of
+  four decode workers for missing pictures (one asset and quality always on
+  the same worker, so its decoder stays warm), keeps decoded textures in a
+  768 MB least-recently-used cache, composites, and wakes the UI. During
+  playback and while a frame is missing it shows proxies; a paused frame is
+  replaced by the full-quality one as soon as that is decoded.
 - Preview quality is adaptive (proxy source and/or reduced viewer resolution
   under load); export always uses originals at full resolution.
 

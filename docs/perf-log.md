@@ -74,3 +74,58 @@ fixed it.
 
 Not measured: a source on the NVMe home disk (it has no room for a 1 GB test
 file), a file larger than RAM, several large drops at once.
+
+## 2026-11-18, M3, commit 417b707
+
+Commands: `nix develop --command bash scripts/bench-m3.sh` (audio engine on a
+PipeWire null sink, then the app, hidden, driven by script) and
+`sg-bench seek <file> vaapi|<threads> <skip>` for the decoder alone.
+Machine state: load average 2.3 to 4.9; the user was watching a video in a
+browser the whole time. Release build. Test media: `/disk/shotgun-dev/media/s1`.
+
+Scrub and play times are measured inside the preview engine, from the seek or
+play command to the composited frame; the display adds up to one refresh
+(7 ms at 144 Hz, 17 ms at 60 Hz) that is not in these numbers.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Scrub: seek to proxy frame, 4K60 HEVC source with 1 s GOP (72 seeks) | p50 3.1 ms, p95 6.4 ms, max 32.0 ms | 50 ms p95 | pass |
+| Scrub: seek to proxy frame, three long-GOP sources (74 seeks) | p50 3.3 ms, p95 8.6 ms, max 280 ms (first frame of a file: the decoder is opened) | 50 ms p95 | pass |
+| Full-quality frame after a seek, 4K60 HEVC, **1 s GOP** (72 seeks, 0.5 s apart) | p50 174.5 ms, p95 332.3 ms, max 472 ms | 150 ms p95 | **MISS** |
+| Full-quality frame after a seek, long-GOP 4K HEVC 8/10-bit and 1080p H.264 (71 seeks) | p50 139.2 ms, p95 441.8 ms, max 852 ms | none (open point in 01) | - |
+| Play start: Space to sound running with the frame on screen (12 starts each run) | p50 2.1 ms, p95 2.4 ms, max 5.0 ms | 80 ms | pass |
+| Audio stream start alone (`sg-bench audio`, 10 starts) | p50 0.78 ms, max 16.1 ms | 80 ms | pass |
+| Playback of the proxy, 12 x 0.4 s | 276 frames, 0 late or skipped | 0 dropped | pass (proxy quality, one layer) |
+
+Audio engine (PipeWire null sink, 20 s): quantum 256 frames (5.33 ms), 4035
+callbacks, 0 graph xruns, 0 ring underruns, worst `process()` 10.8 us,
+realtime thread SCHED_RR, heard position within 1 sample (0.02 ms) of
+wall-clock time. The null sink reports 0 frames of output delay; the real
+device reported 256 frames in spike S3.
+
+Why the full-quality budget is missed, and what was tried:
+
+- Software decode of 4K HEVC cannot do it: p50 388 ms, p99 467 ms for the
+  1 s GOP file with all cores (`sg-bench seek uhd60_hevc8_gop60.mp4 0 0`),
+  1158 ms with one thread. Skipping non-reference frames did not help.
+- Decoding on the GPU through VAAPI and reading back only the wanted frame
+  brings the decoder alone to p50 99 to 106 ms, p99 138 to 149 ms
+  (`sg-bench seek ... vaapi 1`, three runs): inside the budget.
+- But that is with seeks back to back. With 0.5 s between seeks, as when a
+  person clicks around, the same decoder takes p50 262 ms, p99 323 ms
+  (`SG_SEEK_GAP_MS=500 sg-bench seek ... vaapi 1`); with 0.1 s gaps p50
+  122 ms, p99 265 ms. The decode hardware slows down or powers down when it
+  idles. The app numbers above are this case.
+- Not tried: keeping the decode hardware busy while the user scrubs; the
+  zero-copy import of spike S1 (saves the read-back, not the idle penalty);
+  an intra mezzanine of originals (the open point in 01).
+- What the user sees meanwhile: the proxy frame after 3 to 7 ms, replaced by
+  the full-quality frame when it arrives.
+
+Not measured:
+
+- Anything through the real sound device or seen on a real monitor: the app
+  ran on a hidden workspace with sound into a null sink. A/V sync, picture
+  smoothness and audible glitches need a person.
+- The xrun matrix of S3 on a quiet machine (still open in 08, stage 0).
+- "3 simultaneous 4K60 HEVC layers, 0 dropped": M5.

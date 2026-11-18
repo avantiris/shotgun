@@ -43,6 +43,7 @@ nix develop --command cargo fmt --all
 nix develop --command cargo run -p sg-app --release
 nix develop --command bash scripts/bench-m1.sh        # M1 budgets
 nix develop --command bash scripts/bench-m2.sh        # M2: 1 GB drop usable
+nix develop --command bash scripts/bench-m3.sh        # M3: scrub, play start, audio
 ```
 
 The binary is `shotgun` (`$CARGO_TARGET_DIR/release/shotgun --help`).
@@ -52,6 +53,8 @@ Automated runs: `SHOTGUN_LIBRARY=<temp dir> SHOTGUN_APP_ID=shotgun-dev` plus
 for background jobs between steps, `shot` renders off-screen, and the
 `shotgun-dev` window rules (see `docs/spikes/README.md`) keep the window on a
 hidden workspace. Temporary libraries go in `/disk/shotgun-dev/tmp`.
+Automated runs must also set `SHOTGUN_AUDIO=null` (or `sink:<a null sink>`):
+never play test sound through the user's speakers.
 
 ## Rules that are easy to break
 

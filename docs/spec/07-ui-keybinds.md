@@ -59,6 +59,7 @@ Transport
 | Key | Action |
 |-----|--------|
 | Space | play / pause |
+| Enter, or double-click an asset | put the selected asset at the end of the timeline (M3; placing at the playhead comes with M4) |
 | A / D | step one frame back / forward (hold to shuttle) |
 | Shift + A / D | jump to previous / next cut or marker |
 | Ctrl + A / D | jump to sequence start / end |

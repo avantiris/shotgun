@@ -103,6 +103,12 @@ What must be true **now** so this is an extension and not a rewrite:
   containing a video from the user.
 - `OPEN` Default master encoder (hardware HEVC 10-bit) needs the user's eye
   test on real footage before it is final (S4).
+- `OPEN`, now with numbers (M3, `docs/perf-log.md`): the full-quality frame
+  after a seek into 4K HEVC arrives after 175 ms (median) to 330 ms (p95)
+  even with a 1 s GOP, against the 150 ms budget, and after up to 850 ms
+  with long GOPs. The proxy frame is on screen after 3 to 7 ms meanwhile.
+  Decide after seeing it: accept, or ask for an intra mezzanine of originals
+  (about 0.56 GB per minute of 4K60).
 - `OPEN` Full-quality seek into long-GOP originals: proxy-first display
   (planned) versus an intra mezzanine of originals (S1, see 04).
 - `OPEN` Shot-match quality on the user's real footage can only be judged with
