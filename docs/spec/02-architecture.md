@@ -155,7 +155,11 @@ Used as subprocesses by the job pool, never on a hot path:
 - `gifski` for high-quality GIF encoding.
 - `wl-copy` for clipboard export (or the Wayland data-device protocol directly).
 
-FFmpeg is linked as a library for decode/encode; the `ffmpeg` binary is only a
+FFmpeg is linked as a library for decode/encode on the playback and export
+paths. Import (M2) runs the `ffprobe` and `ffmpeg` programs with the command
+lines measured in S4: probe, frame-rate scan, poster, audio conform, video
+conform and proxy are one-off jobs on the job pool where a process start does
+not matter, and the spike numbers apply unchanged. Elsewhere the binary is only a
 fallback and a verification tool.
 
 ## Why Rust + wgpu

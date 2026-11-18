@@ -45,3 +45,32 @@ Not measured:
   the undo history, so it grows with history length: 15 MB / 50 000 records
   are inside the 92 ms above. Journal compaction (03, "retained horizon") is
   not built yet and is what bounds this.
+
+## 2026-11-18, M2, commit 8e12f98
+
+Command: `nix develop --command bash scripts/bench-m2.sh`.
+Machine state: load average 4.0; the user was watching a video. Release build.
+File: 1 045 170 304 bytes of 4K60 HEVC on `/disk` (SATA SSD), dropped into a
+project on the same disk.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Asset usable after local drop, 1 GB, file **not** in the page cache | 1834, 1838, 1837 ms | 2 s | pass, with 8 % to spare: this is the disk reading 1 GB (about 570 MB/s) |
+| Same, file in the page cache | 354, 350, 421 ms | 2 s | pass |
+
+"Usable" is measured in the app from the import request to the `AddAsset` op:
+the file is hashed (BLAKE3 on all cores) and probed by then. The copy into the
+bundle and all derived files follow in the background.
+
+For information, small files (same run as the screenshots, one each): a 7 MB
+MP4, a 40 kB MP3 and a PNG were usable after 139 to 239 ms, of which about
+130 ms is the `ffprobe` process starting.
+
+History of this number: the first implementation copied while hashing and
+reported the asset after the copy. That took 3.4 s cold and between 0.9 and
+4.7 s warm (the write competes with the read on one SATA disk and stalls when
+the kernel throttles dirty pages), a miss. Hashing first and copying afterwards
+fixed it.
+
+Not measured: a source on the NVMe home disk (it has no room for a 1 GB test
+file), a file larger than RAM, several large drops at once.

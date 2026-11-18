@@ -95,6 +95,7 @@ Panels and output
 |-----|--------|
 | 1 / 2 / 3 / 4 | focus Assets / Viewer / Inspector / Timeline (during live multicam: switch angle) |
 | Ctrl + Q | add asset (opens link/file popover) |
+| Del | remove the selected asset from the project |
 | Ctrl + E | export panel; Ctrl + Shift + E repeats the last export |
 | Ctrl + G | export selection/range as GIF to the clipboard |
 | Ctrl + S | name a checkpoint (saving itself is automatic) |

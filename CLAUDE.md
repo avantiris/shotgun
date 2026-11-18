@@ -42,11 +42,13 @@ nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 nix develop --command cargo fmt --all
 nix develop --command cargo run -p sg-app --release
 nix develop --command bash scripts/bench-m1.sh        # M1 budgets
+nix develop --command bash scripts/bench-m2.sh        # M2: 1 GB drop usable
 ```
 
 The binary is `shotgun` (`$CARGO_TARGET_DIR/release/shotgun --help`).
 Automated runs: `SHOTGUN_LIBRARY=<temp dir> SHOTGUN_APP_ID=shotgun-dev` plus
-`--script "new:Demo;rename:X;undo;shot:/path/a.png;quit"`. The script waits
+`--script "new:Demo;import:/path/clip.mp4;asset:0;shot:/path/a.png;quit"`
+(`--help` lists the steps). The script waits
 for background jobs between steps, `shot` renders off-screen, and the
 `shotgun-dev` window rules (see `docs/spikes/README.md`) keep the window on a
 hidden workspace. Temporary libraries go in `/disk/shotgun-dev/tmp`.

@@ -22,8 +22,9 @@ echo "== machine: $(uptime | sed 's/.*load average/load average/'), commit $(git
 rm -rf "$LIB"
 run() { # <cold|warm> <n>
   [ "$1" = cold ] && dd if="$BIG" iflag=nocache count=0 2>/dev/null
-  SHOTGUN_LIBRARY=$LIB SHOTGUN_APP_ID=shotgun-dev timeout 300 "$BIN/shotgun" \
-    --script "new:Drop $1 $2;import:$BIG;close;quit" 2>&1 | grep -o 'asset usable [0-9]* ms' | sed "s/^/$1: /"
+  # Quits after 8 s: the transcodes that follow are not what is measured here.
+  SHOTGUN_LIBRARY=$LIB SHOTGUN_APP_ID=shotgun-dev timeout 60 "$BIN/shotgun" --exit-after 8 \
+    --script "new:Drop $1 $2;import:$BIG" 2>&1 | grep -o 'asset usable [0-9]* ms' | sed "s/^/$1: /"
   sync
 }
 for n in 1 2 3; do run cold $n; done

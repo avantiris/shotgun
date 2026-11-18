@@ -50,15 +50,31 @@ into a grid of these, sorted by last opened, with a poster frame each.
   date), probe data (streams, codec, resolution, frame rate, duration, colour
   tags, rotation), whether a conform was needed, and analysis results (colour
   statistics, beat/tempo for audio, sync offsets).
-- Import pipeline (job pool, cancellable, progress shown on the asset tile):
-  1. fetch/copy into `assets/<kind>/` (temp name, then atomic rename)
-  2. hash, probe, write index entry -> **asset is usable from here**
-  3. thumbnails + audio peaks + conformed audio
-  4. conform if required (VFR, GIF, odd formats)
-  5. proxy
-  6. analysis (colour statistics, audio fingerprint for sync)
-  The asset can be dropped on the timeline after step 2; preview quality
-  improves as later steps finish.
+- Import pipeline (job pool, cancellable, progress shown in the asset panel),
+  as built in M2 (`sg-project/src/import.rs`):
+  1. fetch a link into a staging folder inside the bundle; a local file is
+     read where it is
+  2. hash + probe -> **asset is usable from here** and is added to the
+     project (an `AddAsset` op, so undo removes it again)
+  3. copy a local file into `assets/<kind>/` (temporary name, hash checked
+     again, atomic rename). This is after "usable" on purpose: the hash
+     only reads, so a 1 GB drop is usable in under 2 s while its copy is
+     still running. If the app is closed in that window, the next open
+     fetches the file again from where it came from, or flags it missing.
+  4. conformed audio (48 kHz float WAV), peaks, poster, frame-rate scan
+  5. conform if required (VFR by the scan, animated GIF/WebP)
+  6. proxy
+  7. analysis (colour statistics, audio fingerprint for sync): M7/M9
+  Steps 1 to 4 run on three light workers, 5 and 6 on one transcode worker.
+- Derived files live in `.shotgun/cache/` under the asset id: `thumb/<id>.rgba`
+  (320x180 raw RGBA poster), `conform/<id>.wav`, `peaks/<id>.pk`,
+  `conform/<id>.scan` (verdict of the frame-rate scan: this is where
+  "a conform was needed" is recorded, not in the index file, because it is
+  regenerable), `conform/<id>.mp4|.mkv`, `proxy/<id>.mp4`. On open, whatever
+  is missing is rebuilt.
+- Removing an asset is refused while a clip uses it. Its media file moves
+  to `.shotgun/trash/` at the next save and moves back when the asset
+  returns (undo).
 
 ### Import and export tooling (decided by spike S4, `docs/spikes/s4-io.md`)
 
