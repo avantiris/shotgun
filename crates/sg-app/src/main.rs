@@ -17,8 +17,9 @@ use anyhow::{Context as _, bail};
 use crossbeam_channel::Sender;
 use egui_winit::winit;
 use sg_core::AssetId;
+use sg_play::{Backend, Player};
 use sg_project::{ImportEvent, Importer, Opened, ProjectEntry, ProjectError};
-use sg_ui::{Command, DevStep, Incoming, Shell};
+use sg_ui::{Command, DevStep, Incoming, Shell, Transport, ViewerState};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -106,6 +107,13 @@ struct App {
     /// Running imports and when each was requested.
     imports: HashMap<u64, Instant>,
     wl: Option<WlData>,
+    /// The preview engine; started once the GPU device exists.
+    player: Option<Player>,
+    /// The viewer texture as registered with the UI renderer, and the
+    /// player's output generation it belongs to.
+    viewer_texture: Option<(egui::TextureId, u64)>,
+    /// The snapshot the player was last given.
+    synced: Option<(PathBuf, std::sync::Arc<sg_core::Project>)>,
     library: PathBuf,
     repaint_at: Option<Instant>,
     /// Jobs sent to workers whose result has not come back yet.
@@ -208,6 +216,15 @@ impl App {
                         self.shell.report_error(format!("Cannot open the file picker: {e}"));
                     }
                 }
+                Command::Transport(transport) => {
+                    if let Some(player) = &self.player {
+                        match transport {
+                            Transport::Toggle => player.toggle(),
+                            Transport::Seek(frame) => player.seek(frame),
+                            Transport::Step(frames) => player.step(frames),
+                        }
+                    }
+                }
                 Command::ReadClipboard => match &self.wl {
                     Some(wl) => wl.paste(),
                     None => self.shell.report_error("The clipboard is not available.".to_owned()),
@@ -289,11 +306,65 @@ impl App {
             }
             _ => {}
         }
+        if let (ImportEvent::Derived { id, what, .. }, Some(player)) = (&event, &self.player) {
+            // New audio, proxy or conform: the player reopens what it had.
+            if !matches!(what, sg_project::Derived::Poster | sg_project::Derived::Peaks | sg_project::Derived::Scan) {
+                player.asset_changed(*id);
+            }
+        }
         self.shell.import_event(event);
         self.request_redraw();
     }
 
+    /// Gives the player the current snapshot if it changed. A pointer
+    /// comparison; called after every batch of events.
+    fn sync_player(&mut self) {
+        let Some(player) = &self.player else { return };
+        let current = self.shell.session().map(|s| (s.root.clone(), s.project().clone()));
+        let same = match (&self.synced, &current) {
+            (Some((root, project)), Some((new_root, new_project))) => {
+                root == new_root && std::sync::Arc::ptr_eq(project, new_project)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            match &current {
+                Some((root, project)) => player.set_project(root.clone(), project.clone()),
+                None => player.clear_project(),
+            }
+            self.synced = current;
+        }
+    }
+
+    /// What the viewer shows this frame.
+    fn viewer_state(&mut self) -> ViewerState {
+        let (Some(player), Some(gfx)) = (&self.player, &mut self.gfx) else { return ViewerState::default() };
+        let (view, generation) = player.output();
+        let texture = match self.viewer_texture {
+            Some((id, seen)) if seen == generation => id,
+            Some((id, _)) => {
+                gfx.replace_texture(id, &view);
+                id
+            }
+            None => gfx.register_texture(&view),
+        };
+        self.viewer_texture = Some((texture, generation));
+        ViewerState {
+            texture: Some(texture),
+            frame: player.frame(),
+            playing: player.is_playing(),
+            stats: player_lines(player),
+        }
+    }
+
     fn quit(&mut self, el: &ActiveEventLoop) {
+        // The player holds the GPU device: it goes first.
+        if let Some(player) = self.player.take() {
+            for line in player_lines(&player) {
+                log::info!("{line}");
+            }
+        }
         // The data device and the surface must go before the event loop closes
         // the display.
         if let Some(wl) = self.wl.take() {
@@ -304,11 +375,13 @@ impl App {
     }
 
     fn screenshot(&mut self, path: &Path) {
+        self.sync_player();
+        let view = self.viewer_state();
         let Some(gfx) = &mut self.gfx else { return };
         let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let shell = &mut self.shell;
         let mut commands = Vec::new();
-        match gfx.screenshot(&self.ctx, |ui| commands.extend(shell.frame(ui, now_unix)), path) {
+        match gfx.screenshot(&self.ctx, |ui| commands.extend(shell.frame(ui, now_unix, &view)), path) {
             Ok(()) => log::info!("wrote {}", path.display()),
             Err(e) => log::error!("screenshot failed: {e:#}"),
         }
@@ -322,11 +395,12 @@ impl App {
             return;
         }
         self.redraws += 1;
+        let view = self.viewer_state();
         let Some(gfx) = &mut self.gfx else { return };
         let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let shell = &mut self.shell;
         let mut commands = Vec::new();
-        let frame = gfx.render(&self.ctx, |ui| commands.extend(shell.frame(ui, now_unix)));
+        let frame = gfx.render(&self.ctx, |ui| commands.extend(shell.frame(ui, now_unix, &view)));
         if let Frame::Presented { cpu_ms } = frame {
             self.shell.perf_mut().push_frame(cpu_ms);
             self.frames += 1;
@@ -377,6 +451,20 @@ impl ApplicationHandler<UserEvent> for App {
                         Ok(wl) => self.wl = Some(wl),
                         Err(e) => log::warn!("drag-and-drop and paste are unavailable: {e}"),
                     }
+                }
+                let (device, queue) = gfx.device();
+                let proxy = self.proxy.clone();
+                let wake = move || {
+                    let _ = proxy.send_event(UserEvent::Wake);
+                };
+                // Sound is the clock. Without a device the null backend keeps time.
+                let player = Player::start(device.clone(), queue.clone(), audio_backend(), wake.clone()).or_else(|e| {
+                    log::warn!("no audio output ({e}); playing silently");
+                    Player::start(device, queue, Backend::Null, wake)
+                });
+                match player {
+                    Ok(player) => self.player = Some(player),
+                    Err(e) => log::error!("the preview engine did not start: {e}"),
                 }
                 gfx.window.request_redraw();
                 self.gfx = Some(gfx);
@@ -445,6 +533,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        self.sync_player();
         match self.repaint_at {
             Some(at) if Instant::now() >= at => {
                 self.repaint_at = None;
@@ -555,6 +644,9 @@ fn main() -> anyhow::Result<()> {
         importer: Some(importer),
         imports: HashMap::new(),
         wl: None,
+        player: None,
+        viewer_texture: None,
+        synced: None,
         library,
         repaint_at: None,
         pending_jobs: 1,
@@ -627,4 +719,49 @@ fn incoming_from(mime: &str, data: Vec<u8>) -> Option<Incoming> {
         return Some(Incoming::Paths(text.lines().map(|l| PathBuf::from(l.trim())).collect()));
     }
     (!text.is_empty()).then_some(Incoming::Text(text))
+}
+
+/// `SHOTGUN_AUDIO=null` plays without a device (automated runs),
+/// `SHOTGUN_AUDIO=sink:<node name>` targets a specific sink.
+fn audio_backend() -> Backend {
+    match std::env::var("SHOTGUN_AUDIO").ok().as_deref() {
+        Some("null") => Backend::Null,
+        Some(other) => Backend::PipeWire {
+            target: other.strip_prefix("sink:").map(str::to_owned),
+            quantum: sg_play::DEFAULT_QUANTUM,
+        },
+        None => Backend::PipeWire { target: None, quantum: sg_play::DEFAULT_QUANTUM },
+    }
+}
+
+fn percentile(samples: &[f32], q: f32) -> f32 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    sorted.get(((sorted.len().max(1) - 1) as f32 * q).round() as usize).copied().unwrap_or(0.0)
+}
+
+/// Preview numbers for the performance overlay and the exit log.
+fn player_lines(player: &Player) -> Vec<String> {
+    let s = player.stats();
+    let line = |name: &str, v: &[f32]| {
+        format!(
+            "{name} p50 {:.1}  p95 {:.1}  max {:.1} ms  (n={})",
+            percentile(v, 0.5),
+            percentile(v, 0.95),
+            percentile(v, 1.0),
+            v.len()
+        )
+    };
+    let mut lines = vec![
+        line("seek proxy", &s.seek_ms),
+        line("seek full ", &s.full_ms),
+        line("play start", &s.play_start_ms),
+        format!("playback   {} frames, {} late   cache {} MB", s.played, s.dropped, s.cache_bytes >> 20),
+        format!(
+            "audio      quantum {}  delay {}  xruns {}  underruns {}  rt policy {}",
+            s.audio.quantum, s.audio.delay_frames, s.audio.xruns, s.audio.underruns, s.audio.sched_policy
+        ),
+    ];
+    lines.extend(s.decode_error.map(|e| format!("decode error: {e}")));
+    lines
 }

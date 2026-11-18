@@ -29,6 +29,9 @@ pub struct Opened {
     /// The text files were changed outside the app, so the old undo history
     /// no longer applies and was set aside.
     pub history_reset: bool,
+    /// Entropy for the ids of things created in this session, read here so
+    /// that the UI thread never has to.
+    pub seed: u64,
 }
 
 /// The state of a new project: one 1080p60 sequence with a video and an
@@ -140,7 +143,7 @@ pub fn open(root: &Path, notify: impl Fn() + Send + 'static) -> Result<Opened, P
         Box::new(notify),
     )
     .map_err(at(root))?;
-    Ok(Opened { root: root.to_owned(), document, writer, recovered_edits, history_reset })
+    Ok(Opened { root: root.to_owned(), document, writer, recovered_edits, history_reset, seed: random_seed() })
 }
 
 /// Rebuilds the document: the first `saved` records are already in

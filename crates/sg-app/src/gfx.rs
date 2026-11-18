@@ -265,3 +265,20 @@ struct Built {
     pixels_per_point: f32,
     free: Vec<egui::TextureId>,
 }
+
+impl Gfx {
+    /// The GPU device and queue, shared with the preview engine.
+    pub fn device(&self) -> (wgpu::Device, wgpu::Queue) {
+        (self.device.clone(), self.queue.clone())
+    }
+
+    /// Makes a texture rendered elsewhere showable in the UI.
+    pub fn register_texture(&mut self, view: &wgpu::TextureView) -> egui::TextureId {
+        self.renderer.register_native_texture(&self.device, view, wgpu::FilterMode::Linear)
+    }
+
+    /// Points an id from [`register_texture`](Self::register_texture) at another texture.
+    pub fn replace_texture(&mut self, id: egui::TextureId, view: &wgpu::TextureView) {
+        self.renderer.update_egui_texture_from_wgpu_texture(&self.device, view, wgpu::FilterMode::Linear, id);
+    }
+}

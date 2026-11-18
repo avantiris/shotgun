@@ -37,7 +37,7 @@ impl Perf {
         (at(0.5), at(0.99), sorted[sorted.len() - 1])
     }
 
-    pub fn ui(&self, ctx: &egui::Context, session: Option<&Session>) {
+    pub fn ui(&self, ctx: &egui::Context, session: Option<&Session>, viewer: &[String]) {
         if !self.show {
             return;
         }
@@ -60,8 +60,10 @@ impl Perf {
                 us(status.append_max_ns.load(Ordering::Relaxed))
             ));
             lines.push(format!("clips      {}", session.project().clip_count()));
+            lines.extend(viewer.iter().cloned());
         }
         egui::Area::new(egui::Id::unique("perf-overlay"))
+            .fade_in(false)
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 44.0))
             .interactable(false)
             .show(ctx, |ui| {

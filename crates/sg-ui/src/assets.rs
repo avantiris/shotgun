@@ -29,6 +29,8 @@ pub enum AssetRequest {
     ImportLink(String),
     Browse,
     CancelJob(u64),
+    /// Put the selected asset on the timeline (double-click).
+    Insert,
 }
 
 #[derive(Default)]
@@ -185,6 +187,10 @@ impl AssetsPanel {
                     let (rect, response) = ui.allocate_exact_size(tile, Sense::click());
                     if response.clicked() {
                         self.selected = Some(asset.id);
+                    }
+                    if response.double_clicked() {
+                        self.selected = Some(asset.id);
+                        out.push(AssetRequest::Insert);
                     }
                     if ui.is_rect_visible(rect) {
                         if let std::collections::hash_map::Entry::Vacant(e) = self.posters.entry(asset.id) {

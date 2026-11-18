@@ -3,7 +3,7 @@
 //! or keyboard input into the desktop the user is working on.
 
 use anyhow::{anyhow, bail};
-use sg_ui::{Action, DevStep};
+use sg_ui::{Action, DevStep, Transport};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
@@ -30,6 +30,14 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "import" => Step::Dev(DevStep::Import(need()?)),
         "asset" => Step::Dev(DevStep::SelectAsset(need()?.parse().map_err(|_| anyhow!("asset needs a number"))?)),
         "add" => Step::Dev(DevStep::Act(Action::AddAsset)),
+        "insert" => Step::Dev(DevStep::Act(Action::InsertAsset)),
+        "play" => Step::Dev(DevStep::Act(Action::PlayPause)),
+        "seek" => Step::Dev(DevStep::Transport(Transport::Seek(
+            need()?.parse().map_err(|_| anyhow!("seek needs a frame number"))?,
+        ))),
+        "step" => Step::Dev(DevStep::Transport(Transport::Step(
+            need()?.parse().map_err(|_| anyhow!("step needs a number of frames"))?,
+        ))),
         "del" => Step::Dev(DevStep::Act(Action::Delete)),
         "undo" => Step::Dev(DevStep::Act(Action::Undo)),
         "redo" => Step::Dev(DevStep::Act(Action::Redo)),

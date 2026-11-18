@@ -47,6 +47,9 @@ pub struct VideoFrame {
     pub rgba: Vec<u8>,
     /// Index of this frame at the decoder's frame rate.
     pub index: i64,
+    /// Degrees the picture must be turned counter-clockwise for display
+    /// (0, 90, 180 or 270), from the file's display matrix.
+    pub rotation: i32,
 }
 
 pub struct VideoDecoder {
@@ -56,11 +59,19 @@ pub struct VideoDecoder {
     /// The last decoded picture.
     frame: *mut AVFrame,
     scratch: *mut AVFrame,
+    /// System-memory copy of a hardware frame.
+    download: *mut AVFrame,
     /// `frame` holds a picture decoded since the last seek.
     holding: bool,
     scaler: *mut SwsContext,
     /// (width, height, pixel format, colour space, range) the scaler was built for.
     scaler_for: (c_int, c_int, c_int, c_int, c_int),
+    /// Longest side of the frames handed out; larger pictures are scaled down.
+    max_dim: u32,
+    rotation: i32,
+    skip_nonref: bool,
+    /// While set, packets before this timestamp only feed reference frames.
+    skip_before: Option<i64>,
     stream: c_int,
     time_base: AVRational,
     start_pts: i64,
@@ -88,6 +99,14 @@ impl VideoDecoder {
     /// `threads`: 1 for all-intra proxies (frame threading makes their seeks
     /// 4 to 8 times slower, S1), 0 lets FFmpeg choose for long-GOP files.
     pub fn open(path: &Path, threads: i32) -> Result<VideoDecoder, DecodeError> {
+        VideoDecoder::open_with(path, threads, false)
+    }
+
+    /// With `hardware`, decodes on the GPU through VAAPI where the codec
+    /// allows it and reads back only the frames that are asked for: a seek
+    /// into a long-GOP 4K file rolls forward at GPU speed. Sustained
+    /// playback through this read-back is slow (S1); use it for single frames.
+    pub fn open_with(path: &Path, threads: i32, hardware: bool) -> Result<VideoDecoder, DecodeError> {
         let c_path = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| DecodeError::Ffmpeg { what: "open", message: "path contains a NUL byte".into() })?;
         // SAFETY: plain libav open sequence. Every pointer passed is either
@@ -100,9 +119,14 @@ impl VideoDecoder {
                 packet: null_mut(),
                 frame: null_mut(),
                 scratch: null_mut(),
+                download: null_mut(),
                 holding: false,
                 scaler: null_mut(),
                 scaler_for: (0, 0, 0, 0, 0),
+                max_dim: u32::MAX,
+                rotation: 0,
+                skip_nonref: false,
+                skip_before: None,
                 stream: -1,
                 time_base: AVRational { num: 1, den: 1 },
                 start_pts: 0,
@@ -124,19 +148,42 @@ impl VideoDecoder {
             dec.codec = avcodec_alloc_context3(codec);
             check(avcodec_parameters_to_context(dec.codec, (*stream).codecpar), "set up decoder")?;
             (*dec.codec).pkt_timebase = (*stream).time_base;
-            (*dec.codec).thread_count = threads;
-            if threads != 1 {
-                (*dec.codec).thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+            let device = if hardware { vaapi_device() } else { null_mut() };
+            if !device.is_null() {
+                // One thread per hardware stream (S1, gotcha 2). If the codec
+                // has no hardware decoder, get_format falls back to software.
+                (*dec.codec).hw_device_ctx = av_buffer_ref(device);
+                (*dec.codec).get_format = Some(pick_hardware_format);
+                (*dec.codec).thread_count = 1;
+            } else {
+                (*dec.codec).thread_count = threads;
+                if threads != 1 {
+                    (*dec.codec).thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+                }
             }
             check(avcodec_open2(dec.codec, codec, null_mut()), "open decoder")?;
             dec.packet = av_packet_alloc();
             dec.frame = av_frame_alloc();
             dec.scratch = av_frame_alloc();
+            dec.download = av_frame_alloc();
             dec.time_base = (*stream).time_base;
             dec.start_pts = if (*stream).start_time == AV_NOPTS_VALUE { 0 } else { (*stream).start_time };
             let guessed = av_guess_frame_rate(dec.format, stream, null_mut());
             if guessed.num > 0 && guessed.den > 0 {
                 dec.rate = (guessed.num as i64, guessed.den as i64);
+            }
+            let params = (*stream).codecpar;
+            let matrix = av_packet_side_data_get(
+                (*params).coded_side_data,
+                (*params).nb_coded_side_data,
+                AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+            );
+            if !matrix.is_null() && (*matrix).size >= 36 && !(*matrix).data.is_null() {
+                // The matrix is nine 16.16 fixed-point numbers; its first row
+                // gives the angle. Same result as av_display_rotation_get.
+                let m = (*matrix).data as *const i32;
+                let angle = -(m.add(1).read_unaligned() as f64).atan2(m.read_unaligned() as f64).to_degrees();
+                dec.rotation = ((angle / 90.0).round() as i32 * 90).rem_euclid(360);
             }
             dec.width = (*dec.codec).width.max(0) as u32;
             dec.height = (*dec.codec).height.max(0) as u32;
@@ -153,6 +200,17 @@ impl VideoDecoder {
         if num > 0 && den > 0 {
             self.rate = (num as i64, den as i64);
         }
+    }
+
+    /// Skips non-reference pictures on the way from a keyframe to a seek
+    /// target. Worth it for long-GOP files; pointless for all-intra ones.
+    pub fn set_skip_nonref(&mut self, skip: bool) {
+        self.skip_nonref = skip;
+    }
+
+    /// Limits the longest side of decoded frames. Set before the first frame.
+    pub fn set_max_dim(&mut self, max_dim: u32) {
+        self.max_dim = max_dim;
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -201,6 +259,12 @@ impl VideoDecoder {
                         break;
                     }
                     let ours = (*self.packet).stream_index == self.stream;
+                    if ours {
+                        let pts = (*self.packet).pts;
+                        let skip = self.skip_before.is_some_and(|target| pts != AV_NOPTS_VALUE && pts < target);
+                        (*self.codec).skip_frame =
+                            if skip { AVDiscard::AVDISCARD_NONREF } else { AVDiscard::AVDISCARD_DEFAULT };
+                    }
                     let sent = if ours { avcodec_send_packet(self.codec, self.packet) } else { 0 };
                     av_packet_unref(self.packet);
                     if ours {
@@ -247,7 +311,12 @@ impl VideoDecoder {
         let target = self.pts_of(index);
         let mut seek_pts = target;
         let mut attempts = 0;
-        if !sequential {
+        if sequential {
+            self.skip_before = None;
+        } else {
+            // While rolling forward from the keyframe, pictures nothing else
+            // depends on need not be decoded (S1, gotcha 10).
+            self.skip_before = self.skip_nonref.then_some(target);
             self.seek_to(seek_pts)?;
         }
         loop {
@@ -299,15 +368,31 @@ impl VideoDecoder {
 
     /// Converts the picture in `self.frame` to RGBA.
     fn convert(&mut self, index: i64) -> Result<VideoFrame, DecodeError> {
-        // SAFETY: `self.frame` holds a decoded software frame; the scaler is
-        // created for exactly its geometry and format, and the destination
-        // buffer is `stride * height` bytes.
+        // SAFETY: `self.frame` holds a decoded frame. A hardware frame is first
+        // copied into `self.download`, which then owns system-memory planes.
+        // The scaler is created for exactly the source geometry and format,
+        // and the destination buffer is `stride * height` bytes.
         unsafe {
-            let f = &*self.frame;
+            let mut source = self.frame;
+            if (*source).format == AVPixelFormat::AV_PIX_FMT_VAAPI as c_int {
+                av_frame_unref(self.download);
+                check(av_hwframe_transfer_data(self.download, source, 0), "read back the decoded frame")?;
+                av_frame_copy_props(self.download, source);
+                source = self.download;
+            }
+            let f = &*source;
             let (w, h) = (f.width, f.height);
             if w <= 0 || h <= 0 || f.data[0].is_null() {
                 return Err(DecodeError::Empty);
             }
+            // Output size: the picture itself, or scaled down to fit the cap.
+            let cap = self.max_dim.max(16) as i64;
+            let longest = w.max(h) as i64;
+            let (ow, oh) = if longest > cap {
+                (((w as i64 * cap / longest).max(1)) as c_int, ((h as i64 * cap / longest).max(1)) as c_int)
+            } else {
+                (w, h)
+            };
             let key = (w, h, f.format, f.colorspace as c_int, f.color_range as c_int);
             if self.scaler.is_null() || self.scaler_for != key {
                 sws_freeContext(self.scaler);
@@ -316,8 +401,8 @@ impl VideoDecoder {
                     w,
                     h,
                     src,
-                    w,
-                    h,
+                    ow,
+                    oh,
                     AVPixelFormat::AV_PIX_FMT_RGBA,
                     SwsFlags::SWS_BILINEAR as c_int,
                     null_mut(),
@@ -340,8 +425,9 @@ impl VideoDecoder {
                 sws_setColorspaceDetails(self.scaler, coefficients, full, coefficients, 1, 0, 1 << 16, 1 << 16);
                 self.scaler_for = key;
             }
-            let stride = w as usize * 4;
-            let mut rgba = vec![0u8; stride * h as usize];
+            let stride = ow as usize * 4;
+            let mut rgba = vec![0u8; stride * oh as usize];
+
             let dst = [rgba.as_mut_ptr(), null_mut(), null_mut(), null_mut()];
             let dst_stride = [stride as c_int, 0, 0, 0];
             sws_scale(
@@ -353,7 +439,7 @@ impl VideoDecoder {
                 dst.as_ptr(),
                 dst_stride.as_ptr(),
             );
-            Ok(VideoFrame { width: w as u32, height: h as u32, rgba, index })
+            Ok(VideoFrame { width: ow as u32, height: oh as u32, rgba, index, rotation: self.rotation })
         }
     }
 }
@@ -369,5 +455,53 @@ impl Drop for VideoDecoder {
             avcodec_free_context(&mut self.codec);
             avformat_close_input(&mut self.format);
         }
+    }
+}
+
+/// The process-wide VAAPI device, or null if there is none.
+fn vaapi_device() -> *mut AVBufferRef {
+    struct Device(*mut AVBufferRef);
+    // SAFETY: an AVBufferRef to a hardware device context is reference
+    // counted and FFmpeg allows `av_buffer_ref` on it from any thread.
+    unsafe impl Send for Device {}
+    // SAFETY: as above; the pointer itself is never mutated after creation.
+    unsafe impl Sync for Device {}
+    static DEVICE: std::sync::OnceLock<Device> = std::sync::OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            let mut device = null_mut();
+            // SAFETY: plain creation call; on failure `device` stays null.
+            let code = unsafe {
+                av_hwdevice_ctx_create(
+                    &mut device,
+                    AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                    c"/dev/dri/renderD128".as_ptr(),
+                    null_mut(),
+                    0,
+                )
+            };
+            if code < 0 {
+                log::warn!("no VAAPI device: full-quality frames are decoded in software");
+                device = null_mut();
+            }
+            Device(device)
+        })
+        .0
+}
+
+/// libavcodec asks which of the offered formats to decode into.
+unsafe extern "C" fn pick_hardware_format(_codec: *mut AVCodecContext, formats: *const AVPixelFormat) -> AVPixelFormat {
+    // SAFETY: `formats` is a list terminated by AV_PIX_FMT_NONE, as the
+    // callback contract says.
+    unsafe {
+        let mut p = formats;
+        while *p != AVPixelFormat::AV_PIX_FMT_NONE {
+            if *p == AVPixelFormat::AV_PIX_FMT_VAAPI {
+                return *p;
+            }
+            p = p.add(1);
+        }
+        // Not offered: the first entry is the software format.
+        *formats
     }
 }

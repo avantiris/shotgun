@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 sg-audio.workspace = true
 sg-core.workspace = true
+sg-media.workspace = true
 sg-project.workspace = true
 anyhow.workspace = true
 

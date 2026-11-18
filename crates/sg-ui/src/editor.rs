@@ -3,11 +3,12 @@
 
 use std::sync::atomic::Ordering;
 
-use egui::{Align, Align2, FontId, Layout, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
-use sg_core::{Asset, AssetId, Op, Rate, Sequence, TrackKind};
+use egui::{Align, FontId, Layout, RichText, Sense, vec2};
+use sg_core::{Asset, AssetId, Op, Rate, Sequence};
 
 use crate::assets::{AssetRequest, AssetsPanel, summary};
 use crate::session::Session;
+use crate::stage::{self, Transport, ViewerState};
 use crate::theme;
 
 pub enum EditorRequest {
@@ -45,6 +46,8 @@ impl Editor {
         session: &mut Session,
         error: &mut Option<String>,
         asset_requests: &mut Vec<AssetRequest>,
+        view: &ViewerState,
+        transport: &mut Vec<Transport>,
     ) -> Option<EditorRequest> {
         let mut request = None;
         let bar = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(12, 6));
@@ -62,7 +65,7 @@ impl Editor {
             .default_size(230.0)
             .min_size(120.0)
             .frame(flush)
-            .show(ui, |ui| timeline(ui, sequence));
+            .show(ui, |ui| stage::timeline(ui, &project, sequence, view, transport));
         egui::Panel::left("assets").default_size(320.0).min_size(170.0).show(ui, |ui| {
             self.assets.ui(ui, &project, asset_requests);
         });
@@ -74,7 +77,7 @@ impl Editor {
         });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(12.0))
-            .show(ui, |ui| viewer(ui, sequence));
+            .show(ui, |ui| stage::viewer(ui, sequence, view));
         request
     }
 
@@ -191,74 +194,6 @@ fn fps(rate: Rate) -> String {
         // Display only; the model keeps the exact fraction.
         format!("{:.2} fps", rate.num() as f64 / rate.den() as f64)
     }
-}
-
-fn viewer(ui: &mut egui::Ui, sequence: &Sequence) {
-    let available = ui.available_rect_before_wrap();
-    let aspect = sequence.width as f32 / sequence.height.max(1) as f32;
-    let size = if available.width() / available.height() > aspect {
-        vec2(available.height() * aspect, available.height())
-    } else {
-        vec2(available.width(), available.width() / aspect)
-    };
-    let rect = Rect::from_center_size(available.center(), size);
-    ui.allocate_rect(available, Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
-    let label = format!("{}x{}, {}", sequence.width, sequence.height, fps(sequence.rate));
-    painter.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), theme::DIM);
-}
-
-/// Track rows only: clips are drawn by the instanced timeline renderer in M4.
-fn timeline(ui: &mut egui::Ui, sequence: &Sequence) {
-    const HEADER_W: f32 = 120.0;
-    const RULER_H: f32 = 20.0;
-    const ROW_H: f32 = 34.0;
-    let rect = ui.available_rect_before_wrap();
-    ui.allocate_rect(rect, Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, theme::BG);
-    let ruler = Rect::from_min_size(rect.min, vec2(rect.width(), RULER_H));
-    painter.rect_filled(ruler, 0.0, theme::PANEL);
-    painter.text(
-        pos2(rect.left() + HEADER_W + 4.0, ruler.center().y),
-        Align2::LEFT_CENTER,
-        "00:00:00:00",
-        FontId::monospace(10.0),
-        theme::DIM,
-    );
-    for (i, track) in sequence.tracks.iter().enumerate() {
-        let top = ruler.bottom() + i as f32 * ROW_H;
-        let lane = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), ROW_H - 1.0));
-        painter.rect_filled(lane, 0.0, if i % 2 == 0 { theme::PANEL } else { theme::RAISED.gamma_multiply(0.8) });
-        let colour = match track.kind {
-            TrackKind::Video => theme::VIDEO,
-            TrackKind::Audio => theme::AUDIO,
-        };
-        painter.rect_filled(Rect::from_min_size(lane.min, vec2(3.0, lane.height())), 0.0, colour);
-        painter.text(
-            pos2(lane.left() + 12.0, lane.center().y),
-            Align2::LEFT_CENTER,
-            &track.name,
-            FontId::proportional(13.0),
-            theme::TEXT,
-        );
-        if !track.clips.is_empty() {
-            let text = format!("{} clips", track.clips.len());
-            painter.text(
-                pos2(lane.left() + HEADER_W + 4.0, lane.center().y),
-                Align2::LEFT_CENTER,
-                text,
-                FontId::proportional(12.0),
-                theme::DIM,
-            );
-        }
-    }
-    let x = rect.left() + HEADER_W;
-    painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(1.0, theme::LINE));
-    // Playhead at the start.
-    painter.line_segment([pos2(x + 1.0, rect.top()), pos2(x + 1.0, rect.bottom())], Stroke::new(1.5, theme::ACCENT));
 }
 
 impl Editor {

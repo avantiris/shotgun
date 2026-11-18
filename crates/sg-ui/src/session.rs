@@ -6,13 +6,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use sg_core::{Document, Op, OpError, Project};
+use sg_core::time::SAMPLE_RATE;
+use sg_core::{Asset, Clip, Document, IdGen, Op, OpError, Project, TrackKind};
 use sg_project::{Opened, ProjectWriter, WriterStatus};
 
 pub struct Session {
     pub root: PathBuf,
     doc: Document,
     writer: ProjectWriter,
+    ids: IdGen,
     /// One-line message about how the project was opened, if noteworthy.
     pub notice: Option<String>,
     pub apply_last_ns: u64,
@@ -36,6 +38,7 @@ impl Session {
             root: opened.root,
             doc: opened.document,
             writer: opened.writer,
+            ids: IdGen::new(opened.seed),
             notice,
             apply_last_ns: 0,
             apply_max_ns: 0,
@@ -85,5 +88,54 @@ impl Session {
     /// Ends the session. The caller closes the writer off the UI thread.
     pub fn into_writer(self) -> ProjectWriter {
         self.writer
+    }
+}
+
+impl Session {
+    /// Puts the whole asset at the end of the first video and audio track:
+    /// its picture on the video track, its sound on the audio track, both
+    /// starting at the same time. Returns the frame it starts at.
+    pub fn append_asset(&mut self, asset: &Asset) -> Result<Option<i64>, OpError> {
+        let project = self.project().clone();
+        let Some(seq) = project.sequences.first() else { return Ok(None) };
+        let rate = seq.rate;
+        let video_track = seq.tracks.iter().find(|t| t.kind == TrackKind::Video).filter(|_| asset.video.is_some());
+        let audio_track = seq.tracks.iter().find(|t| t.kind == TrackKind::Audio).filter(|_| asset.audio.is_some());
+        // After everything that is already on the tracks this asset uses.
+        let video_end = video_track.map_or(0, |t| t.clips.end());
+        let audio_end = audio_track.map_or(0, |t| {
+            let samples = t.clips.end();
+            let frames = rate.samples_to_frames(samples, SAMPLE_RATE);
+            if rate.frames_to_samples(frames, SAMPLE_RATE) < samples { frames + 1 } else { frames }
+        });
+        let start = video_end.max(audio_end);
+        // A still gets five seconds.
+        let still_frames = (5 * rate.num() as i64 / rate.den() as i64).max(1);
+        let frames = asset.frames_at(rate, still_frames).max(1);
+        let mut ops = Vec::new();
+        if let Some(track) = video_track {
+            let clip = Clip { id: self.ids.clip(), asset: asset.id, start, len: frames, src_in: 0 };
+            ops.push(Op::InsertClip { seq: seq.id, track: track.id, clip });
+        }
+        if let (Some(track), Some(audio)) = (audio_track, &asset.audio) {
+            // The conformed audio is at the engine rate whatever the source was.
+            let mut len = (audio.samples as i128 * SAMPLE_RATE as i128 / audio.sample_rate.max(1) as i128) as i64;
+            if video_track.is_some() {
+                len = len.min(rate.frames_to_samples(frames, SAMPLE_RATE));
+            }
+            let clip = Clip {
+                id: self.ids.clip(),
+                asset: asset.id,
+                start: rate.frames_to_samples(start, SAMPLE_RATE),
+                len: len.max(1),
+                src_in: 0,
+            };
+            ops.push(Op::InsertClip { seq: seq.id, track: track.id, clip });
+        }
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        self.apply(Op::Batch(ops), None)?;
+        Ok(Some(start))
     }
 }

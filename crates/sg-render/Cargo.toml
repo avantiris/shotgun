@@ -4,5 +4,14 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+sg-core.workspace = true
+bytemuck.workspace = true
+# Same version as egui-wgpu uses (spike S2), so the UI and the compositor share one device.
+wgpu = "30.0.2"
+
+[dev-dependencies]
+pollster.workspace = true
+
 [lints]
 workspace = true

@@ -265,6 +265,11 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some("open") => bench_open(Path::new(arg(1).context("open <project-dir>")?), number(2, 10)?),
+        // sg-bench seek <file> [threads] [skip 0/1] [max dimension]
+        Some("seek") => {
+            let threads = arg(2).map_or(Ok(0), |s| if s == "vaapi" { Ok(-1) } else { s.parse::<i32>() })?;
+            bench_seek(Path::new(arg(1).context("seek <file>")?), threads, number(3, 0)? != 0, number(4, 4096)? as u32)
+        }
         // sg-bench audio <sink name or "default"> [secs]
         Some("audio") => {
             let target = arg(1).context("audio <sink name|default> [secs]")?;
@@ -366,5 +371,26 @@ fn bench_audio(target: Option<&str>, secs: u64, dir: &Path) -> anyhow::Result<()
         worst * 1000.0 / SAMPLE_RATE as f64
     );
     std::fs::remove_file(&wav)?;
+    Ok(())
+}
+
+/// Random seeks in one file with the in-process decoder.
+fn bench_seek(path: &Path, threads: i32, skip_nonref: bool, max_dim: u32) -> anyhow::Result<()> {
+    let mut decoder = sg_media::decode::VideoDecoder::open_with(path, threads.max(0), threads < 0)?;
+    decoder.set_skip_nonref(skip_nonref);
+    decoder.set_max_dim(max_dim);
+    let probed = sg_media::probe(path, &sg_media::Cancel::new())?;
+    let frames = probed.video.map_or(600, |v| v.frames).max(2);
+    let mut samples = Vec::new();
+    let mut frame = 37i64;
+    for _ in 0..60 {
+        frame = (frame * 7919 + 1031) % frames;
+        let t = Instant::now();
+        decoder.frame(frame)?;
+        samples.push(t.elapsed().as_nanos() as u64);
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let how = if threads < 0 { "vaapi".to_owned() } else { format!("sw t={threads}") };
+    Samples(samples).report(&format!("{name} {how} skip={}", skip_nonref as u8), 150_000.0);
     Ok(())
 }

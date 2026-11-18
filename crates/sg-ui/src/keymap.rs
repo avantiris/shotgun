@@ -15,6 +15,13 @@ pub enum Action {
     Redo,
     Rename,
     AddAsset,
+    PlayPause,
+    StepBack,
+    StepForward,
+    ToStart,
+    ToEnd,
+    /// Put the selected asset on the timeline.
+    InsertAsset,
     /// Import what the clipboard holds.
     Paste,
     /// Remove the selected item.
@@ -57,6 +64,12 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, true, false, Key::W, Action::CloseProject),
     bind(Scope::Editor, false, false, Key::F2, Action::Rename),
     bind(Scope::Editor, true, false, Key::Q, Action::AddAsset),
+    bind(Scope::Editor, false, false, Key::Space, Action::PlayPause),
+    bind(Scope::Editor, false, false, Key::A, Action::StepBack),
+    bind(Scope::Editor, false, false, Key::D, Action::StepForward),
+    bind(Scope::Editor, true, false, Key::A, Action::ToStart),
+    bind(Scope::Editor, true, false, Key::D, Action::ToEnd),
+    bind(Scope::Editor, false, false, Key::Enter, Action::InsertAsset),
     bind(Scope::Editor, true, false, Key::V, Action::Paste),
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
 ];

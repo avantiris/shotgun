@@ -11,6 +11,7 @@ pub mod keymap;
 mod library;
 mod perf;
 mod session;
+mod stage;
 pub mod theme;
 
 use std::collections::BTreeMap;
@@ -27,6 +28,7 @@ pub use crate::keymap::{Action, Scope};
 use crate::library::{Library, LibraryRequest};
 pub use crate::perf::Perf;
 pub use crate::session::Session;
+pub use crate::stage::{Transport, ViewerState};
 
 /// Work the UI asks the application to do off the UI thread.
 pub enum Command {
@@ -59,6 +61,8 @@ pub enum Command {
     },
     /// Show the system file picker; the chosen files are imported.
     PickFiles,
+    /// Play, pause or move the playhead.
+    Transport(Transport),
     /// Read the clipboard; the content comes back through [`Shell::incoming`].
     ReadClipboard,
 }
@@ -81,6 +85,7 @@ pub enum DevStep {
     Act(Action),
     /// Import a path or a link, as a drop or paste would.
     Import(String),
+    Transport(Transport),
     /// Select the n-th asset in the panel (0 is the newest).
     SelectAsset(usize),
 }
@@ -147,7 +152,7 @@ impl Shell {
     }
 
     /// Builds one frame.
-    pub fn frame(&mut self, ui: &mut egui::Ui, now_unix: u64) -> Vec<Command> {
+    pub fn frame(&mut self, ui: &mut egui::Ui, now_unix: u64, view: &ViewerState) -> Vec<Command> {
         let ctx = ui.ctx().clone();
         let mut commands = Vec::new();
         for action in keymap::take_actions(&ctx, self.scope()) {
@@ -155,9 +160,10 @@ impl Shell {
         }
         self.banner(ui);
         let mut asset_requests = Vec::new();
+        let mut transport = Vec::new();
         match &mut self.session {
             Some(session) => {
-                let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests);
+                let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests, view, &mut transport);
                 self.editor.assets.popover(&ctx, &mut asset_requests);
                 self.editor.assets.drop_overlay(&ctx);
                 match request {
@@ -181,9 +187,11 @@ impl Shell {
                 AssetRequest::ImportLink(link) => commands.extend(self.incoming(Incoming::Text(link))),
                 AssetRequest::Browse => commands.push(Command::PickFiles),
                 AssetRequest::CancelJob(job) => commands.push(Command::CancelImport(job)),
+                AssetRequest::Insert => self.insert_selected(&mut commands),
             }
         }
-        self.perf.ui(&ctx, self.session.as_ref());
+        commands.extend(transport.into_iter().map(Command::Transport));
+        self.perf.ui(&ctx, self.session.as_ref(), &view.stats);
         commands
     }
 
@@ -260,6 +268,12 @@ impl Shell {
                     commands.push(Command::ReadClipboard);
                 }
             }
+            Action::PlayPause => commands.push(Command::Transport(Transport::Toggle)),
+            Action::StepBack => commands.push(Command::Transport(Transport::Step(-1))),
+            Action::StepForward => commands.push(Command::Transport(Transport::Step(1))),
+            Action::ToStart => commands.push(Command::Transport(Transport::Seek(0))),
+            Action::ToEnd => commands.push(Command::Transport(Transport::Seek(i64::MAX))),
+            Action::InsertAsset => self.insert_selected(commands),
             Action::Delete => {
                 if let Some(id) = self.editor.assets.selected {
                     self.remove_asset(id);
@@ -289,6 +303,7 @@ impl Shell {
                 }
             }
             DevStep::Act(action) => self.act(action, &mut commands),
+            DevStep::Transport(transport) => commands.push(Command::Transport(transport)),
             DevStep::Import(what) => {
                 let incoming = if sg_project::fetch::looks_like_url(&what) {
                     Incoming::Text(what)
@@ -395,6 +410,21 @@ impl Shell {
     pub fn poster_loaded(&mut self, ctx: &egui::Context, root: &std::path::Path, id: AssetId, rgba: Option<Vec<u8>>) {
         if self.session.as_ref().is_some_and(|s| s.root == root) {
             self.editor.assets.set_poster(ctx, id, rgba);
+        }
+    }
+}
+
+impl Shell {
+    /// Appends the selected asset to the timeline and moves the playhead to it.
+    fn insert_selected(&mut self, commands: &mut Vec<Command>) {
+        let Some(session) = &mut self.session else { return };
+        let Some(asset) = self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned()) else {
+            return;
+        };
+        match session.append_asset(&asset) {
+            Ok(Some(start)) => commands.push(Command::Transport(Transport::Seek(start))),
+            Ok(None) => {}
+            Err(e) => self.error = Some(e.to_string()),
         }
     }
 }

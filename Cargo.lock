@@ -3167,6 +3167,7 @@ dependencies = [
  "rfd",
  "sg-core",
  "sg-media",
+ "sg-play",
  "sg-project",
  "sg-ui",
  "wayland-backend",
@@ -3193,6 +3194,7 @@ dependencies = [
  "anyhow",
  "sg-audio",
  "sg-core",
+ "sg-media",
  "sg-project",
 ]
 
@@ -3226,6 +3228,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sg-play"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "sg-audio",
+ "sg-core",
+ "sg-media",
+ "sg-project",
+ "sg-render",
+ "wgpu",
+]
+
+[[package]]
 name = "sg-project"
 version = "0.1.0"
 dependencies = [
@@ -3245,6 +3261,12 @@ dependencies = [
 [[package]]
 name = "sg-render"
 version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pollster 1.0.2",
+ "sg-core",
+ "wgpu",
+]
 
 [[package]]
 name = "sg-ui"

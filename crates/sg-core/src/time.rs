@@ -7,6 +7,10 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// Sample rate of everything on audio tracks: positions and lengths there
+/// are in samples at this rate (conformed at import).
+pub const SAMPLE_RATE: u32 = 48_000;
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RateError {
     #[error("frame rate must have a non-zero numerator and denominator")]
