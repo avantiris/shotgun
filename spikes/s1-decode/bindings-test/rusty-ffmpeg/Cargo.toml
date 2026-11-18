@@ -1,0 +1,9 @@
+[package]
+name = "bt-rusty-ffmpeg"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+rusty_ffmpeg = { version = "0.17.0", features = ["link_system_ffmpeg"] }
+
+[workspace]

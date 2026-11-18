@@ -1,0 +1,9 @@
+[package]
+name = "clip-multi"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+wl-clipboard-rs = "0.9"

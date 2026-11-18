@@ -1,0 +1,56 @@
+### load-pw-stream-64: pw_engine 64 30 (2026-11-18T13:17:11+01:00)
+loadavg before: 20.75 20.06 15.42 18/2348 160191
+settings before: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 
+load: burn (started before the engine)
+--- pw-dump (t=3s): our nodes and the default sink/source
+{"id":47,"name":"alsa_output.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"running","Latency":[{"direction":"Input","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":0.000000,"maxQuantum":0.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+{"id":46,"name":"alsa_input.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"suspended","Latency":[{"direction":"Input","minQuantum":0.000000,"maxQuantum":0.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":32,"maxRate":32,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+{"id":106,"name":"s3-pw-play","app":"shotgun-s3","node_latency":"64/48000","state":"running","Latency":[{"direction":"Input","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[]}
+--- threads of the engine (t=3s): tid class rtprio nice comm
+    TID CLS RTPRIO  NI COMMAND
+ 160227  TS      -   0 pw_engine
+ 160229  TS      -   0 module-rt
+ 160230  RR     20   - data-loop.0
+ 160232  TS      -   0 pw_engine
+load still running at engine exit: yes
+--- pw-top -b, whole run (36 iterations, starts 2.5 s before the engine, first iteration ignored): last running row per node
+R  106     64  48000   4.8us   1.6us  0.00  0.00    0    F32LE 2 48000  + s3-pw-play
+R   47     64  48000  10.9us   4.4us  0.01  0.00  327    S32LE 2 48000 alsa_output.pci-0000_0d_00.4.analog-stereo
+ERR per node, first..last value seen in this window (ERR is cumulative per node):
+  s3-pw-play ERR=0..0 delta=0
+  alsa_input.usb-046d_HD_Pro_Webcam_C920_B0C27AAF-02.analog-stereo ERR=0..0 delta=0
+  Midi-Bridge ERR=0..0 delta=0
+  alsa_input.pci-0000_0d_00.4.analog-stereo ERR=26..0 delta=-26
+  bluez_midi.server ERR=0..0 delta=0
+  Freewheel-Driver ERR=0..0 delta=0
+  NAME ERR=0..0 delta=0
+  v4l2_input.pci-0000_0d_00.3-usb-0_3_1.0 ERR=0..0 delta=0
+  alsa_output.pci-0000_0d_00.4.analog-stereo ERR=327..327 delta=0
+  Dummy-Driver ERR=0..0 delta=0
+  alsa_output.pci-0000_0b_00.1.hdmi-stereo-extra1 ERR=0..0 delta=0
+--- engine output
+play state Unconnected -> Connecting
+node ids: play=4294967295 (0xffffffff until connected)
+play state Connecting -> Paused
+play state Paused -> Streaming
+play node id=106
+RESULT backend=pipewire-stream requested=64 secs=30
+  quantum granted (driver clock.duration): last=64 min=64 max=64
+  callbacks=22497 frames=1439808 frames/callback min=64 max=64 avg=64.00
+  period us: nominal=1333.3 median=1333.3 min=669.5 max=1970.5  (n=22121 after skipping first 375)
+  period deviation |dt-nominal| us: p50=2.3 p99=44.2 p99.9=121.0 max=663.8
+  callback duration us: avg=0.87 max=40.7
+  own xrun detection: late(>1.5x period)=0 position_gaps=0 xrun_recover_flag=0 clock.xrun first=16083 last=16083 no_buffer=0 ring_overflow=0
+  callback thread: tid=160230 comm=data-loop.0 policy=SCHED_RR rtprio=20 nice=0
+  steady-state event count (2s..end-1s): 0
+  clock snapshots (30 total, showing up to 4 from the middle):
+    ClockSnap { cb_mono_ns: 7919348884231, engine_frames: 624832, n_frames: 64, t_now: 7919348867201, t_ticks: 624896, t_delay: 64, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 7919348867201, clk_position: 188533152, clk_duration: 64, clk_delay: 63, clk_next_nsec: 7919350200514, clk_rate_diff: 1.000014785586333, cpal_latency_ns: 0 }
+    ClockSnap { cb_mono_ns: 7920350212265, engine_frames: 672896, n_frames: 64, t_now: 7920350186128, t_ticks: 672960, t_delay: 64, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 7920350186128, clk_position: 188581216, clk_duration: 64, clk_delay: 62, clk_next_nsec: 7920351519443, clk_rate_diff: 1.0000132513340265, cpal_latency_ns: 0 }
+    ClockSnap { cb_mono_ns: 7921351520704, engine_frames: 720960, n_frames: 64, t_now: 7921351506547, t_ticks: 721024, t_delay: 64, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 7921351506547, clk_position: 188629280, clk_duration: 64, clk_delay: 62, clk_next_nsec: 7921352839864, clk_rate_diff: 1.0000118000757214, cpal_latency_ns: 0 }
+    ClockSnap { cb_mono_ns: 7922352850924, engine_frames: 769024, n_frames: 64, t_now: 7922352828959, t_ticks: 769088, t_delay: 64, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 7922352828959, clk_position: 188677344, clk_duration: 64, clk_delay: 61, clk_next_nsec: 7922354162279, clk_rate_diff: 1.0000092856164613, cpal_latency_ns: 0 }
+  clock check over 28 snapshots: pw_time.ticks-engine_frames min/max=(64, 64)  clock.position-engine_frames min/max=(187908320, 187908320)
+    effective rate vs CLOCK_MONOTONIC=48000.825 Hz, max residual of linear extrapolation=5.08 frames, callback entry - pw_time.now min/max=(13676, 35777) ns
+    pw_time.delay min/max=(64, 64) frames, clock.delay min/max=(52, 64) frames
+  pw_time: delay=64 frames (1.33 ms) buffered=0 queued=0  clock.delay=62
+loadavg after: 24.19 21.00 15.91 14/2358 160291
+settings after: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 

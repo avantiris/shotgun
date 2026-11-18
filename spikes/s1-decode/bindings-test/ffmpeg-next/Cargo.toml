@@ -1,0 +1,9 @@
+[package]
+name = "bt-ffmpeg-next"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+ffmpeg-next = "9.1.0"
+
+[workspace]

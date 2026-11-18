@@ -1,0 +1,12 @@
+target/
+**/target/
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.wav
+*.flac
+*.gif
+!docs/**/*.gif
+.direnv/
+result

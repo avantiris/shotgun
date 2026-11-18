@@ -1,0 +1,8 @@
+# Spike-only stub so jack-sys' build script finds "jack" without adding libjack2 to the flake.
+# Points at PipeWire's JACK reimplementation (pipewire "jack" output already in the nix store).
+libdir=/nix/store/7y28iwgfcz2n3gwfl0c6xrb7vlg854nb-pipewire-1.6.9-jack/lib
+Name: jack
+Description: PipeWire JACK client library (stub .pc for spike S3)
+Version: 1.9.17
+Libs: -L${libdir} -ljack
+Cflags:

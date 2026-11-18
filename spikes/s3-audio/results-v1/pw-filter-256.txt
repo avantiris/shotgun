@@ -1,0 +1,43 @@
+### pw-filter-256: pw_filter_engine 256 30 (2026-11-18T12:45:17+01:00)
+settings before: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 
+--- pw-dump (t=3s): our nodes and the default sink/source
+{"id":47,"name":"alsa_output.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"running","Latency":[{"direction":"Input","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":0.000000,"maxQuantum":0.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+{"id":46,"name":"alsa_input.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"suspended","Latency":[{"direction":"Input","minQuantum":0.000000,"maxQuantum":0.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+{"id":80,"name":"s3-pw-filter","app":"shotgun-s3","node_latency":"256/48000","state":"running","Latency":null,"ProcessLatency":[]}
+--- threads of the engine (t=3s): tid class rtprio nice comm
+    TID CLS RTPRIO  NI COMMAND
+  69673  TS      -   0 pw_filter_engin
+  69675  TS      -   0 module-rt
+  69676  RR     20   - data-loop.0
+  69678  TS      -   0 pw_filter_engin
+--- pw-top -b, last iteration (running rows) + max ERR seen per node over 25 iterations
+S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME 
+R   47    256  48000  49.2us  38.7us  0.01  0.01    0    S32LE 2 48000 alsa_output.pci-0000_0d_00.4.analog-stereo
+R   86   1024  48000  21.3us  14.8us  0.00  0.00    0    F32LE 2 48000  + Brave
+R   80    256  48000  19.9us   9.5us  0.00  0.00    0                   + s3-pw-filter
+max ERR per node:
+  s3-pw-filter ERR=0
+  alsa_output.pci-0000_0d_00.4.analog-stereo ERR=0
+  Brave ERR=0
+--- engine output
+filter state 0 -> 1
+filter state 1 -> 2
+filter state 2 -> 3
+filter node id=80
+RESULT backend=pipewire-filter requested=256 secs=30
+  quantum granted (driver clock.duration): last=256 min=256 max=256
+  callbacks=5435 frames=1391360 frames/callback min=256 max=256 avg=256.00
+  period us: nominal=5333.3 median=5333.4 min=5073.4 max=5598.3  (n=5341 after skipping first 93)
+  period deviation |dt-nominal| us: p50=7.2 p99=93.9 p99.9=143.2 max=264.9
+  callback duration us: avg=9.27 max=60.9
+  own xrun detection: late(>1.5x period)=0 position_gaps=0 xrun_recover_flag=0 clock.xrun first=0 last=0 no_buffer=0 ring_overflow=0
+  callback thread: tid=69676 comm=data-loop.0 policy=SCHED_RR rtprio=20 nice=0
+  clock snapshots (29 total, showing up to 4 from the middle):
+    ClockSnap { cb_mono_ns: 6000446972172, engine_frames: 577536, n_frames: 256, t_now: 6000446943388, t_ticks: 577536, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 6000446943388, clk_position: 106385856, clk_duration: 256, clk_delay: 229, clk_next_nsec: 6000452276230, clk_rate_diff: 1.0000920857171018, cpal_latency_ns: 0 }
+    ClockSnap { cb_mono_ns: 6001449563303, engine_frames: 625664, n_frames: 256, t_now: 6001449537170, t_ticks: 625664, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 6001449537170, clk_position: 106433984, clk_duration: 256, clk_delay: 231, clk_next_nsec: 6001454870145, clk_rate_diff: 1.0000670277792556, cpal_latency_ns: 0 }
+    ClockSnap { cb_mono_ns: 6002452175128, engine_frames: 673792, n_frames: 256, t_now: 6002452132312, t_ticks: 673792, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 6002452132312, clk_position: 106482112, clk_duration: 256, clk_delay: 233, clk_next_nsec: 6002457465239, clk_rate_diff: 1.0000760505649104, cpal_latency_ns: 0 }
+    ClockSnap { cb_mono_ns: 6003454751542, engine_frames: 721920, n_frames: 256, t_now: 6003454724855, t_ticks: 721920, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 48000, clk_nsec: 6003454724855, clk_position: 106530240, clk_duration: 256, clk_delay: 236, clk_next_nsec: 6003460057866, clk_rate_diff: 1.0000604269976214, cpal_latency_ns: 0 }
+  pw_time: delay=0 frames (0.00 ms) buffered=0 queued=0  clock.delay=233
+filter state 3 -> 2
+filter state 2 -> 0
+settings after: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 

@@ -1,0 +1,43 @@
+### cpal-pipewire-1024: cpal_engine pipewire 1024 30 (2026-11-18T12:48:18+01:00)
+settings before: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 
+--- pw-dump (t=3s): our nodes and the default sink/source
+{"id":47,"name":"alsa_output.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"running","Latency":[{"direction":"Input","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":0.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+{"id":46,"name":"alsa_input.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"suspended","Latency":[{"direction":"Input","minQuantum":0.000000,"maxQuantum":0.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+--- threads of the engine (t=3s): tid class rtprio nice comm
+    TID CLS RTPRIO  NI COMMAND
+  71947  TS      -   0 cpal_engine
+  71951  RR     10   - pw_out
+  71952  TS      -   0 module-rt
+  71953  TS      -   0 cpal_rt_promote
+--- pw-top -b, last iteration (running rows) + max ERR seen per node over 25 iterations
+S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME 
+R   47   1024  48000  48.3us  15.0us  0.00  0.00   10    S32LE 2 48000 alsa_output.pci-0000_0d_00.4.analog-stereo
+R   93   1024  48000  20.7us  23.1us  0.00  0.00    0    F32LE 2 48000  + Brave
+R   80   1024  48000   8.5us   7.4us  0.00  0.00    0    F32LE 2 48000  = cpal_engine
+max ERR per node:
+  cpal_engine ERR=0
+  cava ERR=0
+  alsa_output.pci-0000_0d_00.4.analog-stereo ERR=10
+  Brave ERR=0
+--- engine output
+cpal compiled hosts (ALL_HOSTS): [PipeWire, Jack, Alsa]
+cpal available_hosts(): [PipeWire, Jack, Alsa]
+output device: pipewire:output_default
+default output config: Ok(SupportedStreamConfig { channels: 2, sample_rate: 48000, buffer_size: Range { min: 32, max: 2048 }, sample_format: F32 })
+output stream.buffer_size() = Ok(1024)
+output stream.buffer_size() at end = Ok(512)
+RESULT backend=cpal-pipewire requested=1024 secs=30
+  quantum granted (driver clock.duration): last=0 min=4294967295 max=0
+  callbacks=2098 frames=1440768 frames/callback min=512 max=1024 avg=686.73
+  period us: nominal=14307.0 median=10675.3 min=10564.4 max=33062.5  (n=2063 after skipping first 34)
+  period deviation |dt-nominal| us: p50=3649.7 p99=7060.6 p99.9=7103.1 max=18755.5
+  callback duration us: avg=7.81 max=46.8
+  own xrun detection: late(>1.5x period)=1 position_gaps=0 xrun_recover_flag=0 clock.xrun first=0 last=0 no_buffer=0 ring_overflow=0
+  callback thread: tid=71951 comm=pw_out policy=SCHED_RR rtprio=10 nice=0
+  clock snapshots (30 total, showing up to 4 from the middle):
+    ClockSnap { cb_mono_ns: 6180778615422, engine_frames: 612864, n_frames: 512, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6180778570462, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 21333333 }
+    ClockSnap { cb_mono_ns: 6181781255630, engine_frames: 660992, n_frames: 512, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6181781211185, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 21333333 }
+    ClockSnap { cb_mono_ns: 6182783884360, engine_frames: 709120, n_frames: 512, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6182783852058, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 21333333 }
+    ClockSnap { cb_mono_ns: 6183786539592, engine_frames: 757248, n_frames: 512, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6183786493036, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 21333333 }
+  cpal timestamp: playback-callback = 21.33 ms
+settings after: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 

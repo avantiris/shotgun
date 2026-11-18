@@ -1,0 +1,23 @@
+[package]
+name = "s3-audio"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+pipewire = { version = "0.10.1", features = ["v1_2_0"] }
+cpal = { version = "0.18.2", features = ["jack", "pipewire", "realtime-dbus"] }
+rtrb = "0.4.1"
+libc = "0.2"
+
+
+# cpal "realtime-dbus" -> audio_thread_priority -> dbus 0.6 -> libdbus-sys. The dev shell has
+# no libdbus headers, so build the vendored copy instead of touching the shared flake.
+[dependencies.libdbus-sys]
+version = "0.2"
+features = ["vendored"]
+
+[profile.release]
+debug = 1

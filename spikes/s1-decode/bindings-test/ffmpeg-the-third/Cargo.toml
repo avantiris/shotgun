@@ -1,0 +1,9 @@
+[package]
+name = "bt-ffmpeg-the-third"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+ffmpeg-the-third = "6.0.0"
+
+[workspace]

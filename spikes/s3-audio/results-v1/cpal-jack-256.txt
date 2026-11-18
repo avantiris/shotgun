@@ -1,0 +1,53 @@
+### cpal-jack-256: cpal_engine jack 256 30 (2026-11-18T12:46:17+01:00)
+settings before: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 
+--- pw-dump (t=3s): our nodes and the default sink/source
+{"id":47,"name":"alsa_output.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"running","Latency":[{"direction":"Input","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":0.000000,"maxQuantum":0.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+{"id":46,"name":"alsa_input.pci-0000_0d_00.4.analog-stereo","app":null,"node_latency":null,"state":"suspended","Latency":[{"direction":"Input","minQuantum":0.000000,"maxQuantum":0.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0},{"direction":"Output","minQuantum":1.000000,"maxQuantum":1.000000,"minRate":0,"maxRate":0,"minNs":0,"maxNs":0}],"ProcessLatency":[{"quantum":0.000000,"rate":0,"ns":0}]}
+--- threads of the engine (t=3s): tid class rtprio nice comm
+    TID CLS RTPRIO  NI COMMAND
+  70772  TS      -   0 cpal_engine
+  70783  TS      -   0 module-rt
+  70785  TS      -   0 pw-cpal_client_
+  70786  TS      -   0 pw-cpal_client_
+  70788  RR     20   - data-loop.0
+--- pw-top -b, last iteration (running rows) + max ERR seen per node over 25 iterations
+S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME 
+R   47    256  48000  21.0us   6.3us  0.00  0.00   10    S32LE 2 48000 alsa_output.pci-0000_0d_00.4.analog-stereo
+R   86   1024  48000   8.4us   4.7us  0.00  0.00    6    F32LE 2 48000  + Brave
+R   80    256  48000   7.8us   4.5us  0.00  0.00    3                   + cpal_client_70772_out
+max ERR per node:
+  alsa_output.pci-0000_0d_00.4.analog-stereo ERR=10
+  cpal_client_70772_out ERR=3
+  Brave ERR=6
+--- engine output
+cpal compiled hosts (ALL_HOSTS): [PipeWire, Jack, Alsa]
+cpal available_hosts(): [PipeWire, Jack, Alsa]
+output device: jack:output
+default output config: Ok(SupportedStreamConfig { channels: 2, sample_rate: 48000, buffer_size: Range { min: 256, max: 256 }, sample_format: F32 })
+output stream.buffer_size() = Ok(1024)
+cpal output error: Real-time scheduling was refused for the audio thread. Audio may be subject to increased latency or glitches under load. (kind RealtimeDenied)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+cpal output error: A buffer underrun or overrun occurred. (kind Xrun)
+output stream.buffer_size() at end = Ok(256)
+RESULT backend=cpal-jack requested=256 secs=30
+  quantum granted (driver clock.duration): last=0 min=4294967295 max=0
+  callbacks=5606 frames=1435136 frames/callback min=256 max=256 avg=256.00
+  period us: nominal=5333.3 median=5333.1 min=12.8 max=17870.3  (n=5512 after skipping first 93)
+  period deviation |dt-nominal| us: p50=4.3 p99=1728.6 p99.9=8113.0 max=12536.9
+  callback duration us: avg=2.55 max=14.6
+  own xrun detection: late(>1.5x period)=27 position_gaps=0 xrun_recover_flag=0 clock.xrun first=0 last=0 no_buffer=0 ring_overflow=0
+  callback thread: tid=70788 comm=data-loop.0 policy=SCHED_RR rtprio=20 nice=0
+  clock snapshots (30 total, showing up to 4 from the middle):
+    ClockSnap { cb_mono_ns: 6060845849888, engine_frames: 625664, n_frames: 256, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6060845844833, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 5312500 }
+    ClockSnap { cb_mono_ns: 6061848491452, engine_frames: 673792, n_frames: 256, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6061848486833, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 5312500 }
+    ClockSnap { cb_mono_ns: 6062851134273, engine_frames: 721920, n_frames: 256, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6062851129833, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 5312500 }
+    ClockSnap { cb_mono_ns: 6063853852638, engine_frames: 770048, n_frames: 256, t_now: 0, t_ticks: 0, t_delay: 0, t_queued: 0, t_buffered: 0, t_rate_den: 0, clk_nsec: 6063853834333, clk_position: 0, clk_duration: 0, clk_delay: 0, clk_next_nsec: 0, clk_rate_diff: 0.0, cpal_latency_ns: 5250000 }
+  cpal timestamp: playback-callback = 5.31 ms
+settings after: update: id:0 key:'clock.quantum' value:'1024' type:'' update: id:0 key:'clock.min-quantum' value:'32' type:'' update: id:0 key:'clock.max-quantum' value:'2048' type:'' update: id:0 key:'clock.force-quantum' value:'0' type:'' 
