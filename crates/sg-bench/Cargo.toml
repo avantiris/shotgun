@@ -7,7 +7,10 @@ publish.workspace = true
 [dependencies]
 sg-audio.workspace = true
 sg-core.workspace = true
+sg-export.workspace = true
 sg-media.workspace = true
+pollster.workspace = true
+wgpu = "30.0.2"
 sg-project.workspace = true
 anyhow.workspace = true
 

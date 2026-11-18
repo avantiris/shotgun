@@ -19,7 +19,7 @@ use egui_winit::winit;
 use sg_core::AssetId;
 use sg_play::{Backend, Player};
 use sg_project::{ImportEvent, Importer, Opened, ProjectEntry, ProjectError};
-use sg_ui::{Command, DevStep, Incoming, Shell, Transport, ViewerState};
+use sg_ui::{Command, DevStep, ExportPreset, ExportRequest, ExportUpdate, Incoming, Shell, Transport, ViewerState};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -79,6 +79,7 @@ enum UserEvent {
     Library(Result<Vec<ProjectEntry>, String>),
     Opened(Result<Opened, String>),
     History(Result<Vec<sg_project::HistoryEntry>, String>),
+    Export(ExportUpdate),
     /// A scripted step and the channel that tells the script thread it is done.
     Script(Step, Sender<()>),
     Import(ImportEvent),
@@ -115,6 +116,8 @@ struct App {
     viewer_texture: Option<(egui::TextureId, u64)>,
     /// The snapshot the player was last given.
     synced: Option<(PathBuf, std::sync::Arc<sg_core::Project>)>,
+    /// Stops the running export.
+    export_cancel: Option<sg_media::Cancel>,
     library: PathBuf,
     repaint_at: Option<Instant>,
     /// Jobs sent to workers whose result has not come back yet.
@@ -179,6 +182,27 @@ impl App {
                         }
                         let _ = proxy.send_event(scan_library(&library));
                     });
+                }
+                Command::Export { root, project, request } => {
+                    let Some(gfx) = &self.gfx else { continue };
+                    let (device, queue) = gfx.device();
+                    let cancel = sg_media::Cancel::new();
+                    self.export_cancel = Some(cancel.clone());
+                    self.pending_jobs += 1;
+                    let spawned = std::thread::Builder::new().name("sg-export".into()).spawn(move || {
+                        let update = run_export(root, project, request, &device, &queue, &cancel, &proxy);
+                        let _ = proxy.send_event(UserEvent::Export(update));
+                    });
+                    if let Err(e) = spawned {
+                        self.shell.export_update(ExportUpdate::Failed(e.to_string()));
+                        self.export_cancel = None;
+                        self.pending_jobs -= 1;
+                    }
+                }
+                Command::CancelExport => {
+                    if let Some(cancel) = &self.export_cancel {
+                        cancel.cancel();
+                    }
                 }
                 Command::LoadHistory { root } => {
                     self.pending_jobs += 1;
@@ -555,6 +579,16 @@ impl ApplicationHandler<UserEvent> for App {
                     self.run_commands(commands);
                 }
             }
+            UserEvent::Export(update) => {
+                let finished = !matches!(update, ExportUpdate::Progress { .. });
+                self.shell.export_update(update);
+                if finished {
+                    self.export_cancel = None;
+                    self.job_done();
+                } else {
+                    self.request_redraw();
+                }
+            }
             UserEvent::History(result) => {
                 self.shell.set_history(result);
                 self.job_done();
@@ -712,6 +746,7 @@ fn main() -> anyhow::Result<()> {
         player: None,
         viewer_texture: None,
         synced: None,
+        export_cancel: None,
         library,
         repaint_at: None,
         pending_jobs: 1,
@@ -829,4 +864,99 @@ fn player_lines(player: &Player) -> Vec<String> {
     ];
     lines.extend(s.decode_error.map(|e| format!("decode error: {e}")));
     lines
+}
+
+/// Runs one export on the calling thread and reports progress as events.
+fn run_export(
+    root: PathBuf,
+    project: std::sync::Arc<sg_core::Project>,
+    request: ExportRequest,
+    device: &egui_wgpu::wgpu::Device,
+    queue: &egui_wgpu::wgpu::Queue,
+    cancel: &sg_media::Cancel,
+    proxy: &EventLoopProxy<UserEvent>,
+) -> ExportUpdate {
+    let preset = match request.preset {
+        ExportPreset::Master => sg_export::Preset::Master,
+        ExportPreset::Vertical => sg_export::Preset::Vertical,
+        ExportPreset::Share => sg_export::Preset::Share { megabytes: request.megabytes },
+        ExportPreset::Gif => sg_export::Preset::Gif,
+    };
+    let job = sg_export::Job { root, project, preset, range: request.range };
+    // One event per stage change or percent, not one per frame.
+    let mut last = ("", -1i32);
+    let mut progress = |stage: &'static str, fraction: f32| {
+        let step = (stage, (fraction * 100.0) as i32);
+        if step != last {
+            last = step;
+            let _ = proxy.send_event(UserEvent::Export(ExportUpdate::Progress { stage, fraction }));
+        }
+    };
+    match sg_export::export(&job, device, queue, cancel, &mut progress) {
+        Ok(done) => {
+            log::info!(
+                "exported {} ({} bytes, {} frames) in {:.1} s; render pass {:.1} fps with {}",
+                done.path.display(),
+                done.bytes,
+                done.frames,
+                done.seconds,
+                done.render_fps,
+                done.encoder
+            );
+            // Automated runs must never touch the user's clipboard.
+            let allowed = std::env::var_os("SHOTGUN_NO_CLIPBOARD").is_none();
+            let on_clipboard = request.to_clipboard && allowed && copy_file_to_clipboard(&done.path);
+            ExportUpdate::Done {
+                path: done.path.display().to_string(),
+                bytes: done.bytes,
+                seconds: done.seconds,
+                on_clipboard,
+            }
+        }
+        Err(sg_export::ExportError::Cancelled) => ExportUpdate::Failed("cancelled".to_owned()),
+        Err(e) => ExportUpdate::Failed(e.to_string()),
+    }
+}
+
+/// Offers an exported file on the clipboard the way file managers, browsers
+/// and chat apps each expect it (spike S4, D7). The selection is served by
+/// a thread of this process until something else is copied.
+fn copy_file_to_clipboard(path: &Path) -> bool {
+    use wl_clipboard_rs::copy::{MimeSource, MimeType, Options, Source};
+    let Ok(bytes) = std::fs::read(path) else { return false };
+    let text = path.to_string_lossy().into_owned();
+    // Percent-encode everything outside the unreserved set, keeping slashes.
+    let encoded: String = text
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    let uri = format!("file://{encoded}");
+    let source = |data: Vec<u8>, mime: &str| MimeSource {
+        source: Source::Bytes(data.into_boxed_slice()),
+        mime_type: MimeType::Specific(mime.to_owned()),
+    };
+    let mut sources = vec![
+        source(format!("{uri}\r\n").into_bytes(), "text/uri-list"),
+        source(format!("copy\n{uri}").into_bytes(), "x-special/gnome-copied-files"),
+        source(text.into_bytes(), "text/plain;charset=utf-8"),
+    ];
+    // Raw bytes only for GIFs: no application takes raw video from a clipboard.
+    if path.extension().is_some_and(|e| e == "gif") {
+        sources.insert(2, source(bytes, "image/gif"));
+    }
+    let spawned = std::thread::Builder::new().name("sg-clipboard".into()).spawn(move || {
+        let mut options = Options::new();
+        // Foreground: this thread serves paste requests until the selection is replaced.
+        options.foreground(true);
+        if let Err(e) = options.copy_multi(sources) {
+            log::warn!("clipboard: {e}");
+        }
+    });
+    spawned.is_ok()
 }

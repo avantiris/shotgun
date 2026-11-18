@@ -43,6 +43,12 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "paste" => Step::Dev(DevStep::Act(Action::PasteClips)),
         "marker" => Step::Dev(DevStep::Act(Action::Marker)),
         "history" => Step::Dev(DevStep::Act(Action::History)),
+        "exportpanel" => Step::Dev(DevStep::Act(Action::Export)),
+        "export" => Step::Dev(DevStep::Export(need()?)),
+        "size" => {
+            let (w, h) = arg.split_once('x').ok_or_else(|| anyhow!("size needs <width>x<height>"))?;
+            Step::Dev(DevStep::Size(w.parse()?, h.parse()?))
+        }
         "key" => Step::Dev(DevStep::Act(Action::KeyframeSet)),
         "title" => Step::Dev(DevStep::Act(Action::AddTitle)),
         "record" => Step::Dev(DevStep::Act(Action::LiveRecord)),

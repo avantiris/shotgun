@@ -266,6 +266,14 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some("open") => bench_open(Path::new(arg(1).context("open <project-dir>")?), number(2, 10)?),
+        // sg-bench export <project-dir> master|vertical|gif|share:<MB> [from frame] [to frame]
+        Some("export") => {
+            let range = match (arg(3), arg(4)) {
+                (Some(a), Some(b)) => Some((a.parse()?, b.parse()?)),
+                _ => None,
+            };
+            bench_export(Path::new(arg(1).context("export <project-dir> <preset>")?), arg(2).unwrap_or("master"), range)
+        }
         // sg-bench seek <file> [threads] [skip 0/1] [max dimension]
         Some("seek") => {
             let threads = arg(2).map_or(Ok(0), |s| if s == "vaapi" { Ok(-1) } else { s.parse::<i32>() })?;
@@ -406,5 +414,53 @@ fn bench_seek(path: &Path, threads: i32, skip_nonref: bool, max_dim: u32) -> any
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let how = if threads < 0 { "vaapi".to_owned() } else { format!("sw t={threads}") };
     Samples(samples).report(&format!("{name} {how} skip={}", skip_nonref as u8), 150_000.0);
+    Ok(())
+}
+
+/// Exports a project without the app: the same code the export panel runs.
+fn bench_export(root: &Path, preset: &str, range: Option<(i64, i64)>) -> anyhow::Result<()> {
+    use sg_export::{Job, Preset};
+    let preset = match preset.split_once(':') {
+        None if preset == "master" => Preset::Master,
+        None if preset == "vertical" => Preset::Vertical,
+        None if preset == "gif" => Preset::Gif,
+        Some(("share", mb)) => Preset::Share { megabytes: mb.parse().context("share:<megabytes>")? },
+        _ => bail!("preset must be master, vertical, gif or share:<megabytes>"),
+    };
+    let opened = sg_project::open(root, || {})?;
+    let project = opened.document.project().clone();
+    if let Some(thread) = opened.writer.close() {
+        let _ = thread.join();
+    }
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        .context("no Vulkan adapter")?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+    let job = Job { root: root.to_owned(), project, preset, range };
+    let mut last = String::new();
+    let done = sg_export::export(&job, &device, &queue, &sg_media::Cancel::new(), &mut |stage, _| {
+        if stage != last {
+            eprintln!("  {stage}...");
+            last = stage.to_owned();
+        }
+    })?;
+    let seconds_of_video = {
+        let seq = &job.project.sequences[0];
+        done.frames as f64 * seq.rate.den() as f64 / seq.rate.num() as f64
+    };
+    println!(
+        "{}: {} bytes, {} frames ({:.1} s of video) in {:.1} s = {:.2}x realtime overall; render pass {:.1} fps with {}",
+        done.path.display(),
+        done.bytes,
+        done.frames,
+        seconds_of_video,
+        done.seconds,
+        seconds_of_video / done.seconds,
+        done.render_fps,
+        done.encoder
+    );
     Ok(())
 }

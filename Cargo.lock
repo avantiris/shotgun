@@ -3166,12 +3166,14 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "sg-core",
+ "sg-export",
  "sg-media",
  "sg-play",
  "sg-project",
  "sg-ui",
  "wayland-backend",
  "wayland-client",
+ "wl-clipboard-rs",
 ]
 
 [[package]]
@@ -3192,10 +3194,13 @@ name = "sg-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "pollster 1.0.2",
  "sg-audio",
  "sg-core",
+ "sg-export",
  "sg-media",
  "sg-project",
+ "wgpu",
 ]
 
 [[package]]
@@ -3212,6 +3217,17 @@ dependencies = [
 [[package]]
 name = "sg-export"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "sg-audio",
+ "sg-core",
+ "sg-media",
+ "sg-play",
+ "sg-project",
+ "sg-render",
+ "thiserror 2.0.21",
+ "wgpu",
+]
 
 [[package]]
 name = "sg-media"

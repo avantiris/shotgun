@@ -17,7 +17,9 @@ crossbeam-channel.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true
+sg-export.workspace = true
 sg-play.workspace = true
+wl-clipboard-rs = "0.9"
 libc = "0.2"
 raw-window-handle = "0.6"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }

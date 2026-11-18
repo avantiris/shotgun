@@ -33,6 +33,11 @@ pub enum Action {
     Marker,
     PrevCut,
     NextCut,
+    /// Open the export panel.
+    Export,
+    ExportAgain,
+    /// Export the selection or marked range as a GIF to the clipboard.
+    ExportGif,
     /// Name the current state (a git tag).
     Checkpoint,
     /// Show saved states and checkpoints.
@@ -107,6 +112,9 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, true, Key::D, Action::NextCut),
     bind(Scope::Editor, true, false, Key::S, Action::Checkpoint),
     bind(Scope::Editor, true, false, Key::H, Action::History),
+    bind(Scope::Editor, true, false, Key::E, Action::Export),
+    bind(Scope::Editor, true, true, Key::E, Action::ExportAgain),
+    bind(Scope::Editor, true, false, Key::G, Action::ExportGif),
     bind(Scope::Editor, false, false, Key::F, Action::KeyframeSet),
     bind(Scope::Editor, false, true, Key::F, Action::KeyframeRemove),
     bind(Scope::Editor, false, false, Key::T, Action::AddTitle),

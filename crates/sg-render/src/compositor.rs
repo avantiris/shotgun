@@ -75,6 +75,8 @@ pub struct Compositor {
     output: wgpu::Texture,
     output_view: wgpu::TextureView,
     size: (u32, u32),
+    /// Scale 1 fills the frame instead of fitting into it.
+    cover: bool,
 }
 
 fn make_targets(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::Texture) {
@@ -205,7 +207,14 @@ impl Compositor {
             output,
             output_view,
             size: (width.max(1), height.max(1)),
+            cover: false,
         }
+    }
+
+    /// With `cover`, a picture at scale 1 fills the frame and loses what
+    /// does not fit, instead of fitting inside it with bars.
+    pub fn set_cover(&mut self, cover: bool) {
+        self.cover = cover;
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -269,7 +278,12 @@ impl Compositor {
             };
             let [l, t, r, b] = layer.crop.map(|c| c.clamp(0.0, 0.49));
             // Scale 1 fits the uncropped picture into the frame (text keeps its pixel size).
-            let fit = if layer.natural_size { 1.0 } else { (fw / dw).min(fh / dh) };
+            let fit = match (layer.natural_size, self.cover) {
+                (true, _) => 1.0,
+                (false, false) => (fw / dw).min(fh / dh),
+                // Vertical export of landscape footage: fill the frame, cut the sides.
+                (false, true) => (fw / dw).max(fh / dh),
+            };
             let s = fit * layer.scale.max(0.0);
             let (hx, hy) = (dw * (1.0 - l - r) * s / 2.0, dh * (1.0 - t - b) * s / 2.0);
             // Clockwise on screen is a negative angle with y up.

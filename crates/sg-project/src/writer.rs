@@ -27,6 +27,8 @@ const COMMIT_INTERVAL: Duration = Duration::from_secs(300);
 
 enum Msg {
     Record(Record, Arc<Project>),
+    /// Save and commit the current state.
+    Commit,
     /// Save, commit and tag the current state with this name.
     Checkpoint(String),
     Close,
@@ -161,6 +163,12 @@ impl Worker {
                     // Closing a project is one of the moments it is committed (03).
                     self.commit();
                     return;
+                }
+                Some(Msg::Commit) => {
+                    if self.first_unsaved.is_some() {
+                        self.save();
+                    }
+                    self.commit();
                 }
                 Some(Msg::Checkpoint(name)) => {
                     if self.first_unsaved.is_some() {
@@ -318,5 +326,12 @@ impl ProjectWriter {
     /// Names the current state. Saved and committed first; returns at once.
     pub fn checkpoint(&self, name: String) {
         let _ = self.tx.send(Msg::Checkpoint(name));
+    }
+}
+
+impl ProjectWriter {
+    /// Saves and commits now (before an export, for instance).
+    pub fn commit(&self) {
+        let _ = self.tx.send(Msg::Commit);
     }
 }

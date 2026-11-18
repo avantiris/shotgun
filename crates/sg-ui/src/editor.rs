@@ -19,6 +19,7 @@ pub enum EditorRequest {
     Redo,
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
+    SetSize(u32, u32),
 }
 
 #[derive(Default)]
@@ -176,6 +177,18 @@ impl Editor {
         section(ui, "SEQUENCE");
         row(ui, "Name", &sequence.name);
         row(ui, "Format", &format!("{}x{}, {}", sequence.width, sequence.height, fps(sequence.rate)));
+        ui.horizontal(|ui| {
+            ui.add_sized([84.0, 16.0], egui::Label::new(RichText::new("Frame").color(theme::DIM)).halign(Align::LEFT));
+            // Changing the frame keeps every clip; pictures are fitted anew.
+            for (label, width, height) in
+                [("1080p", 1920, 1080), ("4K", 3840, 2160), ("9:16", 1080, 1920), ("1:1", 1080, 1080)]
+            {
+                let current = (sequence.width, sequence.height) == (width, height);
+                if ui.selectable_label(current, label).clicked() && !current {
+                    *request = Some(EditorRequest::SetSize(width, height));
+                }
+            }
+        });
         row(ui, "Tracks", &sequence.tracks.len().to_string());
         row(ui, "Clips", &sequence.clip_count().to_string());
         ui.horizontal(|ui| {
@@ -444,6 +457,15 @@ impl Editor {
         let props = (props != sg_core::ClipProps::default()).then(|| Box::new(props));
         let op = Op::SetClipProps { seq: sequence.id, track: target.track.id, clip: target.clip.id, props };
         if let Err(e) = session.apply(op, None) {
+            *error = Some(e.to_string());
+        }
+    }
+}
+
+impl Editor {
+    pub fn set_size(&mut self, session: &mut Session, width: u32, height: u32, error: &mut Option<String>) {
+        let Some(id) = session.project().sequences.first().map(|s| s.id) else { return };
+        if let Err(e) = session.apply(Op::SetSequenceSize { id, width, height }, None) {
             *error = Some(e.to_string());
         }
     }

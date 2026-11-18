@@ -1069,6 +1069,17 @@ impl Timeline {
         Some((track.clone(), clip))
     }
 
+    /// First and last frame covered by the selected clips.
+    pub fn selection_span(&self, sequence: &Sequence) -> Option<(i64, i64)> {
+        let spans = self.selection.iter().filter_map(|s| {
+            let track = sequence.track(s.track)?;
+            let clip = track.clips.get(s.start)?;
+            let lane = Lane::of(track, sequence);
+            Some((lane.frame(clip.start), lane.frame(clip.end())))
+        });
+        spans.reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+    }
+
     /// Selects one clip by position, alone.
     pub fn select_only(&mut self, track: TrackId, clip: &Clip) {
         self.selection = vec![Sel { track, start: clip.start, id: clip.id }];

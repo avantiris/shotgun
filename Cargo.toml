@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 sg-core = { path = "crates/sg-core" }
+sg-export = { path = "crates/sg-export" }
 sg-audio = { path = "crates/sg-audio" }
 sg-media = { path = "crates/sg-media" }
 sg-play = { path = "crates/sg-play" }
@@ -43,6 +44,9 @@ unsafe_op_in_unsafe_fn = "deny"
 unwrap_used = "warn"
 # Stylistic; `chunks_exact` reads fine where the size is not a type-level fact.
 chunks_exact_to_as_chunks = "allow"
+# Judged case by case in review rather than by count.
+type_complexity = "allow"
+too_many_arguments = "allow"
 
 [profile.dev]
 opt-level = 1

@@ -253,39 +253,10 @@ impl State {
 
     /// The audio mix of the open sequence.
     fn mix(&self) -> Mix {
-        let Some(open) = &self.project else { return Mix::default() };
-        let Some(sequence) = open.sequence() else { return Mix::default() };
-        let tracks = sequence
-            .tracks
-            .iter()
-            .filter(|t| t.kind == TrackKind::Audio)
-            .map(|track| TrackMix {
-                clips: track
-                    .clips
-                    .iter()
-                    .map(|c| {
-                        let default = ClipProps::default();
-                        let props = track.props_of(c.id).map_or(&default, |p| &**p);
-                        let samples = |frames: i64| sequence.rate.frames_to_samples(frames, SAMPLE_RATE);
-                        ClipSpan {
-                            start: c.start,
-                            len: c.len,
-                            src_in: c.src_in,
-                            wav: cache::audio(&open.root, c.asset),
-                            // Decibels to linear; the value at the clip start (volume keyframes: later).
-                            gain: 10f32.powf(props.gain_db.at(0) / 20.0),
-                            fade_in: samples(props.fade_in),
-                            fade_out: samples(props.fade_out),
-                            speed: if props.speed_valid() { props.speed } else { (1, 1) },
-                        }
-                    })
-                    .collect(),
-                gain: 1.0,
-                pan: 0.0,
-                mute: false,
-            })
-            .collect();
-        Mix { tracks }
+        match self.project.as_ref().and_then(|o| o.sequence().map(|s| (o, s))) {
+            Some((open, sequence)) => audio_mix(&open.root, sequence),
+            None => Mix::default(),
+        }
     }
 
     fn samples_of(&self, frame: i64) -> i64 {
@@ -636,3 +607,39 @@ enum LayerKey {
 /// A texture ready to draw: view, size, file rotation, the layer it
 /// belongs to, and whether it is a title (drawn at its pixel size).
 type Drawable = (wgpu::TextureView, (u32, u32), i32, usize, bool);
+
+/// What a sequence sounds like: its audio tracks as the engine wants them.
+/// Preview and export both build their mix here, so they cannot differ.
+pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
+    let tracks = sequence
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .map(|track| TrackMix {
+            clips: track
+                .clips
+                .iter()
+                .map(|c| {
+                    let default = ClipProps::default();
+                    let props = track.props_of(c.id).map_or(&default, |p| &**p);
+                    let samples = |frames: i64| sequence.rate.frames_to_samples(frames, SAMPLE_RATE);
+                    ClipSpan {
+                        start: c.start,
+                        len: c.len,
+                        src_in: c.src_in,
+                        wav: cache::audio(root, c.asset),
+                        // Decibels to linear; the value at the clip start (volume keyframes: later).
+                        gain: 10f32.powf(props.gain_db.at(0) / 20.0),
+                        fade_in: samples(props.fade_in),
+                        fade_out: samples(props.fade_out),
+                        speed: if props.speed_valid() { props.speed } else { (1, 1) },
+                    }
+                })
+                .collect(),
+            gain: 1.0,
+            pan: 0.0,
+            mute: false,
+        })
+        .collect();
+    Mix { tracks }
+}

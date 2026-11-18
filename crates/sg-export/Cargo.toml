@@ -4,5 +4,16 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+sg-audio.workspace = true
+sg-core.workspace = true
+sg-media.workspace = true
+sg-play.workspace = true
+sg-project.workspace = true
+sg-render.workspace = true
+log.workspace = true
+thiserror.workspace = true
+wgpu = "30.0.2"
+
 [lints]
 workspace = true

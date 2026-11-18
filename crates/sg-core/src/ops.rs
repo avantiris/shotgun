@@ -72,6 +72,12 @@ pub enum Op {
         from: i64,
         delta: i64,
     },
+    /// Changes the frame size of a sequence.
+    SetSequenceSize {
+        id: SequenceId,
+        width: u32,
+        height: u32,
+    },
     /// Sets or clears (`None`) the properties of a clip.
     SetClipProps {
         seq: SequenceId,
@@ -117,6 +123,8 @@ pub enum OpError {
     BadIndex { index: usize, len: usize },
     #[error("cannot remove {0}: it is not empty")]
     NotEmpty(&'static str),
+    #[error("a frame of {0}x{1} is not possible")]
+    BadSize(u32, u32),
     #[error("there is no marker at frame {0}")]
     NoMarker(i64),
     #[error("asset {0} does not exist")]
@@ -141,6 +149,7 @@ impl Op {
             Op::RemoveClip { .. } => "remove clip",
             Op::SetClip { .. } => "trim or move clip",
             Op::ShiftFrom { .. } => "ripple",
+            Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
             Op::AddMarker { .. } => "add marker",
             Op::RemoveMarker { .. } => "remove marker",
@@ -259,6 +268,14 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
                 None => Op::Batch(Vec::new()),
             };
             Ok((next, inverse))
+        }),
+        Op::SetSequenceSize { id, width, height } => with_sequence(p, *id, |s| {
+            if *width < 16 || *height < 16 || *width > 16384 || *height > 16384 {
+                return Err(OpError::BadSize(*width, *height));
+            }
+            let inverse = Op::SetSequenceSize { id: *id, width: s.width, height: s.height };
+            (s.width, s.height) = (*width, *height);
+            Ok(inverse)
         }),
         Op::SetClipProps { seq, track, clip, props } => with_sequence(p, *seq, |s| {
             let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
@@ -708,5 +725,23 @@ mod props_tests {
         // Removing the clip keeps its properties for the undo.
         let (p4, undo) = apply(&p2, &Op::RemoveClip { seq: SEQ, track: V1, start: 0 }).unwrap();
         assert_eq!(apply(&p4, &undo).unwrap().0, p2);
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::tests::{SEQ, base};
+    use super::*;
+
+    #[test]
+    fn frame_size_changes_and_undoes() {
+        let p = base();
+        let (p2, undo) = apply(&p, &Op::SetSequenceSize { id: SEQ, width: 1080, height: 1920 }).unwrap();
+        assert_eq!((p2.sequences[0].width, p2.sequences[0].height), (1080, 1920));
+        assert_eq!(apply(&p2, &undo).unwrap().0, p);
+        assert_eq!(
+            apply(&p, &Op::SetSequenceSize { id: SEQ, width: 0, height: 100 }).unwrap_err(),
+            OpError::BadSize(0, 100)
+        );
     }
 }

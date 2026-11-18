@@ -8,6 +8,7 @@
 mod assets;
 mod clip_panel;
 mod editor;
+mod export_panel;
 mod history;
 pub mod keymap;
 mod library;
@@ -28,6 +29,8 @@ use sg_project::{ImportEvent, ImportSource, Opened, ProjectEntry, ProjectWriter}
 use crate::assets::{AssetRequest, JobView};
 
 use crate::editor::{Editor, EditorRequest};
+use crate::export_panel::{ExportAction, ExportPanel};
+pub use crate::export_panel::{ExportPreset, ExportRequest, ExportUpdate};
 use crate::history::{HistoryPanel, HistoryRequest};
 pub use crate::keymap::{Action, Scope};
 use crate::library::{Library, LibraryRequest};
@@ -66,6 +69,13 @@ pub enum Command {
     },
     /// Show the system file picker; the chosen files are imported.
     PickFiles,
+    /// Render and encode; progress comes back through [`Shell::export_update`].
+    Export {
+        root: PathBuf,
+        project: Arc<sg_core::Project>,
+        request: ExportRequest,
+    },
+    CancelExport,
     /// Read the list of saved states; answered with [`Shell::set_history`].
     LoadHistory {
         root: PathBuf,
@@ -107,6 +117,10 @@ pub enum DevStep {
     /// speed (percent), fadein, fadeout (frames), gain (dB), text.
     Prop(String, String),
     AddTrack(sg_core::TrackKind),
+    /// Set the sequence frame size.
+    Size(u32, u32),
+    /// Export with a preset: master, vertical, gif or share:<megabytes>.
+    Export(String),
     /// Restore the n-th entry of the loaded history list (0 is the newest).
     Restore(usize),
     /// Zoom (frames per point) and scroll (frame at the left edge) of the timeline.
@@ -125,6 +139,7 @@ pub struct Shell {
     perf: Perf,
     error: Option<String>,
     history: HistoryPanel,
+    export: ExportPanel,
     playing: bool,
     /// The playhead as of the last frame, for key actions.
     playhead: i64,
@@ -204,6 +219,11 @@ impl Shell {
                     Some(EditorRequest::Undo) => self.act(Action::Undo, &mut commands),
                     Some(EditorRequest::Redo) => self.act(Action::Redo, &mut commands),
                     Some(EditorRequest::RemoveAsset(id)) => self.remove_asset(id),
+                    Some(EditorRequest::SetSize(width, height)) => {
+                        if let Some(session) = &mut self.session {
+                            self.editor.set_size(session, width, height, &mut self.error);
+                        }
+                    }
                     Some(EditorRequest::AddTrack(kind)) => {
                         if let Some(session) = &mut self.session {
                             self.editor.add_track(session, kind, &mut self.error);
@@ -229,6 +249,12 @@ impl Shell {
             }
         }
         commands.extend(transport.into_iter().map(Command::Transport));
+        let gif_range = self.gif_range();
+        match self.export.ui(&ctx, gif_range) {
+            Some(ExportAction::Start(request)) => self.start_export(request, &mut commands),
+            Some(ExportAction::Cancel) => commands.push(Command::CancelExport),
+            None => {}
+        }
         for request in self.history.ui(&ctx, now_unix) {
             match request {
                 HistoryRequest::Checkpoint(name) => {
@@ -252,7 +278,8 @@ impl Shell {
 
     /// Errors and notices: a strip at the bottom, never a dialog.
     fn banner(&mut self, ui: &mut egui::Ui) {
-        let notice = self.session.as_ref().and_then(|s| s.notice.clone());
+        // A running export shows here while its popover is closed.
+        let notice = self.export.status().or_else(|| self.session.as_ref().and_then(|s| s.notice.clone()));
         let (text, colour) = match (&self.error, notice) {
             (Some(e), _) => (e.clone(), theme::ERROR),
             (None, Some(n)) => (n, theme::ACCENT),
@@ -282,7 +309,8 @@ impl Shell {
             Action::TogglePerf => self.perf.show = !self.perf.show,
             Action::Cancel => {
                 // Dismiss one thing per press, most urgent first.
-                if self.error.take().is_some() || self.history.cancel() || self.editor.cancel() {
+                if self.error.take().is_some() || self.history.cancel() || self.export.cancel() || self.editor.cancel()
+                {
                     return;
                 }
                 match &mut self.session {
@@ -354,6 +382,22 @@ impl Shell {
                     commands.extend(transport.into_iter().map(Command::Transport));
                 }
             }
+            Action::Export => {
+                if self.session.is_some() {
+                    self.export.open();
+                }
+            }
+            Action::ExportAgain => match self.export.repeat() {
+                Some(request) => self.start_export(request, commands),
+                None => self.export.open(),
+            },
+            Action::ExportGif => {
+                let range = self.gif_range();
+                self.start_export(
+                    ExportRequest { preset: ExportPreset::Gif, megabytes: 10, range, to_clipboard: true },
+                    commands,
+                );
+            }
             Action::Checkpoint => {
                 if self.session.is_some() {
                     self.history.begin_checkpoint();
@@ -399,6 +443,21 @@ impl Shell {
                 if let Some(session) = &mut self.session {
                     self.editor.add_track(session, kind, &mut self.error);
                 }
+            }
+            DevStep::Size(width, height) => {
+                if let Some(session) = &mut self.session {
+                    self.editor.set_size(session, width, height, &mut self.error);
+                }
+            }
+            DevStep::Export(what) => {
+                let (preset, megabytes) = match what.split_once(':') {
+                    Some(("share", mb)) => (ExportPreset::Share, mb.parse().unwrap_or(10)),
+                    _ if what == "vertical" => (ExportPreset::Vertical, 10),
+                    _ if what == "gif" => (ExportPreset::Gif, 10),
+                    _ => (ExportPreset::Master, 10),
+                };
+                let range = if preset == ExportPreset::Gif { self.gif_range() } else { None };
+                self.start_export(ExportRequest { preset, megabytes, range, to_clipboard: true }, &mut commands);
             }
             DevStep::Checkpoint(name) => {
                 if let Some(session) = &self.session {
@@ -579,5 +638,51 @@ impl Shell {
                 self.error = Some(format!("Cannot read the history: {e}"));
             }
         }
+    }
+}
+
+impl Shell {
+    /// What a GIF export covers: the selected clips, else the stretch
+    /// between the markers around the playhead, else the whole sequence.
+    fn gif_range(&self) -> Option<(i64, i64)> {
+        let session = self.session.as_ref()?;
+        let project = session.project();
+        let sequence = project.sequences.first()?;
+        if let Some(span) = self.editor.timeline.selection_span(sequence) {
+            return Some(span);
+        }
+        let before = sequence.markers.iter().rev().find(|m| m.frame <= self.playhead).map(|m| m.frame);
+        let after = sequence.markers.iter().find(|m| m.frame > self.playhead).map(|m| m.frame);
+        match (before, after) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        }
+    }
+
+    fn start_export(&mut self, request: ExportRequest, commands: &mut Vec<Command>) {
+        let Some(session) = &self.session else { return };
+        if self.export.is_running() {
+            self.error = Some("An export is already running.".to_owned());
+            return;
+        }
+        // The state that is exported is also a commit (03-project-bundle.md).
+        session.commit();
+        self.export.started(request.clone());
+        commands.push(Command::Export { root: session.root.clone(), project: session.project().clone(), request });
+    }
+
+    pub fn export_update(&mut self, update: ExportUpdate) {
+        if let ExportUpdate::Failed(error) = &update {
+            self.error = Some(format!("Export failed: {error}"));
+        }
+        if let (ExportUpdate::Done { path, .. }, Some(session)) = (&update, &mut self.session) {
+            session.notice = Some(format!("Exported {path}"));
+        }
+        self.export.update(update);
+    }
+
+    /// Progress of a running export, for display outside the popover.
+    pub fn export_status(&self) -> Option<String> {
+        self.export.status()
     }
 }

@@ -199,3 +199,10 @@ impl Session {
         self.ids.track()
     }
 }
+
+impl Session {
+    /// Saves and commits the current state to the project's git history.
+    pub fn commit(&self) {
+        self.writer.commit();
+    }
+}
