@@ -117,6 +117,8 @@ pub enum DevStep {
     /// speed (percent), fadein, fadeout (frames), gain (dB), text.
     Prop(String, String),
     AddTrack(sg_core::TrackKind),
+    /// Drop the selected asset on the timeline at a frame, over a track row or ("new") outside the tracks.
+    Drop(i64, Option<usize>),
     /// Set the sequence frame size.
     Size(u32, u32),
     /// Export with a preset: master, vertical, gif or share:<megabytes>.
@@ -141,6 +143,9 @@ pub struct Shell {
     history: HistoryPanel,
     export: ExportPanel,
     playing: bool,
+    /// Files dropped on the timeline: where the next imported assets go
+    /// (frame, track row) and how many imports are still expected there.
+    dropped_at: Option<(i64, Option<usize>, usize)>,
     /// The playhead as of the last frame, for key actions.
     playhead: i64,
 }
@@ -444,6 +449,17 @@ impl Shell {
                     self.editor.add_track(session, kind, &mut self.error);
                 }
             }
+            DevStep::Drop(frame, row) => {
+                if let Some(session) = &mut self.session
+                    && let Some(asset) =
+                        self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned())
+                {
+                    match session.drop_asset(&asset, frame, row) {
+                        Ok(_) => self.editor.timeline.select_dropped(session, asset.id, frame),
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
+            }
             DevStep::Size(width, height) => {
                 if let Some(session) = &mut self.session {
                     self.editor.set_size(session, width, height, &mut self.error);
@@ -549,6 +565,8 @@ impl Shell {
         let assets = &mut self.editor.assets;
         // Events of a project that was closed in the meantime are dropped.
         let current = |root: &PathBuf| self.session.as_ref().is_some_and(|s| s.root == *root);
+        // An asset that arrived and may belong to a drop on the timeline.
+        let mut placed = None;
         match event {
             ImportEvent::Progress { job, label, stage, fraction } => {
                 assets.jobs.insert(job, JobView { label, stage, fraction });
@@ -556,9 +574,15 @@ impl Shell {
             ImportEvent::Finished { job } => {
                 assets.jobs.remove(&job);
             }
-            ImportEvent::Failed { label, error, .. } => self.error = Some(format!("{label}: {error}")),
+            ImportEvent::Failed { label, error, .. } => {
+                self.error = Some(format!("{label}: {error}"));
+                // One file fewer to wait for at the place of a drop.
+                self.dropped_at =
+                    self.dropped_at.and_then(|(frame, row, left)| (left > 1).then_some((frame, row, left - 1)));
+            }
             ImportEvent::Duplicate { label, id, .. } => {
                 assets.selected = Some(id);
+                placed = Some(id);
                 if let Some(session) = &mut self.session {
                     session.notice = Some(format!("{label} is already in this project."));
                 }
@@ -567,7 +591,10 @@ impl Shell {
                 let id = asset.id;
                 if let Some(session) = &mut self.session {
                     match session.apply(Op::AddAsset { asset }, None) {
-                        Ok(()) => assets.selected = Some(id),
+                        Ok(()) => {
+                            assets.selected = Some(id);
+                            placed = Some(id);
+                        }
                         // Two imports of the same content raced: the first one won.
                         Err(sg_core::OpError::DuplicateId(_)) => assets.selected = Some(id),
                         Err(e) => self.error = Some(e.to_string()),
@@ -581,6 +608,9 @@ impl Shell {
                 assets.missing.insert(id);
             }
             ImportEvent::Usable { .. } | ImportEvent::Derived { .. } | ImportEvent::Missing { .. } => {}
+        }
+        if let Some(id) = placed {
+            self.place_dropped(id);
         }
     }
 
@@ -685,5 +715,42 @@ impl Shell {
     /// Progress of a running export, for display outside the popover.
     pub fn export_status(&self) -> Option<String> {
         self.export.status()
+    }
+}
+
+impl Shell {
+    /// Imports what was dropped at a point of the window (in points). Over
+    /// the timeline the imported media is also placed where it was dropped,
+    /// one after the other if there are several.
+    pub fn incoming_at(&mut self, incoming: Incoming, x: f32, y: f32) -> Vec<Command> {
+        let target = self.session.as_ref().and_then(|session| {
+            let project = session.project();
+            let sequence = project.sequences.first()?;
+            self.editor.timeline.drop_target(sequence, self.playhead, egui::pos2(x, y), true)
+        });
+        let commands = self.incoming(incoming);
+        // Imports that were already running may finish first and take the
+        // place: rare, and undo puts it right.
+        self.dropped_at = target.filter(|_| !commands.is_empty()).map(|(frame, row)| (frame, row, commands.len()));
+        commands
+    }
+
+    /// Places an asset that came from a drop on the timeline.
+    fn place_dropped(&mut self, id: AssetId) {
+        let (Some((frame, row, left)), Some(session)) = (self.dropped_at, &mut self.session) else { return };
+        let Some(asset) = session.project().assets.get(&id).cloned() else { return };
+        self.dropped_at = (left > 1).then_some((frame, row, left - 1));
+        match session.drop_asset(&asset, frame, row) {
+            Ok(Some(start)) => {
+                self.editor.timeline.select_dropped(session, id, start);
+                // The next file of the same drop follows this one.
+                let length = sg_core::Asset::frames_at(&asset, session.project().sequences[0].rate, 1).max(1);
+                if let Some(next) = &mut self.dropped_at {
+                    next.0 = start + length;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => self.error = Some(e.to_string()),
+        }
     }
 }

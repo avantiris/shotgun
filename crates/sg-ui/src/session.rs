@@ -206,3 +206,131 @@ impl Session {
         self.writer.commit();
     }
 }
+
+/// The track a dropped asset's picture or sound goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    /// Row of an existing track (tracks are stored top first).
+    Row(usize),
+    /// A track that the drop creates: video on top, audio at the bottom.
+    New,
+}
+
+/// Where an asset dropped on the timeline lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    /// First sequence frame and length in frames.
+    pub start: i64,
+    pub frames: i64,
+    pub video: Option<Slot>,
+    pub audio: Option<Slot>,
+}
+
+/// Decides where an asset dropped at `frame` over `row` (or outside every
+/// track) goes. The track under the pointer is used for the part of the
+/// asset it can hold if it is free there; otherwise the nearest free track
+/// of the right kind; if there is none, a new track. A drop therefore never
+/// fails for lack of room and nobody has to make tracks by hand first.
+pub fn place_at(sequence: &sg_core::Sequence, asset: &Asset, frame: i64, row: Option<usize>) -> Placement {
+    let rate = sequence.rate;
+    let start = frame.clamp(0, 1 << 40);
+    // A still gets five seconds.
+    let still = (5 * rate.num() as i64 / rate.den() as i64).max(1);
+    let frames = asset.frames_at(rate, still).max(1);
+    let free = |track: &sg_core::Track| match track.kind {
+        TrackKind::Video => track.clips.range(start, start + frames).next().is_none(),
+        TrackKind::Audio => {
+            let (a0, a1) =
+                (rate.frames_to_samples(start, SAMPLE_RATE), rate.frames_to_samples(start + frames, SAMPLE_RATE));
+            track.clips.range(a0, a1).next().is_none()
+        }
+    };
+    let slot = |kind: TrackKind| {
+        let usable = |index: usize| sequence.tracks.get(index).is_some_and(|t| t.kind == kind && free(t));
+        if let Some(index) = row.filter(|r| usable(*r)) {
+            return Slot::Row(index);
+        }
+        // Video stacks upwards from the bottom video track, sound downwards
+        // from the top audio track: both start next to the other kind.
+        let mut rows: Vec<usize> = (0..sequence.tracks.len()).filter(|i| usable(*i)).collect();
+        if kind == TrackKind::Video {
+            rows.reverse();
+        }
+        rows.first().map_or(Slot::New, |index| Slot::Row(*index))
+    };
+    Placement {
+        start,
+        frames,
+        video: asset.video.is_some().then(|| slot(TrackKind::Video)),
+        audio: asset.audio.is_some().then(|| slot(TrackKind::Audio)),
+    }
+}
+
+impl Session {
+    /// Adds a track: video on top, audio at the bottom.
+    pub fn add_track(&mut self, kind: TrackKind) -> Result<(), OpError> {
+        let project = self.project().clone();
+        let Some(sequence) = project.sequences.first() else { return Ok(()) };
+        let op = self.add_track_op(sequence, kind, sequence.tracks.len());
+        self.apply(op.0, None)
+    }
+
+    /// The op adding a track of `kind` to a sequence that has `len` tracks
+    /// by then, and the new track's id.
+    fn add_track_op(&mut self, sequence: &sg_core::Sequence, kind: TrackKind, len: usize) -> (Op, sg_core::TrackId) {
+        let count = sequence.tracks.iter().filter(|t| t.kind == kind).count();
+        let (index, name) = match kind {
+            TrackKind::Video => (0, format!("V{}", count + 1)),
+            TrackKind::Audio => (len, format!("A{}", count + 1)),
+        };
+        let id = self.ids.track();
+        (Op::AddTrack { seq: sequence.id, index, track: sg_core::TrackHeader { id, kind, name } }, id)
+    }
+
+    /// Puts an asset where [`place_at`] says, creating the tracks it needs,
+    /// as one undo step. Returns the frame it starts at.
+    pub fn drop_asset(&mut self, asset: &Asset, frame: i64, row: Option<usize>) -> Result<Option<i64>, OpError> {
+        let project = self.project().clone();
+        let Some(sequence) = project.sequences.first() else { return Ok(None) };
+        let rate = sequence.rate;
+        let placement = place_at(sequence, asset, frame, row);
+        let mut ops = Vec::new();
+        let mut len = sequence.tracks.len();
+        let mut track_of = |session: &mut Session, slot: Slot, kind: TrackKind, ops: &mut Vec<Op>| match slot {
+            Slot::Row(index) => sequence.tracks.get(index).map(|t| t.id),
+            Slot::New => {
+                let (op, id) = session.add_track_op(sequence, kind, len);
+                len += 1;
+                ops.push(op);
+                Some(id)
+            }
+        };
+        let video = placement.video.and_then(|slot| track_of(self, slot, TrackKind::Video, &mut ops));
+        let audio = placement.audio.and_then(|slot| track_of(self, slot, TrackKind::Audio, &mut ops));
+        if let Some(track) = video {
+            let clip =
+                Clip { id: self.ids.clip(), asset: asset.id, start: placement.start, len: placement.frames, src_in: 0 };
+            ops.push(Op::InsertClip { seq: sequence.id, track, clip });
+        }
+        if let (Some(track), Some(info)) = (audio, &asset.audio) {
+            // The conformed audio is at the engine rate whatever the source was.
+            let mut samples = (info.samples as i128 * SAMPLE_RATE as i128 / info.sample_rate.max(1) as i128) as i64;
+            if video.is_some() {
+                samples = samples.min(rate.frames_to_samples(placement.frames, SAMPLE_RATE));
+            }
+            let clip = Clip {
+                id: self.ids.clip(),
+                asset: asset.id,
+                start: rate.frames_to_samples(placement.start, SAMPLE_RATE),
+                len: samples.max(1),
+                src_in: 0,
+            };
+            ops.push(Op::InsertClip { seq: sequence.id, track, clip });
+        }
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        self.apply(Op::Batch(ops), None)?;
+        Ok(Some(placement.start))
+    }
+}

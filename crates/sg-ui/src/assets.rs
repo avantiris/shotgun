@@ -166,7 +166,7 @@ impl AssetsPanel {
         let assets = self.visible(project);
         if assets.is_empty() {
             let text = if project.assets.is_empty() {
-                "Drop files here, paste a link with Ctrl+V, or press Ctrl+Q."
+                "Drop files here or onto the timeline, paste a link with Ctrl+V, or press Ctrl+Q."
             } else {
                 "Nothing matches."
             };
@@ -184,7 +184,12 @@ impl AssetsPanel {
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 for asset in assets {
-                    let (rect, response) = ui.allocate_exact_size(tile, Sense::click());
+                    let (rect, response) = ui.allocate_exact_size(tile, Sense::click_and_drag());
+                    // Dragged onto the timeline, the asset is placed where it is let go.
+                    response.dnd_set_drag_payload(asset.id);
+                    if response.drag_started() {
+                        self.selected = Some(asset.id);
+                    }
                     if response.clicked() {
                         self.selected = Some(asset.id);
                     }
@@ -202,6 +207,20 @@ impl AssetsPanel {
                 }
             });
         });
+        Self::paint_dragged(ui, project);
+    }
+
+    /// A small tag at the pointer naming the asset being dragged.
+    fn paint_dragged(ui: &egui::Ui, project: &Project) {
+        let Some(id) = egui::DragAndDrop::payload::<AssetId>(ui.ctx()) else { return };
+        let (Some(asset), Some(pos)) = (project.assets.get(&*id), ui.ctx().pointer_interact_pos()) else { return };
+        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("dragged-asset"));
+        let painter = ui.ctx().layer_painter(layer);
+        let galley = painter.layout_no_wrap(asset.label.clone(), FontId::proportional(12.0), theme::TEXT);
+        let tag = Rect::from_min_size(pos + vec2(12.0, 12.0), galley.size() + vec2(12.0, 8.0));
+        painter.rect_filled(tag, 4.0, theme::RAISED);
+        painter.rect_stroke(tag, 4.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
+        painter.galley(tag.min + vec2(6.0, 4.0), galley, theme::TEXT);
     }
 
     fn paint_tile(&self, ui: &egui::Ui, rect: Rect, asset: &Asset, hovered: bool) {

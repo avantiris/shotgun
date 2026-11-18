@@ -13,10 +13,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2};
 use sg_core::time::SAMPLE_RATE;
-use sg_core::{Asset, Clip, ClipId, Marker, Op, Project, Rate, Sequence, Track, TrackId, TrackKind, Visible};
+use sg_core::{Asset, AssetId, Clip, ClipId, Marker, Op, Project, Rate, Sequence, Track, TrackId, TrackKind, Visible};
 
 use crate::keymap::Action;
-use crate::session::Session;
+use crate::session::{Placement, Session, Slot, place_at};
 use crate::stage::{Transport, ViewerState, timecode};
 use crate::theme;
 use crate::timeline_gpu::{Instance, TimelineCallback};
@@ -129,6 +129,12 @@ pub struct Timeline {
     row_h: f32,
     lanes_w: f32,
     last_playhead: i64,
+    /// Where the timeline was drawn last, for drops arriving from outside.
+    rect: Rect,
+    /// Where an asset being dragged over the timeline would land.
+    drop_ghost: Option<Placement>,
+    /// The track row the context menu was opened on.
+    menu_row: Option<usize>,
     /// Quads drawn in the last frame, for the performance overlay.
     pub quads: usize,
 }
@@ -149,6 +155,9 @@ impl Default for Timeline {
             row_h: ROW_MAX,
             lanes_w: 0.0,
             last_playhead: 0,
+            rect: Rect::NOTHING,
+            drop_ghost: None,
+            menu_row: None,
             quads: 0,
         }
     }
@@ -316,7 +325,134 @@ impl Timeline {
         let x_of = move |frame: f64| lanes.left() + ((frame - left) / fpp) as f32;
 
         self.pointer(ui, &response, session, &sequence, view, transport, error, rect, lanes, &frame_at, &row_at);
+        self.rect = rect;
+        self.asset_drop(ui, &response, session, &project, &sequence, view, error);
         self.paint(ui, rect, lanes, &project, &sequence, view, &x_of);
+        self.track_controls(ui, &response, session, &sequence, rect, &row_at, error);
+    }
+
+    /// Where something dropped at `pos` lands: the frame (snapped like a
+    /// moved clip unless `snap` is off) and the track row under it, if any.
+    /// `None` if the point is outside the timeline.
+    pub fn drop_target(
+        &self,
+        sequence: &Sequence,
+        playhead: i64,
+        pos: egui::Pos2,
+        snap: bool,
+    ) -> Option<(i64, Option<usize>)> {
+        if !self.rect.contains(pos) {
+            return None;
+        }
+        let raw = (self.left + (pos.x - self.rect.left() - HEADER_W) as f64 * self.frames_per_point).max(0.0);
+        let frame = if snap { self.snap(sequence, playhead, raw, &[]).unwrap_or(raw) } else { raw };
+        let row = ((pos.y - self.rect.top() - RULER_H) / self.row_h).floor();
+        let row = (row >= 0.0 && (row as usize) < sequence.tracks.len()).then_some(row as usize);
+        Some((frame.round() as i64, row))
+    }
+
+    /// An asset dragged here from the asset panel: shows where it would
+    /// land and places it when the button is released.
+    #[allow(clippy::too_many_arguments)]
+    fn asset_drop(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        session: &mut Session,
+        project: &Project,
+        sequence: &Sequence,
+        view: &ViewerState,
+        error: &mut Option<String>,
+    ) {
+        self.drop_ghost = None;
+        let released = response.dnd_release_payload::<AssetId>();
+        let Some(id) = released.clone().or_else(|| response.dnd_hover_payload::<AssetId>()) else { return };
+        let Some(asset) = project.assets.get(&*id) else { return };
+        let (pos, alt) = ui.input(|i| (i.pointer.interact_pos(), i.modifiers.alt));
+        let Some((frame, row)) = pos.and_then(|p| self.drop_target(sequence, view.frame, p, !alt)) else { return };
+        if released.is_none() {
+            self.drop_ghost = Some(place_at(sequence, asset, frame, row));
+            return;
+        }
+        match session.drop_asset(asset, frame, row) {
+            Ok(_) => self.select_dropped(session, asset.id, frame),
+            Err(e) => *error = Some(e.to_string()),
+        }
+    }
+
+    /// Selects the clips a drop just made, so that the next key acts on them.
+    pub fn select_dropped(&mut self, session: &Session, asset: AssetId, frame: i64) {
+        let project = session.project();
+        let Some(sequence) = project.sequences.first() else { return };
+        self.selection.clear();
+        for track in &sequence.tracks {
+            let start = Lane::of(track, sequence).units(frame);
+            if let Some(clip) = track.clips.get(start).filter(|c| c.asset == asset) {
+                self.selection.push(Sel { track: track.id, start: clip.start, id: clip.id });
+            }
+        }
+    }
+
+    /// The two add-track buttons in the corner above the track names, and
+    /// the right-click menu of the track area.
+    #[allow(clippy::too_many_arguments)]
+    fn track_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+        session: &mut Session,
+        sequence: &Sequence,
+        rect: Rect,
+        row_at: &dyn Fn(f32) -> f32,
+        error: &mut Option<String>,
+    ) {
+        let mut add = None;
+        let corner = Rect::from_min_size(rect.min, egui::vec2(HEADER_W, RULER_H)).shrink2(egui::vec2(4.0, 2.0));
+        let builder = egui::UiBuilder::new().max_rect(corner).layout(egui::Layout::left_to_right(egui::Align::Center));
+        ui.scope_builder(builder, |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (label, kind, tip) in [
+                ("+ Video", TrackKind::Video, "Add a video track on top"),
+                ("+ Audio", TrackKind::Audio, "Add an audio track at the bottom"),
+            ] {
+                let text = egui::RichText::new(label).size(10.5).color(kind_colour(kind));
+                if ui.add(egui::Button::new(text).small()).on_hover_text(tip).clicked() {
+                    add = Some(kind);
+                }
+            }
+        });
+        if response.secondary_clicked() {
+            let row = response.interact_pointer_pos().map_or(-1.0, |p| row_at(p.y));
+            self.menu_row = (row >= 0.0 && (row as usize) < sequence.tracks.len()).then_some(row as usize);
+        }
+        let mut remove = None;
+        response.context_menu(|ui| {
+            if ui.button("Add video track").clicked() {
+                add = Some(TrackKind::Video);
+                ui.close();
+            }
+            if ui.button("Add audio track").clicked() {
+                add = Some(TrackKind::Audio);
+                ui.close();
+            }
+            if let Some(track) = self.menu_row.and_then(|row| sequence.tracks.get(row)) {
+                ui.separator();
+                let empty = track.clips.is_empty();
+                let button = ui.add_enabled(empty, egui::Button::new(format!("Remove track {}", track.name)));
+                if button.on_disabled_hover_text("Only an empty track can be removed.").clicked() {
+                    remove = Some(track.id);
+                    ui.close();
+                }
+            }
+        });
+        let result = match (add, remove) {
+            (Some(kind), _) => session.add_track(kind),
+            (None, Some(id)) => session.apply(Op::RemoveTrack { seq: sequence.id, id }, None),
+            (None, None) => Ok(()),
+        };
+        if let Err(e) = result {
+            *error = Some(e.to_string());
+        }
     }
 
     fn wheel_and_pan(&mut self, ui: &egui::Ui, response: &egui::Response, lanes: Rect, sequence: &Sequence) {
@@ -781,6 +917,44 @@ impl Timeline {
             let colour = if fits { theme::ACCENT } else { theme::ERROR };
             painter.rect_filled(ghost, 3.0, colour.gamma_multiply(0.25));
             painter.rect_stroke(ghost, 3.0, Stroke::new(1.5, colour), StrokeKind::Inside);
+        }
+        if let Some(drop) = self.drop_ghost {
+            let lanes_painter = painter.with_clip_rect(lanes);
+            let (x0, x1) =
+                (x_of(drop.start as f64), x_of((drop.start + drop.frames) as f64).max(x_of(drop.start as f64) + 3.0));
+            let rows_top = rect.top() + RULER_H;
+            let rows_bottom = rows_top + sequence.tracks.len() as f32 * row_h;
+            for (slot, kind) in [(drop.video, TrackKind::Video), (drop.audio, TrackKind::Audio)] {
+                let colour = kind_colour(kind);
+                match slot {
+                    Some(Slot::Row(row)) => {
+                        let top = rows_top + row as f32 * row_h;
+                        let ghost = Rect::from_min_max(pos2(x0, top + 3.0), pos2(x1, top + row_h - 4.0));
+                        lanes_painter.rect_filled(ghost, 3.0, colour.gamma_multiply(0.3));
+                        lanes_painter.rect_stroke(ghost, 3.0, Stroke::new(1.5, theme::ACCENT), StrokeKind::Inside);
+                    }
+                    // A track that the drop will make: a bar where it appears.
+                    Some(Slot::New) => {
+                        let (y, label, align) = match kind {
+                            TrackKind::Video => (rows_top, "new video track", Align2::LEFT_TOP),
+                            TrackKind::Audio => {
+                                (rows_bottom.min(rect.bottom() - 4.0), "new audio track", Align2::LEFT_BOTTOM)
+                            }
+                        };
+                        let bar = Rect::from_min_max(pos2(x0, y - 2.0), pos2(x1, y + 2.0));
+                        lanes_painter.rect_filled(bar, 2.0, theme::ACCENT);
+                        let offset = if kind == TrackKind::Video { 4.0 } else { -4.0 };
+                        lanes_painter.text(
+                            pos2(x0 + 4.0, y + offset),
+                            align,
+                            label,
+                            FontId::proportional(11.0),
+                            colour,
+                        );
+                    }
+                    None => {}
+                }
+            }
         }
         painter.line_segment(
             [pos2(lanes.left(), rect.top()), pos2(lanes.left(), rect.bottom())],
@@ -1292,5 +1466,159 @@ mod tests {
         timeline.plan_trim(&session, &seq, &view, 150.0, timeline.selection[0], Edge::Start, true, false);
         session.apply(Op::Batch(timeline.pending.take().unwrap()), None).unwrap();
         assert_eq!(layout(&session), (vec![(0, 450), (450, 600)], vec![(0, 450), (450, 600)]));
+    }
+
+    /// (kind, name, clip starts in frames) of every track, top first.
+    fn tracks(session: &Session) -> Vec<(TrackKind, String, Vec<i64>)> {
+        let project = session.project();
+        let seq = &project.sequences[0];
+        let starts = |t: &Track| t.clips.iter().map(|c| Lane::of(t, seq).frame(c.start)).collect();
+        seq.tracks.iter().map(|t| (t.kind, t.name.clone(), starts(t))).collect()
+    }
+
+    #[test]
+    fn drop_on_free_space_uses_the_tracks_that_exist() {
+        let (_dir, mut session) = session();
+        let asset = take(3);
+        session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
+        assert_eq!(session.drop_asset(&asset, 1500, Some(0)).unwrap(), Some(1500));
+        assert_eq!(
+            tracks(&session),
+            vec![
+                (TrackKind::Video, "V1".to_owned(), vec![0, 600, 1500]),
+                (TrackKind::Audio, "A1".to_owned(), vec![0, 600, 1500]),
+            ]
+        );
+    }
+
+    #[test]
+    fn drop_on_taken_space_makes_tracks_and_undoes_in_one_step() {
+        let (_dir, mut session) = session();
+        let before = session.project().clone();
+        let asset = take(3);
+        session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
+        let with_asset = session.project().clone();
+        // Over the first take, on the video track, and again outside every track.
+        for row in [Some(0), None] {
+            let seq = session.project().sequences[0].clone();
+            let planned = place_at(&seq, &asset, 100, row);
+            assert_eq!((planned.video, planned.audio), (Some(Slot::New), Some(Slot::New)));
+            session.drop_asset(&asset, 100, row).unwrap();
+            assert_eq!(
+                tracks(&session),
+                vec![
+                    (TrackKind::Video, "V2".to_owned(), vec![100]),
+                    (TrackKind::Video, "V1".to_owned(), vec![0, 600]),
+                    (TrackKind::Audio, "A1".to_owned(), vec![0, 600]),
+                    (TrackKind::Audio, "A2".to_owned(), vec![100]),
+                ]
+            );
+            assert!(session.undo().unwrap());
+            assert_eq!(*session.project(), with_asset);
+        }
+        assert!(session.undo().unwrap());
+        assert_eq!(*session.project(), before);
+    }
+
+    #[test]
+    fn drop_stacks_on_a_free_track_before_making_one() {
+        let (_dir, mut session) = session();
+        session.add_track(TrackKind::Video).unwrap();
+        let asset = take(3);
+        session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
+        // Dropped on the taken V1 (row 1 now): the picture goes up to the free V2.
+        let seq = session.project().sequences[0].clone();
+        let planned = place_at(&seq, &asset, 100, Some(1));
+        assert_eq!((planned.video, planned.audio), (Some(Slot::Row(0)), Some(Slot::New)));
+        // A sound-only asset dropped on a video track still finds an audio track.
+        let mut sound = take(4);
+        sound.video = None;
+        let planned = place_at(&seq, &sound, 2000, Some(0));
+        assert_eq!((planned.video, planned.audio), (None, Some(Slot::Row(2))));
+    }
+
+    #[test]
+    fn drop_target_maps_points_to_frames_and_rows() {
+        let (_dir, session) = session();
+        let seq = session.project().sequences[0].clone();
+        let rect = Rect::from_min_size(pos2(0.0, 500.0), egui::vec2(1000.0, 200.0));
+        let mut timeline = Timeline { rect, row_h: 40.0, ..Timeline::default() };
+        timeline.set_view(2.0, 0.0);
+        let x = HEADER_W + 400.0;
+        assert_eq!(timeline.drop_target(&seq, 0, pos2(x, 400.0), false), None);
+        assert_eq!(timeline.drop_target(&seq, 0, pos2(x, 505.0), false), Some((800, None)));
+        assert_eq!(timeline.drop_target(&seq, 0, pos2(x, 500.0 + RULER_H + 50.0), false), Some((800, Some(1))));
+        assert_eq!(timeline.drop_target(&seq, 0, pos2(x, 690.0), false), Some((800, None)));
+        // Near the end of the first take (frame 600), snapping pulls it there.
+        assert_eq!(timeline.drop_target(&seq, 0, pos2(HEADER_W + 303.0, 560.0), true), Some((600, Some(0))));
+    }
+
+    /// The whole gesture through egui's own input handling: press on an
+    /// asset tile, move over the timeline, let go.
+    #[test]
+    fn dragging_an_asset_tile_onto_the_timeline_places_it() {
+        use egui::{Event, Modifiers, vec2};
+
+        let (_dir, mut session) = session();
+        let asset = take(3);
+        session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
+        let ctx = egui::Context::default();
+        let mut assets = crate::assets::AssetsPanel::default();
+        let mut timeline = Timeline::default();
+        let view = ViewerState::default();
+        let mut frame = |events: Vec<Event>, session: &mut Session, timeline: &mut Timeline| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 800.0))),
+                events,
+                ..Default::default()
+            };
+            let (mut transport, mut error, mut requests) = (Vec::new(), None, Vec::new());
+            let mut output = ctx.run_ui(input, |ui| {
+                let project = session.project().clone();
+                egui::Panel::bottom("timeline")
+                    .default_size(230.0)
+                    .show(ui, |ui| timeline.ui(ui, session, &view, &mut transport, &mut error));
+                egui::Panel::left("assets").default_size(320.0).show(ui, |ui| assets.ui(ui, &project, &mut requests));
+            });
+            // No renderer takes the font atlas here.
+            output.textures_delta.clear();
+            assert_eq!(error, None);
+            assets.selected
+        };
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        // The newest asset is the first tile, below the panel's header rows.
+        let tile = pos2(60.0, 120.0);
+        let over = pos2(700.0, 800.0 - 230.0 + RULER_H + 60.0);
+        frame(vec![], &mut session, &mut timeline);
+        frame(vec![Event::PointerMoved(tile)], &mut session, &mut timeline);
+        frame(vec![button(tile, true)], &mut session, &mut timeline);
+        frame(vec![Event::PointerMoved(tile + vec2(30.0, 30.0))], &mut session, &mut timeline);
+        let selected = frame(vec![Event::PointerMoved(over)], &mut session, &mut timeline);
+        assert_eq!(selected, Some(asset.id), "the press must have landed on the tile of the newest asset");
+        frame(vec![Event::PointerMoved(over)], &mut session, &mut timeline);
+        let ghost = timeline.drop_ghost.expect("a ghost shows where the asset would land");
+        let before = tracks(&session);
+        frame(vec![button(over, false)], &mut session, &mut timeline);
+        let project = session.project().clone();
+        let seq = &project.sequences[0];
+        let placed: Vec<(TrackKind, i64)> = seq
+            .tracks
+            .iter()
+            .flat_map(|t| {
+                t.clips.iter().filter(|c| c.asset == asset.id).map(|c| (t.kind, Lane::of(t, seq).frame(c.start)))
+            })
+            .collect();
+        assert_eq!(placed, vec![(TrackKind::Video, ghost.start), (TrackKind::Audio, ghost.start)], "was {before:?}");
+        assert_eq!(timeline.selection.len(), 2);
+        // Letting go ends the drag: nothing more is placed on the next frames.
+        frame(vec![Event::PointerMoved(over)], &mut session, &mut timeline);
+        assert!(timeline.drop_ghost.is_none());
+        assert!(session.undo().unwrap());
+        assert_eq!(tracks(&session), before);
     }
 }

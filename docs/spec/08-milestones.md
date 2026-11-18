@@ -59,7 +59,9 @@ Status:
   picture and sound of a take are kept together by a rule (same asset, same
   time, same source position), not by a link stored in the project; Alt+click
   picks one clip alone. Moves and trims show a ghost and are applied when the
-  button is released, so the viewer does not follow a drag live. Not built:
+  button is released, so the viewer does not follow a drag live. Added after
+  feedback round 2: dragging an asset onto the timeline, file drops placed
+  on the timeline, track buttons and menu. Not built at M4:
   dragging an asset from the panel onto the timeline (Enter or a double-click
   places it at the playhead instead), dropping a file directly onto a
   position in the timeline, overwrite and insert edits (a move onto occupied

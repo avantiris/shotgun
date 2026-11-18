@@ -45,6 +45,11 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "history" => Step::Dev(DevStep::Act(Action::History)),
         "exportpanel" => Step::Dev(DevStep::Act(Action::Export)),
         "export" => Step::Dev(DevStep::Export(need()?)),
+        "drop" => {
+            let (frame, row) = arg.split_once(':').ok_or_else(|| anyhow!("drop needs <frame>:<row or new>"))?;
+            let row = if row == "new" { None } else { Some(row.parse()?) };
+            Step::Dev(DevStep::Drop(frame.parse()?, row))
+        }
         "size" => {
             let (w, h) = arg.split_once('x').ok_or_else(|| anyhow!("size needs <width>x<height>"))?;
             Step::Dev(DevStep::Size(w.parse()?, h.parse()?))

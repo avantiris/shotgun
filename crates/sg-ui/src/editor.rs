@@ -304,15 +304,7 @@ impl Editor {
 
     /// Adds a track: video on top, audio at the bottom.
     pub fn add_track(&mut self, session: &mut Session, kind: sg_core::TrackKind, error: &mut Option<String>) {
-        let project = session.project().clone();
-        let Some(sequence) = project.sequences.first() else { return };
-        let count = sequence.tracks.iter().filter(|t| t.kind == kind).count();
-        let (index, name) = match kind {
-            sg_core::TrackKind::Video => (0, format!("V{}", count + 1)),
-            sg_core::TrackKind::Audio => (sequence.tracks.len(), format!("A{}", count + 1)),
-        };
-        let track = sg_core::TrackHeader { id: session.new_track_id(), kind, name };
-        if let Err(e) = session.apply(Op::AddTrack { seq: sequence.id, index, track }, None) {
+        if let Err(e) = session.add_track(kind) {
             *error = Some(e.to_string());
         }
     }

@@ -337,7 +337,16 @@ impl App {
             DataEvent::DragEnter { on_our_surface, .. } => self.shell.set_drag_hover(on_our_surface),
             DataEvent::DragLeave => self.shell.set_drag_hover(false),
             DataEvent::DragMotion { .. } | DataEvent::Selection { .. } => return,
-            DataEvent::Drop { mime, data, .. } | DataEvent::Paste { mime, data } => match incoming_from(&mime, data) {
+            // Surface coordinates are the points the UI lays out in.
+            DataEvent::Drop { mime, data, x, y } => match incoming_from(&mime, data) {
+                Some(incoming) => {
+                    let commands = self.shell.incoming_at(incoming, x as f32, y as f32);
+                    self.run_commands(commands);
+                    return self.request_redraw();
+                }
+                None => self.shell.report_error("Nothing in there that can be imported.".to_owned()),
+            },
+            DataEvent::Paste { mime, data } => match incoming_from(&mime, data) {
                 Some(incoming) => return self.incoming(incoming),
                 None => self.shell.report_error("Nothing in there that can be imported.".to_owned()),
             },

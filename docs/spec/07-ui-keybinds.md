@@ -29,6 +29,7 @@ Editor layout (single window; panels resize but do not float or re-dock):
 - The inspector always shows the selection: clip transform and keyframes,
   title text, audio track chain, or the scenario's match + look chain.
 - Dropping a file or pasting a link **anywhere** in the window imports it.
+  Tracks never have to be made first: a drop makes the ones it needs.
   Dropping on the timeline imports and places it in one step.
 
 ## Mouse
@@ -43,7 +44,10 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Drag clip | move (snaps; hold Alt to disable snapping) |
 | Drag clip edge | trim (Ctrl = ripple) |
 | Drag in viewer | move the selected clip's picture (M5; scale and rotation are inspector fields for now) |
-| Right click | context menu for the thing under the cursor |
+| Drag an asset from the panel onto the timeline | place it where it is let go: picture on the video track under the pointer, sound on an audio track; snaps like a moved clip (Alt disables). Where the spot is taken, or outside the tracks, it goes to the next free track, and a new track is made if there is none. A ghost shows the result before the button is released |
+| Drop files from another application onto the timeline | import them and place them there, one after the other |
+| `+ Video` / `+ Audio` above the track names | add a track (video on top, audio at the bottom) |
+| Right click on the timeline | add a video or audio track, remove the empty track under the pointer |
 
 ## Keys (left hand, bound by physical position)
 
