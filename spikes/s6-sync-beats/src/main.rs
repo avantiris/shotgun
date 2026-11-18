@@ -14,7 +14,45 @@ use testdata::{Camera, record, song};
 
 const RATE: f32 = 48_000.0;
 
+/// Writes mono 16-bit WAV.
+fn write_wav(path: &std::path::Path, samples: &[f32]) {
+    let data = samples.len() as u32 * 2;
+    let mut bytes = Vec::with_capacity(44 + data as usize);
+    bytes.extend(b"RIFF");
+    bytes.extend((36 + data).to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(16u32.to_le_bytes());
+    bytes.extend(1u16.to_le_bytes());
+    bytes.extend(1u16.to_le_bytes());
+    bytes.extend(48_000u32.to_le_bytes());
+    bytes.extend(96_000u32.to_le_bytes());
+    bytes.extend(2u16.to_le_bytes());
+    bytes.extend(16u16.to_le_bytes());
+    bytes.extend(b"data");
+    bytes.extend(data.to_le_bytes());
+    for s in samples {
+        bytes.extend(((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+    }
+    std::fs::write(path, bytes).expect("write wav");
+}
+
+/// `write <dir>`: a song and three camera recordings of it as WAV files,
+/// for trying the feature in the app. Prints where each camera starts.
+fn write_media(dir: &std::path::Path) {
+    let (music, _) = song(128.0, 120.0, 2.0, 2);
+    write_wav(&dir.join("song.wav"), &music);
+    for (n, start_s, seconds, snr_db, ppm) in [(1, 31.37f32, 40.0f32, 6.0f32, 0.0f32), (2, 10.0, 60.0, 0.0, 50.0), (3, -2.0, 30.0, 10.0, -30.0)] {
+        let camera = Camera { start: (start_s * RATE) as i64, seconds, snr_db, clock_ppm: ppm, seed: n };
+        write_wav(&dir.join(format!("cam{n}.wav")), &record(&music, &camera));
+        println!("cam{n} starts {start_s} s into the song, {seconds} s long, music {snr_db} dB over the room, clock {ppm} ppm");
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("write") {
+        return write_media(std::path::Path::new(args.get(2).map_or(".", String::as_str)));
+    }
     println!("== sync: error of the found position, in milliseconds");
     println!("{:>5} {:>6} {:>7} {:>7} {:>9} {:>7} {:>7} {:>9} {:>8}", "bpm", "take s", "snr dB", "ppm", "error ms", "alike", "next", "drift ppm", "time ms");
     let mut worst = 0.0f64;

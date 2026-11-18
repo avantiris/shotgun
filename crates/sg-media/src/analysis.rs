@@ -4,6 +4,7 @@
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
+use serde::{Deserialize, Serialize};
 
 /// Everything here works on samples at this rate.
 pub const RATE: usize = 48_000;
@@ -336,7 +337,7 @@ pub fn find_offset(song: &[f32], take: &[f32]) -> Option<Offset> {
 }
 
 /// The beats of a piece of music.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Beats {
     pub bpm: f32,
     /// Sample positions, ascending.

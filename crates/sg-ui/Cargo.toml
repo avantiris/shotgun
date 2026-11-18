@@ -8,6 +8,7 @@ publish.workspace = true
 sg-core.workspace = true
 sg-media.workspace = true
 sg-project.workspace = true
+thiserror.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 bytemuck.workspace = true

@@ -20,6 +20,9 @@ pub enum EditorRequest {
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
     SetSize(u32, u32),
+    Tempo(i8),
+    SyncAll,
+    ClearSong,
     Export,
 }
 
@@ -191,6 +194,38 @@ impl Editor {
             self.begin_rename(session);
         }
         ui.add_space(10.0);
+        if let Some(song) = sequence.song {
+            section(ui, "SONG");
+            row(ui, "Asset", project.assets.get(&song.asset).map_or("missing", |a| a.label.as_str()));
+            let tempo = match self.timeline.bpm(sequence) {
+                Some(bpm) => format!("{bpm:.1} beats per minute"),
+                None => "finding the beats...".to_owned(),
+            };
+            row(ui, "Tempo", &tempo);
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Half").on_hover_text("Count the song in slower beats").clicked() {
+                    *request = Some(EditorRequest::Tempo(song.tempo - 1));
+                }
+                if ui.button("Double").on_hover_text("Count the song in faster beats").clicked() {
+                    *request = Some(EditorRequest::Tempo(song.tempo + 1));
+                }
+                if ui
+                    .button("Sync all takes")
+                    .on_hover_text("Finds every video with sound in the song and lays it on a camera track")
+                    .clicked()
+                {
+                    *request = Some(EditorRequest::SyncAll);
+                }
+                if ui.button("No song").clicked() {
+                    *request = Some(EditorRequest::ClearSong);
+                }
+            });
+            ui.label(
+                RichText::new("Keys 1 to 9 cut to a camera angle at the playhead, also while playing.")
+                    .color(theme::DIM),
+            );
+            ui.add_space(10.0);
+        }
         section(ui, "SEQUENCE");
         row(ui, "Name", &sequence.name);
         row(ui, "Format", &format!("{}x{}, {}", sequence.width, sequence.height, fps(sequence.rate)));

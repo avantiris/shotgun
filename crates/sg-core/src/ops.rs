@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipError, ClipStore};
 use crate::ids::{AssetId, ClipId, SequenceId, TrackId};
-use crate::model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader, TrackSettings};
+use crate::model::{Marker, Project, Sequence, SequenceHeader, Song, Track, TrackHeader, TrackSettings};
 use crate::props::ClipProps;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,6 +77,11 @@ pub enum Op {
         seq: SequenceId,
         track: TrackId,
         mix: TrackSettings,
+    },
+    /// Sets or clears the song a sequence is cut to.
+    SetSong {
+        id: SequenceId,
+        song: Option<Song>,
     },
     /// Sets the master fader of a sequence, in decibels.
     SetMasterGain {
@@ -161,6 +166,7 @@ impl Op {
             Op::SetClip { .. } => "trim or move clip",
             Op::ShiftFrom { .. } => "ripple",
             Op::SetTrackMix { .. } => "adjust track",
+            Op::SetSong { .. } => "set song",
             Op::SetMasterGain { .. } => "adjust master",
             Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
@@ -195,6 +201,31 @@ impl Op {
             Op::SetClip { seq, track, start: clip.start, clip: left },
             Op::InsertClip { seq, track, clip: right },
         ]))
+    }
+
+    /// Puts `clip` on a track and clears what was in its place: clips
+    /// inside its span go, clips reaching into it are shortened, a clip
+    /// that surrounds it is cut in two (its right part gets `spare`).
+    /// `None` if the track does not exist.
+    pub fn overwrite(sequence: &Sequence, track: TrackId, clip: Clip, spare: ClipId) -> Option<Op> {
+        let (seq, from, to) = (sequence.id, clip.start, clip.end());
+        let mut ops = Vec::new();
+        for old in sequence.track(track)?.clips.range(from, to) {
+            // What is left of `old` after `to`, at its unchanged source position.
+            let tail = Clip { start: to, len: old.end() - to, src_in: old.src_in + (to - old.start), ..old };
+            let head = Clip { len: from - old.start, ..old };
+            match (old.start < from, old.end() > to) {
+                (false, false) => ops.push(Op::RemoveClip { seq, track, start: old.start }),
+                (true, false) => ops.push(Op::SetClip { seq, track, start: old.start, clip: head }),
+                (false, true) => ops.push(Op::SetClip { seq, track, start: old.start, clip: tail }),
+                (true, true) => {
+                    ops.push(Op::SetClip { seq, track, start: old.start, clip: head });
+                    ops.push(Op::InsertClip { seq, track, clip: Clip { id: spare, ..tail } });
+                }
+            }
+        }
+        ops.push(Op::InsertClip { seq, track, clip });
+        Some(Op::Batch(ops))
     }
 
     /// Removes the clip at `start` and closes the gap on its track.
@@ -235,12 +266,15 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
                 return Err(OpError::NotEmpty("sequence"));
             }
             let add = Op::AddSequence { index, sequence: seq.header() };
-            // The header carries no master fader: put it back separately.
-            let inverse = if seq.master_db == 0.0 {
-                add
-            } else {
-                Op::Batch(vec![add, Op::SetMasterGain { id: *id, db: seq.master_db }])
-            };
+            // The header carries neither master fader nor song: put them back separately.
+            let mut restore = vec![add];
+            if seq.master_db != 0.0 {
+                restore.push(Op::SetMasterGain { id: *id, db: seq.master_db });
+            }
+            if seq.song.is_some() {
+                restore.push(Op::SetSong { id: *id, song: seq.song });
+            }
+            let inverse = if restore.len() == 1 { restore.remove(0) } else { Op::Batch(restore) };
             let mut next = p.clone();
             next.sequences.remove(index);
             Ok((next, inverse))
@@ -300,6 +334,11 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             let inverse = Op::SetTrackMix { seq: *seq, track: *track, mix: old.mix };
             // The clips and their properties stay shared.
             s.tracks[index] = Arc::new(Track { mix: mix.clamped(), ..Track::clone(old) });
+            Ok(inverse)
+        }),
+        Op::SetSong { id, song } => with_sequence(p, *id, |s| {
+            let inverse = Op::SetSong { id: *id, song: s.song };
+            s.song = song.map(|song| Song { tempo: song.tempo.clamp(-2, 2), ..song });
             Ok(inverse)
         }),
         Op::SetMasterGain { id, db } => with_sequence(p, *id, |s| {
@@ -798,7 +837,15 @@ mod mix_tests {
     #[test]
     fn track_settings_and_master_change_and_undo() {
         let p = base();
-        let mix = TrackSettings { gain_db: -6.0, pan: 0.5, mute: true, solo: false, low_cut_hz: 80.0, denoise: 0.7 };
+        let mix = TrackSettings {
+            gain_db: -6.0,
+            pan: 0.5,
+            mute: true,
+            solo: false,
+            low_cut_hz: 80.0,
+            denoise: 0.7,
+            hidden: false,
+        };
         let (p2, undo) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
         assert_eq!(p2.sequences[0].track(A1).unwrap().mix, mix);
         assert_eq!(apply(&p2, &undo).unwrap().0, p);
@@ -820,5 +867,52 @@ mod mix_tests {
         let (without, undo) = apply(&with_mix, &Op::RemoveTrack { seq: SEQ, id: A1 }).unwrap();
         assert!(without.sequences[0].track(A1).is_none());
         assert_eq!(apply(&without, &undo).unwrap().0, with_mix);
+    }
+}
+
+#[cfg(test)]
+mod song_tests {
+    use super::tests::{SEQ, V1, base, clip};
+    use super::*;
+    use crate::ids::AssetId;
+
+    fn starts(p: &Project) -> Vec<(u128, i64, i64, i64)> {
+        p.sequences[0].track(V1).unwrap().clips.iter().map(|c| (c.id.0 as u128, c.start, c.len, c.src_in)).collect()
+    }
+
+    #[test]
+    fn song_is_set_and_undone() {
+        let p = base();
+        let song = Song { asset: AssetId(7), tempo: 1 };
+        let (p2, undo) = apply(&p, &Op::SetSong { id: SEQ, song: Some(song) }).unwrap();
+        assert_eq!(p2.sequences[0].song, Some(song));
+        assert_eq!(apply(&p2, &undo).unwrap().0, p);
+    }
+
+    #[test]
+    fn overwrite_clears_exactly_its_span() {
+        // Three clips: 0..100, 100..200, 300..400 (source positions 0 each).
+        let mut p = base();
+        for (id, start) in [(1u64, 0i64), (2, 100), (3, 300)] {
+            p = apply(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(id, start, 100) }).unwrap().0;
+        }
+        let before = p.clone();
+        // 50..350 swallows the middle clip and shortens both neighbours.
+        let new = Clip { src_in: 7, ..clip(9, 50, 300) };
+        let op = Op::overwrite(&p.sequences[0], V1, new, ClipId(99)).unwrap();
+        let (after, undo) = apply(&p, &op).unwrap();
+        assert_eq!(starts(&after), vec![(1, 0, 50, 0), (9, 50, 300, 7), (3, 350, 50, 50)]);
+        assert_eq!(apply(&after, &undo).unwrap().0, before);
+        // Inside one clip: that clip is cut in two around it.
+        let op = Op::overwrite(&p.sequences[0], V1, clip(9, 120, 30), ClipId(99)).unwrap();
+        let (after, undo) = apply(&p, &op).unwrap();
+        assert_eq!(
+            starts(&after),
+            vec![(1, 0, 100, 0), (2, 100, 20, 0), (9, 120, 30, 0), (99, 150, 50, 50), (3, 300, 100, 0)]
+        );
+        assert_eq!(apply(&after, &undo).unwrap().0, before);
+        // On free space it is a plain insert.
+        let op = Op::overwrite(&p.sequences[0], V1, clip(9, 200, 100), ClipId(99)).unwrap();
+        assert_eq!(apply(&p, &op).unwrap().0.sequences[0].track(V1).unwrap().clips.len(), 4);
     }
 }

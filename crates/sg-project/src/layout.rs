@@ -99,6 +99,11 @@ pub mod cache {
         at(root, "conform", id, if alpha { "mkv" } else { "mp4" })
     }
 
+    /// Tempo and beats of an asset's sound, as JSON.
+    pub fn beats(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "analysis", id, "beats")
+    }
+
     pub fn proxy(root: &Path, id: AssetId) -> PathBuf {
         at(root, "proxy", id, "mp4")
     }

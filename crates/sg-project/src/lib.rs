@@ -2,6 +2,7 @@
 //! saves and git. Everything here does blocking I/O and must be called from
 //! the job pool or a project's writer thread, never from the UI thread.
 
+pub mod analysis;
 mod bundle;
 pub mod fetch;
 mod git;

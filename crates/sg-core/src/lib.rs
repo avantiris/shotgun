@@ -18,7 +18,7 @@ pub use asset::{Asset, AssetKind, AudioInfo, Source, VideoInfo};
 pub use clips::{Clip, ClipError, ClipStore, Visible};
 pub use history::{Document, History, HistoryError, Record};
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};
-pub use model::{Marker, Project, Sequence, SequenceHeader, Track, TrackHeader, TrackKind, TrackSettings};
+pub use model::{Marker, Project, Sequence, SequenceHeader, Song, Track, TrackHeader, TrackKind, TrackSettings};
 pub use ops::{Op, OpError, apply};
 pub use props::{ClipProps, Key, Param, Title};
 pub use time::Rate;

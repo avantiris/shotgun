@@ -64,6 +64,17 @@ pub enum Command {
         root: PathBuf,
         assets: Arc<BTreeMap<AssetId, Arc<Asset>>>,
     },
+    /// Find (or read from the cache) the beats of an asset; answered with [`Shell::beats_loaded`].
+    LoadBeats {
+        root: PathBuf,
+        id: AssetId,
+    },
+    /// Find where a take sits in the song; answered with [`Shell::synced`].
+    SyncTake {
+        root: PathBuf,
+        song: AssetId,
+        take: AssetId,
+    },
     /// Read the waveform peaks of an asset; answered with [`Shell::peaks_loaded`].
     LoadPeaks {
         root: PathBuf,
@@ -132,6 +143,12 @@ pub enum DevStep {
     Drop(i64, Option<usize>, Option<sg_core::TrackKind>),
     /// Set a mixer field of the n-th audio track (`master` for the master fader).
     Mix(String, String, f32),
+    /// Make the selected asset the song.
+    Song,
+    /// Synchronise the selected asset (or, with `true`, every video) to the song.
+    Sync(bool),
+    /// Set the tempo choice of the song (-2 to 2).
+    Tempo(i8),
     /// Set the sequence frame size.
     Size(u32, u32),
     /// Export with a preset: master, vertical, gif or share:<megabytes>.
@@ -161,6 +178,8 @@ pub struct Shell {
     /// Files dropped on the timeline: where the next imported assets go
     /// (frame, track row) and how many imports are still expected there.
     dropped_at: Option<(i64, Option<usize>, usize)>,
+    /// Undo group of the angle switches of the playback pass in progress.
+    angle_group: Option<u64>,
     /// The playhead as of the last frame, for key actions.
     playhead: i64,
 }
@@ -233,6 +252,9 @@ impl Shell {
             Some(session) => {
                 let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests, view, &mut transport);
                 let root = session.root.clone();
+                if let Some(id) = self.editor.timeline.beat_request.take() {
+                    commands.push(Command::LoadBeats { root: root.clone(), id });
+                }
                 commands.extend(
                     self.editor
                         .timeline
@@ -245,6 +267,16 @@ impl Shell {
                 match request {
                     Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
                     Some(EditorRequest::Export) => self.act(Action::Export, &mut commands),
+                    Some(EditorRequest::Tempo(tempo)) => self.set_tempo(tempo),
+                    Some(EditorRequest::SyncAll) => self.sync_takes(true, &mut commands),
+                    Some(EditorRequest::ClearSong) => {
+                        if let Some(session) = &mut self.session {
+                            let id = session.project().sequences.first().map(|s| s.id);
+                            if let Some(Err(e)) = id.map(|id| session.apply(Op::SetSong { id, song: None }, None)) {
+                                self.error = Some(e.to_string());
+                            }
+                        }
+                    }
                     Some(EditorRequest::Undo) => self.act(Action::Undo, &mut commands),
                     Some(EditorRequest::Redo) => self.act(Action::Redo, &mut commands),
                     Some(EditorRequest::RemoveAsset(id)) => self.remove_asset(id),
@@ -276,6 +308,8 @@ impl Shell {
                 AssetRequest::Browse => commands.push(Command::PickFiles),
                 AssetRequest::CancelJob(job) => commands.push(Command::CancelImport(job)),
                 AssetRequest::Insert(only) => self.insert_selected(only, &mut commands),
+                AssetRequest::UseAsSong => self.use_as_song(),
+                AssetRequest::Sync(all) => self.sync_takes(all, &mut commands),
                 AssetRequest::Remove => {
                     if let Some(id) = self.editor.assets.selected {
                         self.remove_asset(id);
@@ -302,6 +336,9 @@ impl Shell {
                     if let Some(session) = self.session.take() {
                         self.library.pending = Some("Restoring...".to_owned());
                         let root = session.root.clone();
+                        if let Some(id) = self.editor.timeline.beat_request.take() {
+                            commands.push(Command::LoadBeats { root: root.clone(), id });
+                        }
                         commands.push(Command::Restore { root, writer: session.into_writer(), commit, description });
                     }
                 }
@@ -439,6 +476,7 @@ impl Shell {
                 }
             }
             Action::Mixer => self.editor.mixer.open = !self.editor.mixer.open,
+            Action::Angle(n) => self.switch_angle(n as usize),
             Action::History => {
                 if let Some(session) = &self.session {
                     self.history.open();
@@ -516,6 +554,9 @@ impl Shell {
                     }
                 }
             }
+            DevStep::Song => self.use_as_song(),
+            DevStep::Sync(all) => self.sync_takes(all, &mut commands),
+            DevStep::Tempo(tempo) => self.set_tempo(tempo),
             DevStep::Size(width, height) => {
                 if let Some(session) = &mut self.session {
                     self.editor.set_size(session, width, height, &mut self.error);
@@ -541,6 +582,9 @@ impl Shell {
                 let entry = self.history.entry(n);
                 if let (Some((commit, description)), Some(session)) = (entry, self.session.take()) {
                     let root = session.root.clone();
+                    if let Some(id) = self.editor.timeline.beat_request.take() {
+                        commands.push(Command::LoadBeats { root: root.clone(), id });
+                    }
                     commands.push(Command::Restore { root, writer: session.into_writer(), commit, description });
                 }
             }
@@ -820,6 +864,154 @@ impl Shell {
     pub fn peaks_loaded(&mut self, root: &std::path::Path, id: AssetId, peaks: Option<sg_media::peaks::Peaks>) {
         if self.session.as_ref().is_some_and(|s| s.root == root) {
             self.editor.timeline.set_peaks(id, peaks);
+        }
+    }
+}
+
+impl Shell {
+    /// Makes the selected asset the song of the sequence.
+    fn use_as_song(&mut self) {
+        let Some(session) = &mut self.session else { return };
+        let Some(asset) = self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned()) else {
+            return;
+        };
+        if asset.audio.is_none() {
+            self.error = Some(format!("{} has no sound.", asset.label));
+            return;
+        }
+        match session.set_song(&asset) {
+            Ok(()) => session.notice = Some(format!("{} is the song. Finding its beats...", asset.label)),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn set_tempo(&mut self, tempo: i8) {
+        let Some(session) = &mut self.session else { return };
+        let project = session.project().clone();
+        let Some((sequence, song)) = project.sequences.first().and_then(|s| Some((s, s.song?))) else { return };
+        let op = Op::SetSong { id: sequence.id, song: Some(sg_core::Song { tempo, ..song }) };
+        if let Err(e) = session.apply(op, None) {
+            self.error = Some(e.to_string());
+        }
+    }
+
+    /// Starts the search for the selected take (or every video asset that
+    /// is not on a camera track yet) in the song.
+    fn sync_takes(&mut self, all: bool, commands: &mut Vec<Command>) {
+        let Some(session) = &mut self.session else { return };
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return };
+        let Some(song) = sequence.song else {
+            self.error = Some("Choose the song first: right click on it among the assets.".to_owned());
+            return;
+        };
+        if session::song_clip(sequence).is_none() {
+            self.error = Some("The song is not on the timeline: put it on an audio track first.".to_owned());
+            return;
+        }
+        let usable = |asset: &sg_core::Asset| asset.id != song.asset && asset.video.is_some() && asset.audio.is_some();
+        let takes: Vec<AssetId> = if all {
+            // Everything with picture and sound that is not an angle already.
+            let placed: Vec<AssetId> = session::angle_rows(sequence)
+                .iter()
+                .flat_map(|row| sequence.tracks[*row].clips.iter().map(|c| c.asset))
+                .collect();
+            project.assets.values().filter(|a| usable(a) && !placed.contains(&a.id)).map(|a| a.id).collect()
+        } else {
+            self.editor
+                .assets
+                .selected
+                .and_then(|id| project.assets.get(&id))
+                .filter(|a| usable(a))
+                .map(|a| a.id)
+                .into_iter()
+                .collect()
+        };
+        if takes.is_empty() {
+            self.error = Some("Nothing to synchronise: a take needs picture and sound.".to_owned());
+            return;
+        }
+        session.notice = Some(format!("Looking for {} take(s) in the song...", takes.len()));
+        let root = session.root.clone();
+        commands.extend(takes.into_iter().map(|take| Command::SyncTake { root: root.clone(), song: song.asset, take }));
+    }
+
+    pub fn beats_loaded(
+        &mut self,
+        root: &std::path::Path,
+        id: AssetId,
+        beats: Result<sg_media::analysis::Beats, String>,
+    ) {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        match beats {
+            Ok(beats) => {
+                let steady = if beats.steady { "steady" } else { "changing" };
+                session.notice = Some(format!(
+                    "Song: {:.1} beats per minute, {steady} tempo, {} beats.",
+                    beats.bpm,
+                    beats.beats.len()
+                ));
+                self.editor.timeline.set_beats(id, Some(beats));
+            }
+            Err(e) => {
+                self.editor.timeline.set_beats(id, None);
+                self.error = Some(format!("No beat grid: {e}."));
+            }
+        }
+    }
+
+    /// A take was looked up in the song: lay it on the timeline if the
+    /// match can be trusted, say why not otherwise.
+    pub fn synced(&mut self, root: &std::path::Path, take: AssetId, found: Result<sg_media::analysis::Offset, String>) {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        let Some(asset) = session.project().assets.get(&take).cloned() else { return };
+        let offset = match found {
+            Ok(offset) => offset,
+            Err(e) => {
+                self.error = Some(format!("{}: {e}.", asset.label));
+                return;
+            }
+        };
+        if !offset.is_confident() {
+            self.error = Some(format!(
+                "{} was not placed: its sound does not clearly match one place in the song (likeness {:.2}, next best {:.2}). \
+                 It may be too short, too noisy, or from another song.",
+                asset.label, offset.likeness, offset.runner_up
+            ));
+            return;
+        }
+        match session.place_synced(&asset, offset.lag) {
+            Ok(start) => {
+                let rate = session.project().sequences[0].rate;
+                let seconds = start as f64 * rate.den() as f64 / rate.num() as f64;
+                // Only worth a word when it adds up to a frame over a minute.
+                let clock = if offset.drift_ppm.abs() >= 150.0 {
+                    format!(
+                        " Its clock differs by {:+.0} ppm: sync is exact in the middle and drifts towards the ends.",
+                        offset.drift_ppm
+                    )
+                } else {
+                    String::new()
+                };
+                session.notice =
+                    Some(format!("{} placed at {seconds:.2} s (likeness {:.2}).{clock}", asset.label, offset.likeness));
+            }
+            Err(e) => self.error = Some(format!("{}: {e}.", asset.label)),
+        }
+    }
+
+    /// Cuts the programme to camera angle `number` (1 is the first) at the
+    /// playhead. While playing, all cuts of the pass undo together.
+    fn switch_angle(&mut self, number: usize) {
+        let Some(session) = &mut self.session else { return };
+        if !self.playing {
+            self.angle_group = None;
+        }
+        let group = self.playing.then(|| *self.angle_group.get_or_insert_with(|| session.new_group()));
+        match session.switch_angle(number.saturating_sub(1), self.playhead, group) {
+            Ok(true) => {}
+            Ok(false) => session.notice = Some(format!("There is no camera angle {number} at this point.")),
+            Err(e) => self.error = Some(e.to_string()),
         }
     }
 }

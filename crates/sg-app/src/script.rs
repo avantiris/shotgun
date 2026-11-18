@@ -57,6 +57,11 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             Step::Dev(DevStep::Drop(frame.parse()?, row, only))
         }
         "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
+        "song" => Step::Dev(DevStep::Song),
+        "sync" => Step::Dev(DevStep::Sync(false)),
+        "syncall" => Step::Dev(DevStep::Sync(true)),
+        "tempo" => Step::Dev(DevStep::Tempo(need()?.parse()?)),
+        "angle" => Step::Dev(DevStep::Act(Action::Angle(need()?.parse()?))),
         "mix" => {
             // mix:<audio track number or master>:<field>=<value>
             let (which, rest) = arg.split_once(':').ok_or_else(|| anyhow!("mix needs <track>:<field>=<value>"))?;

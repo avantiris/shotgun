@@ -167,8 +167,10 @@ impl Peaks {
     }
 }
 
-/// Builds peaks from a 32-bit float WAV as written by [`crate::derive::audio_wav`].
-pub fn from_wav(path: &Path, cancel: &Cancel) -> Result<Peaks, ToolError> {
+/// Opens a 32-bit float WAV as written by [`crate::derive::audio_wav`] and
+/// leaves the reader at the first sample. Returns it with the sample rate
+/// and the channel count.
+pub fn open_wav(path: &Path) -> Result<(BufReader<std::fs::File>, u32, u16), ToolError> {
     let mut file = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
     let mut head = [0u8; 12];
     file.read_exact(&mut head)?;
@@ -200,6 +202,38 @@ pub fn from_wav(path: &Path, cancel: &Cancel) -> Result<Peaks, ToolError> {
             }
         }
     }
+    Ok((file, sample_rate, channels))
+}
+
+/// The whole file as one channel (the mean of its channels), for analysis.
+pub fn read_mono(path: &Path, cancel: &Cancel) -> Result<(Vec<f32>, u32), ToolError> {
+    let (mut file, sample_rate, channels) = open_wav(path)?;
+    let channels = channels.max(1) as usize;
+    let mut raw = vec![0u8; (1 << 16) * 4 * channels];
+    let mut mono = Vec::new();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let mut filled = 0;
+        while filled < raw.len() {
+            match file.read(&mut raw[filled..])? {
+                0 => break,
+                n => filled += n,
+            }
+        }
+        if filled == 0 {
+            return Ok((mono, sample_rate));
+        }
+        let samples = raw[..filled].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b));
+        let frames: Vec<f32> = samples.collect();
+        mono.extend(frames.chunks_exact(channels).map(|frame| frame.iter().sum::<f32>() / channels as f32));
+    }
+}
+
+/// Builds peaks from a 32-bit float WAV as written by [`crate::derive::audio_wav`].
+pub fn from_wav(path: &Path, cancel: &Cancel) -> Result<Peaks, ToolError> {
+    let (mut file, sample_rate, channels) = open_wav(path)?;
     let mut raw = vec![0u8; (1 << 16) * 4 * channels.max(1) as usize];
     // The data size in the header is not trusted (RF64, streamed files): read to the end.
     Peaks::build(sample_rate, channels, |out| {

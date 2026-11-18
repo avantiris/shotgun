@@ -3398,6 +3398,7 @@ dependencies = [
  "sg-media",
  "sg-project",
  "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -85,6 +85,16 @@ enum UserEvent {
     /// A scripted step and the channel that tells the script thread it is done.
     Script(Step, Sender<()>),
     Import(ImportEvent),
+    Beats {
+        root: PathBuf,
+        id: AssetId,
+        beats: Result<sg_media::analysis::Beats, String>,
+    },
+    Synced {
+        root: PathBuf,
+        take: AssetId,
+        found: Result<sg_media::analysis::Offset, String>,
+    },
     Peaks {
         root: PathBuf,
         id: AssetId,
@@ -251,6 +261,28 @@ impl App {
                 Command::CancelImport(job) => {
                     if let Some(importer) = &self.importer {
                         importer.cancel(job);
+                    }
+                }
+                Command::LoadBeats { root, id } => {
+                    self.pending_jobs += 1;
+                    let cancel = sg_media::Cancel::new();
+                    let spawned = std::thread::Builder::new().name("sg-analysis".into()).spawn(move || {
+                        let beats = sg_project::analysis::beats(&root, id, &cancel).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Beats { root, id, beats });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
+                }
+                Command::SyncTake { root, song, take } => {
+                    self.pending_jobs += 1;
+                    let cancel = sg_media::Cancel::new();
+                    let spawned = std::thread::Builder::new().name("sg-analysis".into()).spawn(move || {
+                        let found = sg_project::analysis::sync(&root, song, take, &cancel).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Synced { root, take, found });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
                     }
                 }
                 Command::LoadPeaks { root, id } => {
@@ -627,6 +659,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Script(step, ack) => self.script_step(step, ack),
             UserEvent::Import(event) => self.import_event(event),
+            UserEvent::Beats { root, id, beats } => {
+                self.shell.beats_loaded(&root, id, beats);
+                self.job_done();
+            }
+            UserEvent::Synced { root, take, found } => {
+                self.shell.synced(&root, take, found);
+                self.job_done();
+            }
             UserEvent::Peaks { root, id, peaks } => {
                 self.shell.peaks_loaded(&root, id, peaks);
                 self.job_done();

@@ -28,7 +28,8 @@ pub struct PlanLayer {
 pub fn plan(project: &Project, sequence: &Sequence, frame: i64) -> Vec<PlanLayer> {
     let mut layers = Vec::new();
     // Tracks are stored top first; draw order is bottom first.
-    for track in sequence.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video) {
+    // Hidden tracks hold camera angles for the programme track to draw on.
+    for track in sequence.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video && !t.mix.hidden) {
         let Some(clip) = track.clips.at(frame) else { continue };
         let props = track.props_of(clip.id).cloned();
         let at = frame - clip.start;

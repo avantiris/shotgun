@@ -266,7 +266,9 @@ pub fn place_at(
         }
         // Video stacks upwards from the bottom video track, sound downwards
         // from the top audio track: both start next to the other kind.
-        let mut rows: Vec<usize> = (0..sequence.tracks.len()).filter(|i| usable(*i)).collect();
+        // Camera-angle tracks are only used when pointed at.
+        let mut rows: Vec<usize> =
+            (0..sequence.tracks.len()).filter(|i| usable(*i) && !sequence.tracks[*i].mix.hidden).collect();
         if kind == TrackKind::Video {
             rows.reverse();
         }
@@ -312,8 +314,21 @@ impl Session {
     ) -> Result<Option<i64>, OpError> {
         let project = self.project().clone();
         let Some(sequence) = project.sequences.first() else { return Ok(None) };
-        let rate = sequence.rate;
         let placement = place_at(sequence, asset, frame, row, only);
+        self.apply_placement(asset, placement, None)
+    }
+
+    /// Carries out a placement: makes the tracks it asks for and inserts
+    /// the clips, as one operation.
+    fn apply_placement(
+        &mut self,
+        asset: &Asset,
+        placement: Placement,
+        group: Option<u64>,
+    ) -> Result<Option<i64>, OpError> {
+        let project = self.project().clone();
+        let Some(sequence) = project.sequences.first() else { return Ok(None) };
+        let rate = sequence.rate;
         let mut ops = Vec::new();
         let mut len = sequence.tracks.len();
         let mut track_of = |session: &mut Session, slot: Slot, kind: TrackKind, ops: &mut Vec<Op>| match slot {
@@ -350,7 +365,169 @@ impl Session {
         if ops.is_empty() {
             return Ok(None);
         }
-        self.apply(Op::Batch(ops), None)?;
+        self.apply(Op::Batch(ops), group)?;
         Ok(Some(placement.start))
+    }
+}
+
+/// Rows of the camera-angle tracks (hidden video tracks), top to bottom.
+/// Angle `n` of the switching keys is the n-th of them.
+pub fn angle_rows(sequence: &sg_core::Sequence) -> Vec<usize> {
+    (0..sequence.tracks.len())
+        .filter(|row| sequence.tracks[*row].kind == TrackKind::Video && sequence.tracks[*row].mix.hidden)
+        .collect()
+}
+
+/// Row of the programme track: the visible video track nearest above the
+/// angle tracks (the lowest visible video track if there are none).
+pub fn program_row(sequence: &sg_core::Sequence) -> Option<usize> {
+    let limit = angle_rows(sequence).first().copied().unwrap_or(sequence.tracks.len());
+    (0..limit).rev().find(|row| sequence.tracks[*row].kind == TrackKind::Video && !sequence.tracks[*row].mix.hidden)
+}
+
+/// The clip of the song on the timeline: the first clip of the song's asset
+/// on an audio track.
+pub fn song_clip(sequence: &sg_core::Sequence) -> Option<Clip> {
+    let song = sequence.song?;
+    sequence
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .find_map(|t| t.clips.iter().find(|c| c.asset == song.asset))
+}
+
+/// Why a synchronised take could not be laid on the timeline.
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {
+    #[error("no song is set")]
+    NoSong,
+    #[error("the song is not on the timeline: put it on an audio track first")]
+    SongNotPlaced,
+    #[error("the take has no picture")]
+    NoPicture,
+    #[error("the take lies outside the song")]
+    Outside,
+    #[error("{0}")]
+    Op(#[from] OpError),
+}
+
+impl Session {
+    /// Makes `asset` the song of the sequence and puts its sound on an audio
+    /// track at the start if it is not on the timeline yet. One undo step.
+    pub fn set_song(&mut self, asset: &Asset) -> Result<(), OpError> {
+        let project = self.project().clone();
+        let Some(sequence) = project.sequences.first() else { return Ok(()) };
+        let group = Some(self.new_group());
+        let song = sg_core::Song { asset: asset.id, tempo: 0 };
+        self.apply(Op::SetSong { id: sequence.id, song: Some(song) }, group)?;
+        let placed =
+            sequence.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.asset == asset.id));
+        if !placed {
+            let placement = place_at(sequence, asset, 0, None, Some(TrackKind::Audio));
+            self.apply_placement(asset, placement, group)?;
+        }
+        Ok(())
+    }
+
+    /// Lays a take whose sound was found `lag` samples into the song: on a
+    /// new hidden camera track, in time with the song's clip, and on the
+    /// programme track too where that is still empty. Returns the frame the
+    /// take starts at. One undo step.
+    pub fn place_synced(&mut self, asset: &Asset, lag: i64) -> Result<i64, SyncError> {
+        let project = self.project().clone();
+        let sequence = project.sequences.first().ok_or(SyncError::NoSong)?;
+        sequence.song.ok_or(SyncError::NoSong)?;
+        let song = song_clip(sequence).ok_or(SyncError::SongNotPlaced)?;
+        if asset.video.is_none() {
+            return Err(SyncError::NoPicture);
+        }
+        let rate = sequence.rate;
+        // Timeline sample of the take's first sample, then the nearest frame.
+        let at = song.start + lag - song.src_in;
+        let per_frame = rate.den() as i128 * SAMPLE_RATE as i128;
+        let first = ((at as i128 * rate.num() as i128 * 2 + per_frame).div_euclid(per_frame * 2)) as i64;
+        let total = asset.frames_at(rate, 1).max(1);
+        // A take that starts before the timeline does loses its beginning.
+        let (start, src_in) = (first.max(0), (-first).max(0));
+        let len = total - src_in;
+        if len <= 0 {
+            return Err(SyncError::Outside);
+        }
+        let mut ops = Vec::new();
+        let angles = angle_rows(sequence);
+        let mut program = program_row(sequence).map(|row| sequence.tracks[row].clone());
+        // Rows shift by one if a programme track has to be made on top.
+        let mut shift = 0;
+        let program_id = match &program {
+            Some(track) => track.id,
+            None => {
+                let id = self.ids.track();
+                let header = sg_core::TrackHeader { id, kind: TrackKind::Video, name: "Program".to_owned() };
+                ops.push(Op::AddTrack { seq: sequence.id, index: 0, track: header });
+                shift = 1;
+                id
+            }
+        };
+        // Below the angles there are; below every video track if this is the first.
+        let below = angles
+            .last()
+            .copied()
+            .or_else(|| (0..sequence.tracks.len()).rev().find(|r| sequence.tracks[*r].kind == TrackKind::Video));
+        let index = below.map_or(0, |row| row + 1) + shift;
+        let camera = self.ids.track();
+        let header =
+            sg_core::TrackHeader { id: camera, kind: TrackKind::Video, name: format!("Cam {}", angles.len() + 1) };
+        ops.push(Op::AddTrack { seq: sequence.id, index, track: header });
+        let hidden = sg_core::TrackSettings { hidden: true, ..Default::default() };
+        ops.push(Op::SetTrackMix { seq: sequence.id, track: camera, mix: hidden });
+        let clip = Clip { id: self.ids.clip(), asset: asset.id, start, len, src_in };
+        ops.push(Op::InsertClip { seq: sequence.id, track: camera, clip });
+        let free = program.take().is_none_or(|track| track.clips.range(start, start + len).next().is_none());
+        if free {
+            let clip = Clip { id: self.ids.clip(), ..clip };
+            ops.push(Op::InsertClip { seq: sequence.id, track: program_id, clip });
+        }
+        self.apply(Op::Batch(ops), None)?;
+        Ok(start)
+    }
+
+    /// Cuts the programme to camera angle `angle` (0 is the first) from
+    /// `frame` to the end of that angle's take. `Ok(false)` if there is no
+    /// such angle or it has no picture at this time. Switches made with
+    /// the same `group` undo together.
+    pub fn switch_angle(&mut self, angle: usize, frame: i64, group: Option<u64>) -> Result<bool, OpError> {
+        let project = self.project().clone();
+        let Some(sequence) = project.sequences.first() else { return Ok(false) };
+        let Some(source) = angle_rows(sequence).get(angle).and_then(|row| sequence.tracks[*row].clips.at(frame)) else {
+            return Ok(false);
+        };
+        let clip = Clip {
+            id: self.ids.clip(),
+            asset: source.asset,
+            start: frame,
+            len: source.end() - frame,
+            src_in: source.src_in + (frame - source.start),
+        };
+        let mut ops = Vec::new();
+        match program_row(sequence).map(|row| &sequence.tracks[row]) {
+            Some(program) => {
+                // Already showing this angle from here on: nothing to cut.
+                let showing = program.clips.at(frame).is_some_and(|c| {
+                    c.asset == clip.asset && c.src_in - c.start == clip.src_in - clip.start && c.end() >= clip.end()
+                });
+                if showing {
+                    return Ok(true);
+                }
+                ops.extend(Op::overwrite(sequence, program.id, clip, self.ids.clip()));
+            }
+            None => {
+                let id = self.ids.track();
+                let header = sg_core::TrackHeader { id, kind: TrackKind::Video, name: "Program".to_owned() };
+                ops.push(Op::AddTrack { seq: sequence.id, index: 0, track: header });
+                ops.push(Op::InsertClip { seq: sequence.id, track: id, clip });
+            }
+        }
+        self.apply(Op::Batch(ops), group)?;
+        Ok(true)
     }
 }

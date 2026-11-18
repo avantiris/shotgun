@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2};
 use sg_core::time::SAMPLE_RATE;
 use sg_core::{Asset, AssetId, Clip, ClipId, Marker, Op, Project, Rate, Sequence, Track, TrackId, TrackKind, Visible};
+use sg_media::analysis::Beats;
 use sg_media::peaks::Peaks;
 
 use crate::keymap::Action;
@@ -135,6 +136,14 @@ pub struct Timeline {
     rect: Rect,
     /// Where an asset being dragged over the timeline would land.
     drop_ghost: Option<Placement>,
+    /// The beats of the song, once analysed (`None`: asked for, not there yet).
+    song_beats: Option<(AssetId, Option<Arc<Beats>>)>,
+    /// The grid made from them: beat positions in samples of the song, for
+    /// the tempo choice in `grid_for`.
+    grid: Arc<Vec<i64>>,
+    grid_for: Option<(AssetId, i8)>,
+    /// The song whose beats should be loaded; taken by the shell.
+    pub beat_request: Option<AssetId>,
     /// Waveform data per asset, loaded off this thread on first sight.
     waves: HashMap<AssetId, Wave>,
     /// Assets whose peaks should be loaded; drained by the shell.
@@ -168,6 +177,10 @@ impl Default for Timeline {
             menu_row: None,
             menu_clip: None,
             waves: HashMap::new(),
+            song_beats: None,
+            grid: Arc::default(),
+            grid_for: None,
+            beat_request: None,
             wave_requests: Vec::new(),
             quads: 0,
         }
@@ -349,6 +362,9 @@ impl Timeline {
         };
         consider(0.0);
         consider(playhead as f64);
+        if let Some(beat) = self.nearest_beat(sequence, frame) {
+            consider(beat);
+        }
         for marker in sequence.markers.iter() {
             consider(marker.frame as f64);
         }
@@ -379,6 +395,7 @@ impl Timeline {
         let project = session.project().clone();
         let Some(sequence) = project.sequences.first().cloned() else { return };
         self.validate(&sequence);
+        self.follow_song(&sequence);
         let rect = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
         let lanes = Rect::from_min_max(pos2(rect.left() + HEADER_W, rect.top()), rect.max);
@@ -488,6 +505,9 @@ impl Timeline {
         error: &mut Option<String>,
     ) {
         let mut add = None;
+        // The switches in the header column are small: little padding, no wrapping.
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
         let corner = Rect::from_min_size(rect.min, egui::vec2(HEADER_W, RULER_H)).shrink2(egui::vec2(4.0, 2.0));
         let builder = egui::UiBuilder::new().max_rect(corner).layout(egui::Layout::left_to_right(egui::Align::Center));
         ui.scope_builder(builder, |ui| {
@@ -502,6 +522,58 @@ impl Timeline {
                 }
             }
         });
+        // Quick switches at the right of each track name: shown or hidden for
+        // video, mute and solo for audio.
+        let mut settings = None;
+        if self.row_h >= 18.0 {
+            for (row, track) in sequence.tracks.iter().enumerate() {
+                let y = rect.top() + RULER_H + row as f32 * self.row_h + self.row_h / 2.0;
+                if y + 9.0 > rect.bottom() {
+                    break;
+                }
+                let mut mix = track.mix;
+                let small =
+                    |ui: &mut egui::Ui, right: f32, width: f32, label: &str, on: bool, colour: Color32, tip: &str| {
+                        let area =
+                            Rect::from_min_size(pos2(rect.left() + HEADER_W - right, y - 9.0), egui::vec2(width, 18.0));
+                        let text = egui::RichText::new(label).size(10.0).color(if on { theme::BG } else { theme::DIM });
+                        let button = egui::Button::new(text).small().fill(if on { colour } else { theme::RAISED });
+                        ui.put(area, button).on_hover_text(tip).clicked()
+                    };
+                match track.kind {
+                    TrackKind::Video => {
+                        let label = if mix.hidden { "hidden" } else { "shown" };
+                        if small(
+                            ui,
+                            50.0,
+                            46.0,
+                            label,
+                            mix.hidden,
+                            theme::DIM,
+                            "A hidden track is not part of the picture: camera angles to cut from (keys 1 to 9)",
+                        ) {
+                            mix.hidden = !mix.hidden;
+                        }
+                    }
+                    TrackKind::Audio => {
+                        if small(ui, 50.0, 21.0, "M", mix.mute, theme::ERROR, "Mute") {
+                            mix.mute = !mix.mute;
+                        }
+                        if small(ui, 25.0, 21.0, "S", mix.solo, theme::ACCENT, "Solo") {
+                            mix.solo = !mix.solo;
+                        }
+                    }
+                }
+                if mix != track.mix {
+                    settings = Some(Op::SetTrackMix { seq: sequence.id, track: track.id, mix });
+                }
+            }
+        }
+        if let Some(op) = settings
+            && let Err(e) = session.apply(op, None)
+        {
+            *error = Some(e.to_string());
+        }
         if response.secondary_clicked() {
             let pos = response.interact_pointer_pos();
             let row = pos.map_or(-1.0, |p| row_at(p.y));
@@ -940,7 +1012,9 @@ impl Timeline {
             }
             let shade = if row % 2 == 0 { theme::PANEL } else { theme::RAISED.gamma_multiply(0.8) };
             instances.push(Instance::new(quad(rect.left(), top, rect.right(), top + row_h - 1.0), shade, 0.0, 0.0));
-            let colour = kind_colour(track.kind);
+            // A hidden camera angle is drawn faintly: it is material, not picture.
+            let colour =
+                if track.mix.hidden { kind_colour(track.kind).gamma_multiply(0.45) } else { kind_colour(track.kind) };
             instances.push(Instance::new(
                 quad(rect.left(), top, rect.left() + 3.0, top + row_h - 1.0),
                 colour,
@@ -1062,10 +1136,29 @@ impl Timeline {
                 Align2::LEFT_CENTER,
                 &track.name,
                 FontId::proportional((row_h - 4.0).clamp(8.0, 13.0)),
-                theme::TEXT,
+                if track.mix.hidden || (track.kind == TrackKind::Audio && track.mix.mute) {
+                    theme::DIM
+                } else {
+                    theme::TEXT
+                },
             );
         }
         self.paint_ruler(&painter, rect, lanes, sequence, x_of);
+        // The beat grid of the song: every beat a faint line, every fourth a clearer one.
+        let rows_bottom = (rect.top() + RULER_H + sequence.tracks.len() as f32 * row_h).min(rect.bottom());
+        for (frame, index) in self.grid_lines(sequence, visible.0, visible.1, 6.0) {
+            let x = x_of(frame);
+            if x < lanes.left() {
+                continue;
+            }
+            let bar = index % 4 == 0;
+            let colour = Color32::from_white_alpha(if bar { 46 } else { 18 });
+            painter.line_segment([pos2(x, rect.top() + RULER_H), pos2(x, rows_bottom)], Stroke::new(1.0, colour));
+            painter.line_segment(
+                [pos2(x, rect.top() + RULER_H - if bar { 7.0 } else { 4.0 }), pos2(x, rect.top() + RULER_H)],
+                Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8)),
+            );
+        }
         for &(row, start, len, fits) in &self.ghosts {
             let Some(track) = sequence.tracks.get(row) else { continue };
             let per = Lane::of(track, sequence).per_frame();
@@ -1436,6 +1529,118 @@ impl Timeline {
     }
 }
 
+/// Beat positions for a tempo choice: as found (0), with the beats between
+/// them (1, 2: doubled, quadrupled) or only every second or fourth (-1, -2).
+fn grid_of(beats: &[i64], tempo: i8) -> Vec<i64> {
+    match tempo {
+        t if t > 0 => {
+            let parts = 1i64 << t.min(2);
+            let mut out = Vec::with_capacity(beats.len() * parts as usize);
+            for pair in beats.windows(2) {
+                out.extend((0..parts).map(|k| pair[0] + (pair[1] - pair[0]) * k / parts));
+            }
+            out.extend(beats.last());
+            out
+        }
+        t if t < 0 => beats.iter().step_by(1 << (-t).min(2)).copied().collect(),
+        _ => beats.to_vec(),
+    }
+}
+
+impl Timeline {
+    /// Keeps the grid in step with the sequence's song and tempo choice.
+    fn follow_song(&mut self, sequence: &Sequence) {
+        let Some(song) = sequence.song else {
+            self.song_beats = None;
+            self.grid_for = None;
+            self.grid = Arc::default();
+            return;
+        };
+        if self.song_beats.as_ref().is_none_or(|(id, _)| *id != song.asset) {
+            self.song_beats = Some((song.asset, None));
+            self.beat_request = Some(song.asset);
+        }
+        if self.grid_for != Some((song.asset, song.tempo))
+            && let Some((_, Some(beats))) = &self.song_beats
+        {
+            self.grid = Arc::new(grid_of(&beats.beats, song.tempo));
+            self.grid_for = Some((song.asset, song.tempo));
+        }
+    }
+
+    /// The analysed beats of an asset arrived (`None`: it has no usable rhythm).
+    pub fn set_beats(&mut self, id: AssetId, beats: Option<Beats>) {
+        if let Some((song, slot)) = &mut self.song_beats
+            && *song == id
+        {
+            *slot = beats.map(Arc::new);
+            self.grid_for = None;
+        }
+    }
+
+    /// Tempo of the song as the grid shows it, in beats per minute.
+    pub fn bpm(&self, sequence: &Sequence) -> Option<f32> {
+        let song = sequence.song?;
+        let (_, beats) = self.song_beats.as_ref().filter(|(id, _)| *id == song.asset)?;
+        Some(beats.as_ref()?.bpm * 2f32.powi(song.tempo as i32))
+    }
+
+    /// The clips of the song on audio tracks that touch `f0..f1` (frames).
+    fn song_clips(&self, sequence: &Sequence, f0: f64, f1: f64) -> Vec<(Clip, f64)> {
+        let Some(song) = sequence.song else { return Vec::new() };
+        let mut found = Vec::new();
+        for track in sequence.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+            let per = Lane::of(track, sequence).per_frame();
+            let range = track.clips.range((f0 * per).floor() as i64, (f1 * per).ceil() as i64);
+            // A view crowded with thousands of clips is not searched for the song.
+            found.extend(range.take(64).filter(|c| c.asset == song.asset).map(|c| (c, per)));
+        }
+        found
+    }
+
+    /// Grid lines between frames `f0` and `f1`, at least `min_points` apart
+    /// on screen: (frame, running beat number).
+    fn grid_lines(&self, sequence: &Sequence, f0: f64, f1: f64, min_points: f32) -> Vec<(f64, usize)> {
+        if self.grid.len() < 2 {
+            return Vec::new();
+        }
+        let mut lines = Vec::new();
+        for (clip, per) in self.song_clips(sequence, f0, f1) {
+            // Thin the grid out by powers of two until the lines have room.
+            let gap = (self.grid[1] - self.grid[0]) as f64 / per / self.frames_per_point;
+            let mut stride = 1usize;
+            while gap * (stride as f64) < min_points as f64 && stride < 1 << 12 {
+                stride *= 2;
+            }
+            // Song samples visible through this clip.
+            let from = clip.src_in + ((f0 * per) as i64 - clip.start).max(0);
+            let to = clip.src_in + ((f1 * per) as i64 - clip.start).min(clip.len);
+            let first = self.grid.partition_point(|b| *b < from).next_multiple_of(stride);
+            for index in (first..self.grid.len()).step_by(stride) {
+                let beat = self.grid[index];
+                if beat >= to {
+                    break;
+                }
+                lines.push(((clip.start + beat - clip.src_in) as f64 / per, index / stride));
+            }
+        }
+        lines
+    }
+
+    /// The grid line nearest to `frame`, for snapping.
+    fn nearest_beat(&self, sequence: &Sequence, frame: f64) -> Option<f64> {
+        let (clip, per) = self.song_clips(sequence, frame - 1.0, frame + 1.0).into_iter().next()?;
+        let at = clip.src_in + (frame * per) as i64 - clip.start;
+        let after = self.grid.partition_point(|b| *b < at);
+        let near = [after.checked_sub(1), Some(after)]
+            .into_iter()
+            .flatten()
+            .filter_map(|i| self.grid.get(i))
+            .min_by_key(|b| (**b - at).abs())?;
+        Some((clip.start + near - clip.src_in) as f64 / per)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sg_core::{AssetId, AssetKind, AudioInfo, Source, VideoInfo};
@@ -1794,6 +1999,95 @@ mod tests {
                 (TrackKind::Audio, "A1".to_owned(), vec![0, 600, 1500]),
             ]
         );
+    }
+
+    /// The song (sound only, 60 s) on A1 from frame 0, and nothing else.
+    fn with_song() -> (tempfile::TempDir, Session, Asset) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = sg_project::create(dir.path(), "T").unwrap().path;
+        let mut session = Session::new(sg_project::open(&root, || {}).unwrap());
+        let mut song = take(50);
+        song.video = None;
+        song.audio.as_mut().unwrap().samples = 48_000 * 60;
+        session.apply(Op::AddAsset { asset: Box::new(song.clone()) }, None).unwrap();
+        session.set_song(&song).unwrap();
+        (dir, session, song)
+    }
+
+    #[test]
+    fn a_synced_take_lands_in_time_on_a_camera_track_and_fills_the_programme() {
+        use crate::session::{angle_rows, program_row};
+        let (_dir, mut session, song) = with_song();
+        assert_eq!(session.project().sequences[0].song.map(|s| s.asset), Some(song.id));
+        assert_eq!(tracks(&session)[1], (TrackKind::Audio, "A1".to_owned(), vec![0]));
+        let before = session.project().clone();
+        // Found 12.5 s into the song: frame 750 at 60 fps.
+        let first = take(1);
+        session.apply(Op::AddAsset { asset: Box::new(first.clone()) }, None).unwrap();
+        assert_eq!(session.place_synced(&first, 48_000 * 25 / 2).unwrap(), 750);
+        // A second one that began 2 s before the song: its first 120 frames are cut off.
+        let second = take(2);
+        session.apply(Op::AddAsset { asset: Box::new(second.clone()) }, None).unwrap();
+        assert_eq!(session.place_synced(&second, -48_000 * 2).unwrap(), 0);
+        assert_eq!(
+            tracks(&session),
+            vec![
+                (TrackKind::Video, "V1".to_owned(), vec![0, 750]),
+                (TrackKind::Video, "Cam 1".to_owned(), vec![750]),
+                (TrackKind::Video, "Cam 2".to_owned(), vec![0]),
+                (TrackKind::Audio, "A1".to_owned(), vec![0]),
+            ]
+        );
+        let project = session.project().clone();
+        let seq = &project.sequences[0];
+        assert_eq!((program_row(seq), angle_rows(seq)), (Some(0), vec![1, 2]));
+        let cam2 = seq.tracks[2].clips.at(0).unwrap();
+        assert_eq!((cam2.src_in, cam2.len), (120, 480));
+        // The programme got the second take only where the first left room.
+        let programme: Vec<(i64, i64)> = seq.tracks[0].clips.iter().map(|c| (c.start, c.len)).collect();
+        assert_eq!(programme, vec![(0, 480), (750, 600)]);
+        // Each placement is one undo step (plus the two imports).
+        for _ in 0..4 {
+            assert!(session.undo().unwrap());
+        }
+        assert_eq!(*session.project(), before);
+    }
+
+    #[test]
+    fn switching_angles_cuts_the_programme_from_the_playhead() {
+        let (_dir, mut session, _song) = with_song();
+        for (id, lag) in [(1, 0i64), (2, 48_000)] {
+            let asset = take(id);
+            session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
+            session.place_synced(&asset, lag).unwrap();
+        }
+        // Programme: take 1 on 0..600. Cam 2 holds take 2 on 60..660.
+        let programme = |session: &Session| -> Vec<(u128, i64, i64, i64)> {
+            session.project().sequences[0].tracks[0]
+                .clips
+                .iter()
+                .map(|c| (c.asset.0, c.start, c.len, c.src_in))
+                .collect()
+        };
+        assert_eq!(programme(&session), vec![(1, 0, 600, 0)]);
+        let group = Some(session.new_group());
+        assert!(session.switch_angle(1, 200, group).unwrap());
+        assert_eq!(programme(&session), vec![(1, 0, 200, 0), (2, 200, 460, 140)]);
+        assert!(session.switch_angle(0, 300, group).unwrap());
+        // (Take 1 ends at 600; behind it the programme keeps what it had: take 2.)
+        assert_eq!(
+            programme(&session),
+            vec![(1, 0, 200, 0), (2, 200, 100, 140), (1, 300, 300, 300), (2, 600, 60, 540)]
+        );
+        // Asking for what is already shown changes nothing; no such angle says so.
+        let unchanged = session.project().clone();
+        assert!(session.switch_angle(0, 400, group).unwrap());
+        assert_eq!(*session.project(), unchanged);
+        assert!(!session.switch_angle(5, 400, group).unwrap());
+        assert!(!session.switch_angle(1, 2000, group).unwrap());
+        // One pass of switching is one undo step.
+        assert!(session.undo().unwrap());
+        assert_eq!(programme(&session), vec![(1, 0, 600, 0)]);
     }
     /// The whole gesture through egui's own input handling: press on an
     /// asset tile, move over the timeline, let go.

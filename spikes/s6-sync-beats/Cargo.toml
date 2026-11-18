@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 rustfft = "6"
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 debug = false

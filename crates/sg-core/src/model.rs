@@ -32,6 +32,8 @@ pub struct Sequence {
     pub height: u32,
     /// Top of the timeline first.
     pub tracks: Vec<Arc<Track>>,
+    /// The song this sequence is cut to, if any.
+    pub song: Option<Song>,
     /// Master fader in decibels.
     pub master_db: f32,
     /// Sorted by frame, at most one per frame.
@@ -114,6 +116,7 @@ impl From<SequenceHeader> for Sequence {
             height: h.height,
             tracks: Vec::new(),
             master_db: 0.0,
+            song: None,
             markers: Arc::default(),
         }
     }
@@ -166,6 +169,9 @@ pub struct TrackSettings {
     pub solo: bool,
     /// Low cut in hertz; 0 is off.
     pub low_cut_hz: f32,
+    /// Video tracks: not shown in the picture (a camera angle kept as a
+    /// source for the programme track).
+    pub hidden: bool,
     /// Noise reduction, 0 (off) to 1 (only the treated sound).
     pub denoise: f32,
 }
@@ -186,4 +192,15 @@ impl TrackSettings {
             ..self
         }
     }
+}
+
+/// The song a sequence is cut to: the asset whose beats make the grid and
+/// to which takes are synchronised.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Song {
+    pub asset: AssetId,
+    /// Detected tempo taken at half (-1), as found (0) or double (1): the
+    /// detector cannot know whether a song counts in fast or slow beats.
+    #[serde(default)]
+    pub tempo: i8,
 }

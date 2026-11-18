@@ -33,6 +33,10 @@ pub enum AssetRequest {
     /// Put the selected asset on the timeline (double-click), or only its
     /// picture or sound.
     Insert(Option<sg_core::TrackKind>),
+    /// Make the selected asset the song of the sequence.
+    UseAsSong,
+    /// Find the selected take (`false`) or every take (`true`) in the song.
+    Sync(bool),
     /// Remove the selected asset from the project.
     Remove,
 }
@@ -218,6 +222,31 @@ impl AssetsPanel {
                         }
                         if both && ui.button("Place only the picture").clicked() {
                             out.push(AssetRequest::Insert(Some(sg_core::TrackKind::Video)));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if asset.audio.is_some()
+                            && ui
+                                .button("Use as the song")
+                                .on_hover_text("Its beats become the grid; takes are synchronised to it.")
+                                .clicked()
+                        {
+                            out.push(AssetRequest::UseAsSong);
+                            ui.close();
+                        }
+                        if both
+                            && ui
+                                .button("Sync to the song")
+                                .on_hover_text(
+                                    "Finds this take in the song by its camera sound and lays it on a camera track.",
+                                )
+                                .clicked()
+                        {
+                            out.push(AssetRequest::Sync(false));
+                            ui.close();
+                        }
+                        if ui.button("Sync all takes to the song").clicked() {
+                            out.push(AssetRequest::Sync(true));
                             ui.close();
                         }
                         ui.separator();
