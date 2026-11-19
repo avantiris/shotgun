@@ -37,6 +37,8 @@ pub enum AssetRequest {
     UseAsSong,
     /// Find the selected take (`false`) or every take (`true`) in the song.
     Sync(bool),
+    /// Put the selected asset into a scenario, or take it out.
+    Scenario(crate::session::ScenarioChoice),
     /// Remove the selected asset from the project.
     Remove,
 }
@@ -223,6 +225,26 @@ impl AssetsPanel {
                         if both && ui.button("Place only the picture").clicked() {
                             out.push(AssetRequest::Insert(Some(sg_core::TrackKind::Video)));
                             ui.close();
+                        }
+                        if asset.video.is_some() {
+                            ui.menu_button("Scenario", |ui| {
+                                use crate::session::ScenarioChoice;
+                                let current = project.scenario_of(asset.id).map(|s| s.id);
+                                for scenario in project.scenarios.values() {
+                                    if ui.selectable_label(current == Some(scenario.id), &scenario.name).clicked() {
+                                        out.push(AssetRequest::Scenario(ScenarioChoice::Existing(scenario.id)));
+                                        ui.close();
+                                    }
+                                }
+                                if ui.button("New scenario").clicked() {
+                                    out.push(AssetRequest::Scenario(ScenarioChoice::New));
+                                    ui.close();
+                                }
+                                if current.is_some() && ui.button("None").clicked() {
+                                    out.push(AssetRequest::Scenario(ScenarioChoice::None));
+                                    ui.close();
+                                }
+                            });
                         }
                         ui.separator();
                         if asset.audio.is_some()

@@ -109,7 +109,7 @@ pub fn restore(root: &Path, commit: &str, description: &str) -> Result<(), Proje
     let source = format!("--source={commit}");
     run(
         root,
-        &["restore", &source, "--staged", "--worktree", "--", "project.toml", "sequences", "assets/index"],
+        &["restore", &source, "--staged", "--worktree", "--", "project.toml", "sequences", "assets/index", "scenarios"],
         false,
     )?;
     commit_if_changed(root, &format!("Restore: {description}")).map(|_| ())

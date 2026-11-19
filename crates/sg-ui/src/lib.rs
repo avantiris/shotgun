@@ -7,6 +7,7 @@
 
 mod assets;
 mod clip_panel;
+mod colour_panel;
 mod editor;
 mod export_panel;
 mod history;
@@ -75,6 +76,25 @@ pub enum Command {
         root: PathBuf,
         song: AssetId,
         take: AssetId,
+    },
+    /// Measure the pictures of assets for the colour match; answered per
+    /// asset with [`Shell::colour_measured`].
+    AnalyseColour {
+        root: PathBuf,
+        scenario: sg_core::ScenarioId,
+        assets: Vec<Arc<Asset>>,
+        /// Undo group the results join (that of the assignment), if any.
+        group: Option<u64>,
+    },
+    /// Write a look chain to `looks/<name>.toml`.
+    SaveLook {
+        root: PathBuf,
+        name: String,
+        modules: Vec<sg_core::Module>,
+    },
+    /// Read the looks saved in the project; answered with [`Shell::looks_loaded`].
+    LoadLooks {
+        root: PathBuf,
     },
     /// Read the waveform peaks of an asset; answered with [`Shell::peaks_loaded`].
     LoadPeaks {
@@ -150,6 +170,12 @@ pub enum DevStep {
     Sync(bool),
     /// Set the tempo choice of the song (-2 to 2).
     Tempo(i8),
+    /// Put the selected asset into a scenario: `new`, `none` or the number of an existing one.
+    Scenario(String),
+    /// Add a look module to the shown scenario: `<kind>:<k0>,<k1>,<k2>,<k3>`.
+    Look(String),
+    /// Make the selected asset the hero of its scenario.
+    Hero,
     /// Set the sequence frame size.
     Size(u32, u32),
     /// Export with a preset: master, vertical, gif or share:<megabytes>.
@@ -247,12 +273,18 @@ impl Shell {
         self.banner(ui);
         let mut asset_requests = Vec::new();
         let mut transport = Vec::new();
+        let mut scenario_choice = None;
+        let mut colour_requests = Vec::new();
         self.playhead = view.frame;
         self.playing = view.playing;
         match &mut self.session {
             Some(session) => {
                 let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests, view, &mut transport);
                 let root = session.root.clone();
+                if let Some((asset, choice)) = self.editor.timeline.scenario_request.take() {
+                    scenario_choice = Some((asset, choice));
+                }
+                colour_requests = std::mem::take(&mut self.editor.colour_requests);
                 if let Some(id) = self.editor.timeline.beat_request.take() {
                     commands.push(Command::LoadBeats { root: root.clone(), id });
                 }
@@ -311,6 +343,11 @@ impl Shell {
                 AssetRequest::CancelJob(job) => commands.push(Command::CancelImport(job)),
                 AssetRequest::Insert(only) => self.insert_selected(only, &mut commands),
                 AssetRequest::UseAsSong => self.use_as_song(),
+                AssetRequest::Scenario(choice) => {
+                    if let Some(asset) = self.editor.assets.selected {
+                        self.assign_scenario(asset, choice, &mut commands);
+                    }
+                }
                 AssetRequest::Sync(all) => self.sync_takes(all, &mut commands),
                 AssetRequest::Remove => {
                     if let Some(id) = self.editor.assets.selected {
@@ -320,6 +357,10 @@ impl Shell {
             }
         }
         commands.extend(transport.into_iter().map(Command::Transport));
+        if let Some((asset, choice)) = scenario_choice {
+            self.assign_scenario(asset, choice, &mut commands);
+        }
+        self.colour_requests(colour_requests, &mut commands);
         let gif_range = self.gif_range();
         match self.export.ui(&ctx, gif_range) {
             Some(ExportAction::Start(request)) => self.start_export(request, &mut commands),
@@ -338,9 +379,6 @@ impl Shell {
                     if let Some(session) = self.session.take() {
                         self.library.pending = Some("Restoring...".to_owned());
                         let root = session.root.clone();
-                        if let Some(id) = self.editor.timeline.beat_request.take() {
-                            commands.push(Command::LoadBeats { root: root.clone(), id });
-                        }
                         commands.push(Command::Restore { root, writer: session.into_writer(), commit, description });
                     }
                 }
@@ -477,7 +515,19 @@ impl Shell {
                     self.history.begin_checkpoint();
                 }
             }
-            Action::Mixer => self.editor.mixer.open = !self.editor.mixer.open,
+            Action::Mixer => {
+                self.editor.mixer.open = !self.editor.mixer.open;
+                self.editor.colour.open = false;
+            }
+            Action::Colour => {
+                self.editor.colour.open = !self.editor.colour.open;
+                self.editor.mixer.open = false;
+            }
+            Action::ToggleLook | Action::ToggleMatch => {
+                if let Some(session) = &mut self.session {
+                    self.editor.colour.toggle(session, action == Action::ToggleMatch, &mut self.error);
+                }
+            }
             Action::Transition => {
                 if let Some(session) = &mut self.session {
                     self.editor.mixer.open = false;
@@ -562,6 +612,35 @@ impl Shell {
                     }
                 }
             }
+            DevStep::Scenario(which) => {
+                let choice = match which.as_str() {
+                    "new" => Some(session::ScenarioChoice::New),
+                    "none" => Some(session::ScenarioChoice::None),
+                    n => self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.project().scenarios.keys().nth(n.parse().ok()?).copied())
+                        .map(session::ScenarioChoice::Existing),
+                };
+                match (choice, self.editor.assets.selected) {
+                    (Some(choice), Some(asset)) => self.assign_scenario(asset, choice, &mut commands),
+                    _ => self.error = Some(format!("scenario: nothing selected or no scenario {which}")),
+                }
+            }
+            DevStep::Look(what) => self.script_look(&what),
+            DevStep::Hero => {
+                // The selected asset becomes what its scenario is matched to.
+                if let (Some(session), Some(asset)) = (&mut self.session, self.editor.assets.selected)
+                    && let Some(scenario) = session.project().scenario_of(asset).cloned()
+                {
+                    let edited = sg_core::Scenario { hero: Some(asset), ..sg_core::Scenario::clone(&scenario) };
+                    if let Err(e) =
+                        session.apply(Op::SetScenario { id: edited.id, scenario: Some(Box::new(edited)) }, None)
+                    {
+                        self.error = Some(e.to_string());
+                    }
+                }
+            }
             DevStep::Song => self.use_as_song(),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
@@ -590,9 +669,6 @@ impl Shell {
                 let entry = self.history.entry(n);
                 if let (Some((commit, description)), Some(session)) = (entry, self.session.take()) {
                     let root = session.root.clone();
-                    if let Some(id) = self.editor.timeline.beat_request.take() {
-                        commands.push(Command::LoadBeats { root: root.clone(), id });
-                    }
                     commands.push(Command::Restore { root, writer: session.into_writer(), commit, description });
                 }
             }
@@ -1020,6 +1096,123 @@ impl Shell {
             Ok(true) => {}
             Ok(false) => session.notice = Some(format!("There is no camera angle {number} at this point.")),
             Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+}
+
+impl Shell {
+    /// Puts an asset into a scenario and has its picture measured.
+    fn assign_scenario(&mut self, asset: AssetId, choice: session::ScenarioChoice, commands: &mut Vec<Command>) {
+        let Some(session) = &mut self.session else { return };
+        match session.assign_scenario(asset, choice) {
+            Ok(Some((scenario, group))) => {
+                self.editor.colour.current = Some(scenario);
+                self.editor.colour.open = true;
+                self.editor.mixer.open = false;
+                if let Some(asset) = session.project().assets.get(&asset).cloned() {
+                    commands.push(Command::AnalyseColour {
+                        root: session.root.clone(),
+                        scenario,
+                        assets: vec![asset],
+                        group: Some(group),
+                    });
+                }
+            }
+            Ok(None) => {}
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn colour_requests(&mut self, requests: Vec<colour_panel::ColourRequest>, commands: &mut Vec<Command>) {
+        use colour_panel::ColourRequest;
+        let Some(session) = &self.session else { return };
+        let root = session.root.clone();
+        for request in requests {
+            commands.push(match request {
+                ColourRequest::Analyse(scenario, ids) => {
+                    let assets = ids.iter().filter_map(|id| session.project().assets.get(id).cloned()).collect();
+                    Command::AnalyseColour { root: root.clone(), scenario, assets, group: None }
+                }
+                ColourRequest::SaveLook(name, modules) => Command::SaveLook { root: root.clone(), name, modules },
+                ColourRequest::LoadLooks => Command::LoadLooks { root: root.clone() },
+            });
+        }
+    }
+
+    /// The picture of an asset was measured: note it in its scenario.
+    pub fn colour_measured(
+        &mut self,
+        root: &std::path::Path,
+        scenario: sg_core::ScenarioId,
+        asset: AssetId,
+        stats: Result<sg_core::ColourStats, String>,
+        group: Option<u64>,
+    ) {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        let label = session.project().assets.get(&asset).map_or(String::new(), |a| a.label.clone());
+        let stats = match stats {
+            Ok(stats) => stats,
+            Err(e) => {
+                self.error = Some(format!("{label} could not be measured: {e}."));
+                return;
+            }
+        };
+        // The scenario as it is now; the asset may have left it meanwhile.
+        let Some(current) = session.project().scenarios.get(&scenario).filter(|s| s.members.contains_key(&asset))
+        else {
+            return;
+        };
+        let mut edited = sg_core::Scenario::clone(current);
+        edited.members.insert(asset, sg_core::Member { stats: Some(stats) });
+        if let Err(e) = session.apply(Op::SetScenario { id: scenario, scenario: Some(Box::new(edited)) }, group) {
+            self.error = Some(e.to_string());
+        }
+    }
+
+    pub fn looks_loaded(&mut self, root: &std::path::Path, looks: Vec<(String, Vec<sg_core::Module>)>) {
+        if self.session.as_ref().is_some_and(|s| s.root == root) {
+            self.editor.colour.presets = Some(looks);
+        }
+    }
+
+    pub fn look_saved(&mut self, root: &std::path::Path, result: Result<String, String>) {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        match result {
+            Ok(file) => session.notice = Some(format!("Look saved as {file}.")),
+            Err(e) => self.error = Some(format!("The look could not be saved: {e}.")),
+        }
+    }
+}
+
+impl Shell {
+    /// Scripted: adds a look module with the given knob values to the
+    /// scenario the colour panel shows.
+    fn script_look(&mut self, what: &str) {
+        let Some(session) = &mut self.session else { return };
+        let (kind, values) = what.split_once(':').unwrap_or((what, ""));
+        let kind = sg_core::ModuleKind::ALL
+            .into_iter()
+            .find(|k| k.name().to_lowercase().replace(' ', "") == kind.to_lowercase());
+        let project = session.project().clone();
+        let scenario = self
+            .editor
+            .colour
+            .current
+            .and_then(|id| project.scenarios.get(&id))
+            .or_else(|| project.scenarios.values().next());
+        let (Some(kind), Some(scenario)) = (kind, scenario) else {
+            self.error = Some(format!("look: no such module or no scenario ({what})"));
+            return;
+        };
+        let mut module = sg_core::Module::new(kind);
+        for (slot, value) in module.knobs.iter_mut().zip(values.split(',').filter_map(|v| v.trim().parse::<f32>().ok()))
+        {
+            *slot = value;
+        }
+        let mut edited = sg_core::Scenario::clone(scenario);
+        edited.look.push(module);
+        if let Err(e) = session.apply(Op::SetScenario { id: edited.id, scenario: Some(Box::new(edited)) }, None) {
+            self.error = Some(e.to_string());
         }
     }
 }

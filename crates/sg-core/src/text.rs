@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipStore};
+use crate::colour::Scenario;
 use crate::ids::ProjectId;
 use crate::model::{Marker, Project, Sequence, Song, Track, TrackHeader, TrackKind, TrackSettings};
 use crate::props::ClipProps;
@@ -22,6 +23,8 @@ pub const PROJECT_FILE: &str = "project.toml";
 const SEQUENCE_MAGIC: &str = "shotgun-sequence";
 /// Asset index files live here, one per asset.
 pub const ASSET_INDEX_DIR: &str = "assets/index/";
+/// One file per scenario: `scenarios/<id>.toml`.
+pub const SCENARIO_DIR: &str = "scenarios/";
 
 /// An asset file must stay inside `assets/`: no absolute path, no `..`.
 fn is_bundle_path(path: &str) -> bool {
@@ -139,6 +142,9 @@ pub fn to_files(p: &Project) -> BTreeMap<String, String> {
         // Plain strings, integers and tables: serialising cannot fail.
         files.insert(Asset::index_path(*id), toml::to_string(&**asset).unwrap_or_default());
     }
+    for (id, scenario) in p.scenarios.iter() {
+        files.insert(format!("{SCENARIO_DIR}{id}.toml"), toml::to_string(&**scenario).unwrap_or_default());
+    }
     files
 }
 
@@ -163,7 +169,19 @@ pub fn from_files(files: &BTreeMap<String, String>) -> Result<Project, TextError
         }
         assets.insert(asset.id, Arc::new(asset));
     }
-    Ok(Project { id: header.id, name: header.name, sequences, assets: Arc::new(assets) })
+    let mut scenarios = BTreeMap::new();
+    for (file, text) in files.range(SCENARIO_DIR.to_owned()..).take_while(|(k, _)| k.starts_with(SCENARIO_DIR)) {
+        let scenario: Scenario = toml::from_str(text)
+            .map_err(|e| TextError::File { file: file.clone(), message: e.message().to_owned() })?;
+        scenarios.insert(scenario.id, Arc::new(scenario.clamped()));
+    }
+    Ok(Project {
+        id: header.id,
+        name: header.name,
+        sequences,
+        assets: Arc::new(assets),
+        scenarios: Arc::new(scenarios),
+    })
 }
 
 fn write_sequence(seq: &Sequence) -> String {
@@ -416,6 +434,26 @@ mod tests {
         // A project without any of it writes no extra lines.
         let plain: String = to_files(&base()).values().cloned().collect();
         assert!(!plain.contains("mix ") && !plain.contains("master "));
+    }
+
+    #[test]
+    fn scenarios_survive_the_files() {
+        use crate::colour::{ColourStats, Member, Module, ModuleKind};
+        let id = crate::ids::ScenarioId(0x51);
+        let mut scenario = Scenario::new(id, "Night stage", 3);
+        scenario.hero = Some(crate::ids::AssetId(9));
+        scenario.strength = 0.75;
+        let stats = ColourStats { log_lum: -2.25, spread: 1.5, wb: [0.125, -0.25], saturation: 0.375 };
+        scenario.members.insert(crate::ids::AssetId(9), Member { stats: Some(stats) });
+        scenario.members.insert(crate::ids::AssetId(10), Member::default());
+        scenario.look = vec![
+            Module::new(ModuleKind::Balance),
+            Module { on: false, mix: 0.5, ..Module::new(ModuleKind::SplitTone) },
+        ];
+        let (p, _) = apply(&base(), &Op::SetScenario { id, scenario: Some(Box::new(scenario)) }).unwrap();
+        let files = to_files(&p);
+        assert!(files.contains_key("scenarios/0000000000000051.toml"), "{:?}", files.keys());
+        assert_eq!(from_files(&files).unwrap(), *p);
     }
 
     #[test]

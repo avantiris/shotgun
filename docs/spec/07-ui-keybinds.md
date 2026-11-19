@@ -112,6 +112,9 @@ Panels and output
 | Ctrl + S | name a checkpoint (saving itself is automatic) |
 | Ctrl + H | history: saved states and checkpoints, restore any of them |
 | Ctrl + W | close project, back to library |
+| K, or the Colour button | colour panel in place of the inspector: scenarios, match strength and hero, look chain |
+| J / Shift + J | A/B: look chain / match of the shown scenario off and on |
+| B | whip-pan on the nearest cut; again removes it (kind and settings in the clip inspector) |
 | M, or the Mixer button | mixer in place of the inspector: per audio track a level meter, fader (double-click: 0 dB), pan, mute, solo, low cut, noise reduction; master fader |
 | ` (key left of 1) | performance overlay (with Ctrl while a text field has focus, e.g. in the library) |
 | F2 | rename the project |

@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use sg_core::{AssetId, Clip, ClipId, ClipProps, Project, Sequence, Track, TrackKind, Transition, TransitionKind};
+use sg_core::{
+    AssetId, Clip, ClipId, ClipProps, Grade, Project, Sequence, Track, TrackKind, Transition, TransitionKind,
+};
 
 use crate::compositor::{LayerDraw, Motion};
 
@@ -23,6 +25,10 @@ pub struct PlanLayer {
     /// Sequence frames since the clip's start: the time its keyframes use.
     pub at: i64,
     pub props: Option<Arc<ClipProps>>,
+    /// Colour treatment of the picture, from the scenario of its asset.
+    pub grade: Option<Grade>,
+    /// Sequence frame this layer was planned for.
+    pub frame: i64,
     /// Movement during this frame, when it lies inside a transition.
     pub motion: Option<Motion>,
 }
@@ -31,7 +37,7 @@ impl PlanLayer {
     /// How the compositor draws this layer with the given picture. The one
     /// place where properties become a drawing, for preview and export alike.
     pub fn draw<'a>(
-        &self,
+        &'a self,
         view: &'a wgpu::TextureView,
         size: (u32, u32),
         rotation: i32,
@@ -51,6 +57,9 @@ impl PlanLayer {
             crop: props.crop,
             natural_size,
             motion: self.motion,
+            grade: self.grade.as_ref(),
+            // Any number that is new each frame and the same in preview and export.
+            seed: (self.frame.rem_euclid(4093)) as f32,
         }
     }
 }
@@ -89,7 +98,7 @@ fn layer(
     // Keyframes are read inside the clip.
     let at = elapsed.clamp(0, (clip.len - 1).max(0));
     if props.as_ref().is_some_and(|p| p.title.is_some()) {
-        return Some(PlanLayer { clip: clip.id, source: Source::Title, at, props, motion });
+        return Some(PlanLayer { clip: clip.id, source: Source::Title, at, props, motion, grade: None, frame });
     }
     let video = project.assets.get(&clip.asset).and_then(|a| a.video.as_ref())?;
     let source_frame = if video.is_still() {
@@ -108,6 +117,8 @@ fn layer(
         at,
         props,
         motion,
+        grade: project.grade_of(clip.asset),
+        frame,
     })
 }
 

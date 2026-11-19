@@ -57,6 +57,14 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             Step::Dev(DevStep::Drop(frame.parse()?, row, only))
         }
         "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
+        "colourpanel" => Step::Dev(DevStep::Act(Action::Colour)),
+        "lookab" => Step::Dev(DevStep::Act(Action::ToggleLook)),
+        "matchab" => Step::Dev(DevStep::Act(Action::ToggleMatch)),
+        // scenario:new, scenario:none or scenario:<n> for the selected asset.
+        "scenario" => Step::Dev(DevStep::Scenario(need()?)),
+        // look:<module>:<k0>,<k1>,<k2>,<k3> adds a module to the shown scenario.
+        "look" => Step::Dev(DevStep::Look(need()?)),
+        "hero" => Step::Dev(DevStep::Hero),
         "transition" => Step::Dev(DevStep::Act(Action::Transition)),
         "song" => Step::Dev(DevStep::Song),
         "sync" => Step::Dev(DevStep::Sync(false)),

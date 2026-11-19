@@ -44,6 +44,11 @@ pub enum Action {
     Angle(u8),
     /// Put a transition on the nearest cut, or remove the one there.
     Transition,
+    /// Show or hide the colour panel.
+    Colour,
+    /// A/B: switch the look chain, or the match, of the shown scenario on and off.
+    ToggleLook,
+    ToggleMatch,
     /// Show or hide the mixer.
     Mixer,
     /// Show saved states and checkpoints.
@@ -125,6 +130,9 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, true, Key::F, Action::KeyframeRemove),
     bind(Scope::Editor, false, false, Key::T, Action::AddTitle),
     bind(Scope::Editor, false, false, Key::M, Action::Mixer),
+    bind(Scope::Editor, false, false, Key::K, Action::Colour),
+    bind(Scope::Editor, false, false, Key::J, Action::ToggleLook),
+    bind(Scope::Editor, false, true, Key::J, Action::ToggleMatch),
     bind(Scope::Editor, false, false, Key::B, Action::Transition),
     bind(Scope::Editor, false, false, Key::Num1, Action::Angle(1)),
     bind(Scope::Editor, false, false, Key::Num2, Action::Angle(2)),

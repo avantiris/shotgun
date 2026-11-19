@@ -239,3 +239,86 @@ fn a_whipped_picture_moves_mirrored_and_blurs_along_its_way() {
     let out = shot(&mut comp, Motion { from: zoomed, to: zoomed, mirror: true });
     assert!(near(pixel(&out, 64, 2, 2), red) && near(pixel(&out, 64, 61, 33), blue));
 }
+
+fn srgb_to_linear(v: u8) -> f32 {
+    let c = v as f32 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn linear_to_srgb(v: f32) -> u8 {
+    let x = v.clamp(0.0, 1.0);
+    let c = if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+    (c * 255.0).round() as u8
+}
+
+#[test]
+fn the_shader_matches_and_grades_as_the_model_says() {
+    use sg_core::{Correction, Grade, Module, ModuleKind};
+    let Some((device, queue)) = device() else { return };
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 64, 36);
+    let source = [180u8, 120, 70, 255];
+    let tex = Compositor::upload(&device, &queue, 2, 2, &solid(2, 2, |_, _| source));
+    let view = tex.create_view(&Default::default());
+    let linear = [srgb_to_linear(source[0]), srgb_to_linear(source[1]), srgb_to_linear(source[2])];
+    let mut shot = |grade: &Grade, seed: f32, at: (u32, u32)| {
+        comp.render(&[LayerDraw { grade: Some(grade), seed, ..LayerDraw::fitted(&view, (64, 36), 0) }]);
+        pixel(&comp.read_output().unwrap(), 64, at.0, at.1)
+    };
+    let expect = |c: [f32; 3]| [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2]), 255];
+    let plain = Grade { correction: Correction::NONE, look: vec![] };
+    assert!(near(shot(&plain, 0.0, (32, 18)), source));
+
+    // The match stage: the same numbers as the model's own arithmetic.
+    for correction in [
+        Correction { gain: [1.4, 1.1, 0.8], contrast: 1.0, pivot: 0.18, saturation: 1.0 },
+        Correction { gain: [1.0; 3], contrast: 1.4, pivot: 0.25, saturation: 0.6 },
+        Correction { gain: [0.7, 0.9, 1.3], contrast: 0.75, pivot: 0.12, saturation: 1.5 },
+    ] {
+        let got = shot(&Grade { correction, look: vec![] }, 0.0, (32, 18));
+        assert!(
+            near(got, expect(correction.apply(linear))),
+            "{correction:?}: {got:?} instead of {:?}",
+            expect(correction.apply(linear))
+        );
+    }
+
+    let with = |module: Module| Grade { correction: Correction::NONE, look: vec![module] };
+    let knobs = |kind: ModuleKind, values: [f32; 4]| Module { knobs: values, ..Module::new(kind) };
+    // Exposure: one stop less halves the light.
+    let got = shot(&with(knobs(ModuleKind::Balance, [0.0, 0.0, -1.0, 0.0])), 0.0, (32, 18));
+    assert!(near(got, expect(linear.map(|v| v / 2.0))), "{got:?}");
+    // Warmer: more red, less blue.
+    let warm = shot(&with(knobs(ModuleKind::Balance, [0.8, 0.0, 0.0, 0.0])), 0.0, (32, 18));
+    assert!(warm[0] > source[0] + 5 && warm[2] + 5 < source[2], "{warm:?}");
+    // No saturation: grey of the same brightness.
+    let grey = shot(&with(knobs(ModuleKind::Colour, [0.0, 0.0, 0.0, 0.0])), 0.0, (32, 18));
+    let lum = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    assert!(near(grey, expect([lum; 3])), "{grey:?}");
+    // Half mixed: half the way; switched to nothing: nothing.
+    let half = shot(&with(Module { mix: 0.5, ..knobs(ModuleKind::Colour, [0.0, 0.0, 0.0, 0.0]) }), 0.0, (32, 18));
+    assert!(near(half, expect([0, 1, 2].map(|k| (linear[k] + lum) / 2.0))), "{half:?}");
+    // More contrast pushes this brighter-than-pivot colour up, less pulls it down.
+    let harder = shot(&with(knobs(ModuleKind::Tone, [0.6, 0.0, 0.0, 0.18])), 0.0, (32, 18));
+    let softer = shot(&with(knobs(ModuleKind::Tone, [-0.6, 0.0, 0.0, 0.18])), 0.0, (32, 18));
+    assert!(harder[1] > source[1] + 4 && softer[1] + 4 < source[1], "{harder:?} {softer:?}");
+    // A vignette darkens the corner and leaves the centre.
+    let vignette = with(knobs(ModuleKind::Vignette, [0.8, 0.6, 0.3, 0.0]));
+    assert!(near(shot(&vignette, 0.0, (32, 18)), source));
+    assert!(shot(&vignette, 0.0, (1, 1))[0] + 40 < source[0]);
+    // Split tone at full amount colours the picture towards the highlight hue (orange).
+    let toned = shot(&with(knobs(ModuleKind::SplitTone, [220.0, 40.0, 1.0, -1.0])), 0.0, (32, 18));
+    assert!(toned[0] > source[0] && toned[2] < source[2], "{toned:?}");
+    // Grain differs from pixel to pixel and from frame to frame, around the picture's own colour.
+    let grain = with(knobs(ModuleKind::Grain, [1.0, 1.0, 0.0, 0.0]));
+    let (a, b, c) = (shot(&grain, 1.0, (10, 10)), shot(&grain, 1.0, (11, 10)), shot(&grain, 2.0, (10, 10)));
+    assert!(a != b && a != c, "{a:?} {b:?} {c:?}");
+    assert!((a[1] as i32 - source[1] as i32).abs() < 60);
+    // The chain runs in order: darken then desaturate towards... is not the
+    // same as contrast before exposure.
+    let first = Grade {
+        correction: Correction::NONE,
+        look: vec![knobs(ModuleKind::Balance, [0.0, 0.0, 1.0, 0.0]), knobs(ModuleKind::Tone, [0.8, 0.0, 0.0, 0.18])],
+    };
+    let second = Grade { correction: Correction::NONE, look: first.look.iter().rev().copied().collect() };
+    assert!(!near(shot(&first, 0.0, (32, 18)), shot(&second, 0.0, (32, 18))));
+}

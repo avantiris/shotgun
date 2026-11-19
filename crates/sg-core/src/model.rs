@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::asset::Asset;
 use crate::clips::ClipStore;
-use crate::ids::{AssetId, ClipId, ProjectId, SequenceId, TrackId};
+use crate::colour::{Grade, Scenario};
+use crate::ids::{AssetId, ClipId, ProjectId, ScenarioId, SequenceId, TrackId};
 use crate::props::ClipProps;
 use crate::time::Rate;
 
@@ -21,6 +22,8 @@ pub struct Project {
     /// Shared as a whole: asset edits are rare, so they copy the map, while
     /// every other edit just bumps this reference.
     pub assets: Arc<BTreeMap<AssetId, Arc<Asset>>>,
+    /// Groups of assets that are matched and given a look together.
+    pub scenarios: Arc<BTreeMap<ScenarioId, Arc<Scenario>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,7 +83,7 @@ pub struct TrackHeader {
 
 impl Project {
     pub fn new(id: ProjectId, name: impl Into<String>) -> Project {
-        Project { id, name: name.into(), sequences: Vec::new(), assets: Arc::default() }
+        Project { id, name: name.into(), sequences: Vec::new(), assets: Arc::default(), scenarios: Arc::default() }
     }
 
     pub fn sequence(&self, id: SequenceId) -> Option<&Arc<Sequence>> {
@@ -203,4 +206,17 @@ pub struct Song {
     /// detector cannot know whether a song counts in fast or slow beats.
     #[serde(default)]
     pub tempo: i8,
+}
+
+impl Project {
+    /// The scenario an asset belongs to, if any.
+    pub fn scenario_of(&self, asset: AssetId) -> Option<&Arc<Scenario>> {
+        self.scenarios.values().find(|s| s.members.contains_key(&asset))
+    }
+
+    /// The colour treatment of pictures of `asset`: `None` if it has none.
+    pub fn grade_of(&self, asset: AssetId) -> Option<Grade> {
+        let grade = self.scenario_of(asset)?.grade(asset);
+        (!grade.is_neutral()).then_some(grade)
+    }
 }

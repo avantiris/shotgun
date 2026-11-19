@@ -288,3 +288,34 @@ by the same function (`PlanLayer::draw`) and shader.
 
 Not measured: a whip between 4K clips at full quality, many transitions in
 a row, the zoom and slide kinds during playback.
+
+## 2026-11-19, M9, commit after f6beb30
+
+Command: scripted runs of the hidden app on `/disk/shotgun-dev/tmp/lib-m9/match`:
+three 4 s clips of the same shot (Big Buck Bunny, 720p), one as it is and
+two changed with ffmpeg (`exposure`, `colortemperature`, `eq` contrast and
+saturation: about -0.5 EV cooler flatter, and +0.35 EV warmer harder), in
+one scenario with the unchanged clip as the hero.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Playback with match and a four-module look (tone, split tone, vignette, grain), 1080p60 sequence, 6 s | 359 frames, 0 late | 0 dropped | pass |
+| Export of the same, 120 frames | 229 fps render | none | |
+| Measuring one asset (12 frames at 160 px) | not timed separately; the three finished within the 0.5 s wait of the script | none | |
+
+Match quality, average colour of the picture area (sRGB, R G B) at the same
+moment of the shot:
+
+| Clip | Unmatched | Matched | Hero |
+|------|-----------|---------|------|
+| darker, cooler, flatter | 55 65 44 | 75 92 49 | 83 94 53 |
+| brighter, warmer, harder | 101 106 40 | 85 88 58 | 83 94 53 |
+
+Both are much closer than before; neither is equal. The second, whose
+bright grass was clipped by the change, comes out a little pale. This is one
+animated shot altered by filters that work on gamma-encoded values, not
+several cameras on one scene: it says the arithmetic works, not how good
+the match is on real takes (that stays `OPEN` in 05).
+
+Not measured: the cost of the look per module on the GPU, 4K, more than one
+graded layer at once.

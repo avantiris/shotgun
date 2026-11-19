@@ -37,6 +37,9 @@ pub struct Editor {
     pub timeline: Timeline,
     pub clip_panel: ClipPanel,
     pub mixer: crate::mixer::Mixer,
+    pub colour: crate::colour_panel::ColourPanel,
+    /// What the colour panel asked for this frame; taken by the shell.
+    pub colour_requests: Vec<crate::colour_panel::ColourRequest>,
     was_playing: bool,
     /// The label being typed for the selected asset.
     asset_label: Option<(AssetId, String)>,
@@ -93,7 +96,9 @@ impl Editor {
         egui::Panel::right("inspector").default_size(300.0).min_size(200.0).show(ui, |ui| {
             // The content can be taller than a small window.
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                if self.mixer.open {
+                if self.colour.open {
+                    self.colour.ui(ui, session, error, &mut self.colour_requests);
+                } else if self.mixer.open {
                     self.mixer.ui(ui, session, sequence, view, error);
                 } else {
                     self.inspector(ui, session, sequence, target.as_ref(), error, &mut request);
@@ -177,6 +182,15 @@ impl Editor {
                 .clicked()
             {
                 self.mixer.open = !self.mixer.open;
+                self.colour.open = false;
+            }
+            if ui
+                .selectable_label(self.colour.open, "Colour")
+                .on_hover_text("Scenarios: match takes to each other, then give them a look (K)")
+                .clicked()
+            {
+                self.colour.open = !self.colour.open;
+                self.mixer.open = false;
             }
             if ui.button("Export").on_hover_text("Ctrl+E").clicked() {
                 *request = Some(EditorRequest::Export);

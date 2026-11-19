@@ -1,6 +1,6 @@
 //! GPU compositing on wgpu.
 
-use sg_core::Shift;
+use sg_core::{Grade, Shift};
 use wgpu::util::DeviceExt;
 
 /// One picture to draw: fitted into the frame, turned and faded.
@@ -36,6 +36,10 @@ pub struct LayerDraw<'a> {
     pub crop: [f32; 4],
     /// Draw at one texture pixel per frame pixel instead of fitting (titles).
     pub natural_size: bool,
+    /// Colour treatment (match and look) of the picture, if it has one.
+    pub grade: Option<&'a Grade>,
+    /// A number that differs from frame to frame, for the grain.
+    pub seed: f32,
     /// Movement during this frame (a transition), if any.
     pub motion: Option<Motion>,
 }
@@ -55,6 +59,8 @@ impl<'a> LayerDraw<'a> {
             crop: [0.0; 4],
             natural_size: false,
             motion: None,
+            grade: None,
+            seed: 0.0,
         }
     }
 }
@@ -74,6 +80,11 @@ struct LayerUniform {
     motion1: [f32; 4],
     /// Quad repeat count (x) and samples along the movement (y).
     extra: [f32; 4],
+    /// Match: rgb gain, contrast; then pivot, saturation, module count, seed.
+    grade0: [f32; 4],
+    grade1: [f32; 4],
+    /// Look modules: (kind, mix, 0, 0) and the four knobs, eight times.
+    modules: [[f32; 4]; 16],
 }
 
 /// Layers per frame the uniform buffer has room for.
@@ -84,7 +95,7 @@ const MAX_LAYERS: usize = 64;
 /// pixel to pixel so that the steps do not line up into ghost edges.
 const MOTION_TAPS: f32 = 48.0;
 /// Uniform offsets must be multiples of this on every backend.
-const UNIFORM_STRIDE: u64 = 256;
+const UNIFORM_STRIDE: u64 = 512;
 
 pub struct Compositor {
     device: wgpu::Device,
@@ -360,6 +371,17 @@ impl Compositor {
             };
             let (hex, hey) = ((1.0 - l - r) / 2.0, (1.0 - t - b) / 2.0);
             let (du, dv) = ((l - r) / 2.0, (t - b) / 2.0);
+            let (mut grade0, mut grade1, mut modules) =
+                ([1.0, 1.0, 1.0, 1.0], [0.18, 1.0, 0.0, layer.seed], [[0.0f32; 4]; 16]);
+            if let Some(grade) = layer.grade {
+                let c = &grade.correction;
+                grade0 = [c.gain[0], c.gain[1], c.gain[2], c.contrast];
+                grade1 = [c.pivot, c.saturation, grade.look.len().min(8) as f32, layer.seed];
+                for (slot, module) in grade.look.iter().take(8).enumerate() {
+                    modules[slot * 2] = [module.kind as u8 as f32, module.mix, 0.0, 0.0];
+                    modules[slot * 2 + 1] = module.knobs;
+                }
+            }
             let uniform = LayerUniform {
                 matrix: [cos * hx / (fw / 2.0), -sin * hy / (fw / 2.0), sin * hx / (fh / 2.0), cos * hy / (fh / 2.0)],
                 offset: [cx / (fw / 2.0), cy / (fh / 2.0), layer.opacity.clamp(0.0, 1.0), 0.0],
@@ -368,6 +390,9 @@ impl Compositor {
                 motion0,
                 motion1,
                 extra,
+                grade0,
+                grade1,
+                modules,
             };
             self.queue.write_buffer(&self.uniforms, i as u64 * UNIFORM_STRIDE, bytemuck::bytes_of(&uniform));
         }

@@ -531,3 +531,56 @@ impl Session {
         Ok(true)
     }
 }
+
+/// Which scenario an asset should belong to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenarioChoice {
+    None,
+    Existing(sg_core::ScenarioId),
+    /// A new scenario made for it.
+    New,
+}
+
+impl Session {
+    /// Moves an asset into a scenario (an asset is in one at most), making
+    /// the scenario if asked. Returns the scenario it is in now and the
+    /// undo group of the change, so that its measurement can join it.
+    pub fn assign_scenario(
+        &mut self,
+        asset: sg_core::AssetId,
+        choice: ScenarioChoice,
+    ) -> Result<Option<(sg_core::ScenarioId, u64)>, OpError> {
+        use sg_core::{Member, Scenario};
+        let project = self.project().clone();
+        let current = project.scenario_of(asset).cloned();
+        let target = match choice {
+            ScenarioChoice::None => None,
+            ScenarioChoice::Existing(id) => project.scenarios.get(&id).map(|s| Scenario::clone(s)),
+            ScenarioChoice::New => {
+                let number = project.scenarios.len() + 1;
+                Some(Scenario::new(self.ids.scenario(), format!("Scenario {number}"), (number - 1) as u8 % 8))
+            }
+        };
+        if current.as_ref().map(|s| s.id) == target.as_ref().map(|s| s.id) {
+            return Ok(None);
+        }
+        let mut ops = Vec::new();
+        if let Some(old) = current {
+            let mut old = Scenario::clone(&old);
+            old.members.remove(&asset);
+            if old.hero == Some(asset) {
+                old.hero = None;
+            }
+            ops.push(Op::SetScenario { id: old.id, scenario: Some(Box::new(old)) });
+        }
+        let placed = target.map(|mut new| {
+            new.members.insert(asset, Member::default());
+            let id = new.id;
+            ops.push(Op::SetScenario { id, scenario: Some(Box::new(new)) });
+            id
+        });
+        let group = self.new_group();
+        self.apply(Op::Batch(ops), Some(group))?;
+        Ok(placed.map(|id| (id, group)))
+    }
+}

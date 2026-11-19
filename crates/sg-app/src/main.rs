@@ -95,6 +95,20 @@ enum UserEvent {
         take: AssetId,
         found: Result<sg_media::analysis::Offset, String>,
     },
+    Colour {
+        root: PathBuf,
+        scenario: sg_core::ScenarioId,
+        measured: Vec<(AssetId, Result<sg_core::ColourStats, String>)>,
+        group: Option<u64>,
+    },
+    LookSaved {
+        root: PathBuf,
+        result: Result<String, String>,
+    },
+    Looks {
+        root: PathBuf,
+        looks: Vec<(String, Vec<sg_core::Module>)>,
+    },
     Peaks {
         root: PathBuf,
         id: AssetId,
@@ -285,6 +299,39 @@ impl App {
                     if spawned.is_err() {
                         self.pending_jobs -= 1;
                     }
+                }
+                Command::AnalyseColour { root, scenario, assets, group } => {
+                    self.pending_jobs += 1;
+                    let cancel = sg_media::Cancel::new();
+                    let spawned = std::thread::Builder::new().name("sg-analysis".into()).spawn(move || {
+                        let measured = assets
+                            .iter()
+                            .map(|asset| {
+                                (
+                                    asset.id,
+                                    sg_project::analysis::colour(&root, asset, &cancel).map_err(|e| e.to_string()),
+                                )
+                            })
+                            .collect();
+                        let _ = proxy.send_event(UserEvent::Colour { root, scenario, measured, group });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
+                }
+                Command::SaveLook { root, name, modules } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let result = sg_project::analysis::save_look(&root, &name, &modules).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::LookSaved { root, result });
+                    });
+                }
+                Command::LoadLooks { root } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let looks = sg_project::analysis::load_looks(&root);
+                        let _ = proxy.send_event(UserEvent::Looks { root, looks });
+                    });
                 }
                 Command::LoadPeaks { root, id } => {
                     self.pending_jobs += 1;
@@ -681,6 +728,20 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Synced { root, take, found } => {
                 self.shell.synced(&root, take, found);
+                self.job_done();
+            }
+            UserEvent::Colour { root, scenario, measured, group } => {
+                for (asset, stats) in measured {
+                    self.shell.colour_measured(&root, scenario, asset, stats, group);
+                }
+                self.job_done();
+            }
+            UserEvent::LookSaved { root, result } => {
+                self.shell.look_saved(&root, result);
+                self.job_done();
+            }
+            UserEvent::Looks { root, looks } => {
+                self.shell.looks_loaded(&root, looks);
                 self.job_done();
             }
             UserEvent::Peaks { root, id, peaks } => {

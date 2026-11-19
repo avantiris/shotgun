@@ -71,7 +71,8 @@ pub fn read_tracked(root: &Path) -> Result<BTreeMap<String, String>, ProjectErro
             Err(e) => return Err(at(&path)(e)),
         }
     }
-    for rel in tracked_files_on_disk(root).into_iter().filter(|f| f.starts_with(text::ASSET_INDEX_DIR)) {
+    let listed = |f: &String| f.starts_with(text::ASSET_INDEX_DIR) || f.starts_with(text::SCENARIO_DIR);
+    for rel in tracked_files_on_disk(root).into_iter().filter(listed) {
         let path = root.join(&rel);
         let content = std::fs::read_to_string(&path).map_err(at(&path))?;
         files.insert(rel, content);
@@ -89,7 +90,7 @@ pub fn read_mark(root: &Path) -> Option<SavedMark> {
 /// A save deletes those that the new state no longer has.
 fn tracked_files_on_disk(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
-    for (dir, extension) in [("sequences", ".sg"), ("assets/index", ".toml")] {
+    for (dir, extension) in [("sequences", ".sg"), ("assets/index", ".toml"), ("scenarios", ".toml")] {
         let Ok(entries) = std::fs::read_dir(root.join(dir)) else { continue };
         found.extend(
             entries

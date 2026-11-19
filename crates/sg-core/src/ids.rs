@@ -58,6 +58,7 @@ hex_id!(ClipId, u64, 16);
 hex_id!(TrackId, u64, 16);
 hex_id!(SequenceId, u64, 16);
 hex_id!(ProjectId, u128, 32);
+hex_id!(ScenarioId, u64, 16);
 hex_id!(
     /// First 16 bytes of the BLAKE3 hash of the asset's content.
     AssetId,
@@ -98,6 +99,10 @@ impl IdGen {
 
     pub fn clip(&mut self) -> ClipId {
         ClipId(self.next_u64())
+    }
+
+    pub fn scenario(&mut self) -> ScenarioId {
+        ScenarioId(self.next_u64())
     }
 
     pub fn track(&mut self) -> TrackId {

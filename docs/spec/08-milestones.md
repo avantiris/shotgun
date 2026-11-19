@@ -113,7 +113,7 @@ stage 2 starts.
 |---|-------|
 | M7 (done) | Auto-sync takes to the song, beat detection + grid + snap, live multicam switching |
 | M8 (done) | Whip-pan transition engine (+ slide/zoom variants) |
-| M9 | Scenarios, match stage, look chain modules, presets, A/B |
+| M9 (done, in part) | Scenarios, match stage, look chain modules, presets, A/B |
 | M10 | Speed ramps, stabilisation, background render cache, 10-bit masters |
 
 Status:
@@ -154,6 +154,24 @@ Status:
   rotation overshoot, chromatic split, moving the transition off the centre
   of the cut, transitions on audio (a cut in the sound stays a cut).
   Not verifiable without a person: how it feels in motion.
+
+- **M9 done in part 2026-11-19.** Built: scenarios (right click on an asset
+  or clip, stripe on the clips, `scenarios/<id>.toml`); the match
+  (measurement of twelve frames per asset, a parametric correction of
+  exposure, white balance, contrast and saturation towards a hero or the
+  middle of all, strength 0 to 100 %); a reorderable look chain of up to
+  eight modules with bypass and mix (Balance, Tone, Colour, Split tone,
+  Vignette, Grain) run in one shader pass with the match; looks copied
+  between scenarios and saved to `looks/`; A/B keys (`J` look, `Shift+J`
+  match); the colour panel (`K`). **Not built**: Glow / halation, Sharpen /
+  soften, Film look / LUT, the hue-shift knob and skin protection of the
+  Colour module (vibrance protects what is already saturated, not skin as
+  such), the per-clip trim, membership per clip (it is per asset), analysis
+  per cut range, the input transform for HDR sources, dithering of the
+  output, the skin-tone part of the measurement. The A/B switches are part
+  of the project (and of the export) rather than a view setting. Not
+  verified: the match on real multi-camera footage (`docs/perf-log.md` has
+  what was tried instead).
 
 ## Stage 3: DAW
 

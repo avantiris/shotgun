@@ -6,6 +6,7 @@
 
 pub mod asset;
 pub mod clips;
+pub mod colour;
 pub mod history;
 pub mod ids;
 pub mod model;
@@ -16,7 +17,9 @@ pub mod time;
 
 pub use asset::{Asset, AssetKind, AudioInfo, Source, VideoInfo};
 pub use clips::{Clip, ClipError, ClipStore, Visible};
+pub use colour::{ColourStats, Correction, Grade, Member, Module, ModuleKind, Scenario};
 pub use history::{Document, History, HistoryError, Record};
+pub use ids::ScenarioId;
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};
 pub use model::{Marker, Project, Sequence, SequenceHeader, Song, Track, TrackHeader, TrackKind, TrackSettings};
 pub use ops::{Op, OpError, apply};

@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::asset::Asset;
 use crate::clips::{Clip, ClipError, ClipStore};
-use crate::ids::{AssetId, ClipId, SequenceId, TrackId};
+use crate::colour::Scenario;
+use crate::ids::{AssetId, ClipId, ScenarioId, SequenceId, TrackId};
 use crate::model::{Marker, Project, Sequence, SequenceHeader, Song, Track, TrackHeader, TrackSettings};
 use crate::props::ClipProps;
 
@@ -77,6 +78,11 @@ pub enum Op {
         seq: SequenceId,
         track: TrackId,
         mix: TrackSettings,
+    },
+    /// Creates, replaces or (with `None`) removes a scenario as a whole.
+    SetScenario {
+        id: ScenarioId,
+        scenario: Option<Box<Scenario>>,
     },
     /// Sets or clears the song a sequence is cut to.
     SetSong {
@@ -166,6 +172,7 @@ impl Op {
             Op::SetClip { .. } => "trim or move clip",
             Op::ShiftFrom { .. } => "ripple",
             Op::SetTrackMix { .. } => "adjust track",
+            Op::SetScenario { .. } => "adjust colour",
             Op::SetSong { .. } => "set song",
             Op::SetMasterGain { .. } => "adjust master",
             Op::SetSequenceSize { .. } => "change frame size",
@@ -336,6 +343,18 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             s.tracks[index] = Arc::new(Track { mix: mix.clamped(), ..Track::clone(old) });
             Ok(inverse)
         }),
+        Op::SetScenario { id, scenario } => {
+            if scenario.as_ref().is_some_and(|s| s.id != *id) {
+                return Err(OpError::DuplicateId(id.to_string()));
+            }
+            let mut scenarios = BTreeMap::clone(&p.scenarios);
+            let before = match scenario {
+                Some(new) => scenarios.insert(*id, Arc::new(Scenario::clone(new).clamped())),
+                None => scenarios.remove(id),
+            };
+            let inverse = Op::SetScenario { id: *id, scenario: before.map(|s| Box::new(Scenario::clone(&s))) };
+            Ok((Project { scenarios: Arc::new(scenarios), ..p.clone() }, inverse))
+        }
         Op::SetSong { id, song } => with_sequence(p, *id, |s| {
             let inverse = Op::SetSong { id: *id, song: s.song };
             s.song = song.map(|song| Song { tempo: song.tempo.clamp(-2, 2), ..song });
@@ -914,5 +933,33 @@ mod song_tests {
         // On free space it is a plain insert.
         let op = Op::overwrite(&p.sequences[0], V1, clip(9, 200, 100), ClipId(99)).unwrap();
         assert_eq!(apply(&p, &op).unwrap().0.sequences[0].track(V1).unwrap().clips.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod scenario_tests {
+    use super::tests::base;
+    use super::*;
+    use crate::colour::{Member, Module, ModuleKind};
+
+    #[test]
+    fn scenarios_are_set_replaced_and_removed_with_exact_inverses() {
+        let p = base();
+        let id = ScenarioId(5);
+        let mut scenario = Scenario::new(id, "Stage", 2);
+        scenario.members.insert(AssetId(7), Member::default());
+        let (p1, undo1) = apply(&p, &Op::SetScenario { id, scenario: Some(Box::new(scenario.clone())) }).unwrap();
+        assert_eq!(p1.scenario_of(AssetId(7)).map(|s| s.name.as_str()), Some("Stage"));
+        scenario.look.push(Module::new(ModuleKind::Tone));
+        let (p2, undo2) = apply(&p1, &Op::SetScenario { id, scenario: Some(Box::new(scenario)) }).unwrap();
+        assert_eq!(p2.scenarios[&id].look.len(), 1);
+        assert_eq!(apply(&p2, &undo2).unwrap().0, p1);
+        let (p3, undo3) = apply(&p2, &Op::SetScenario { id, scenario: None }).unwrap();
+        assert!(p3.scenarios.is_empty());
+        assert_eq!(apply(&p3, &undo3).unwrap().0, p2);
+        assert_eq!(apply(&p1, &undo1).unwrap().0, p);
+        // The id in the op and in the scenario must agree.
+        let wrong = Scenario::new(ScenarioId(6), "x", 0);
+        assert!(apply(&p, &Op::SetScenario { id, scenario: Some(Box::new(wrong)) }).is_err());
     }
 }

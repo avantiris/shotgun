@@ -150,6 +150,8 @@ pub struct Timeline {
     waves: HashMap<AssetId, Wave>,
     /// Assets whose peaks should be loaded; drained by the shell.
     pub wave_requests: Vec<AssetId>,
+    /// An asset to move into a scenario, chosen in a clip's menu; taken by the shell.
+    pub scenario_request: Option<(AssetId, crate::session::ScenarioChoice)>,
     /// The clip the context menu was opened on, with its row.
     menu_clip: Option<(usize, Clip)>,
     /// The track row the context menu was opened on.
@@ -178,6 +180,7 @@ impl Default for Timeline {
             drop_ghost: None,
             menu_row: None,
             menu_clip: None,
+            scenario_request: None,
             waves: HashMap::new(),
             song_beats: None,
             grid: Arc::default(),
@@ -610,6 +613,28 @@ impl Timeline {
                         }
                     }
                 }
+                if track.kind == TrackKind::Video {
+                    ui.menu_button("Scenario", |ui| {
+                        use crate::session::ScenarioChoice;
+                        let project = session.project().clone();
+                        let current = project.scenario_of(clip.asset).map(|s| s.id);
+                        let mut choose = |choice| self.scenario_request = Some((clip.asset, choice));
+                        for scenario in project.scenarios.values() {
+                            if ui.selectable_label(current == Some(scenario.id), &scenario.name).clicked() {
+                                choose(ScenarioChoice::Existing(scenario.id));
+                                ui.close();
+                            }
+                        }
+                        if ui.button("New scenario").clicked() {
+                            choose(ScenarioChoice::New);
+                            ui.close();
+                        }
+                        if current.is_some() && ui.button("None").clicked() {
+                            choose(ScenarioChoice::None);
+                            ui.close();
+                        }
+                    });
+                }
                 if ui.button("Delete clip (Shift+X)").clicked() {
                     delete = all;
                     ui.close();
@@ -1003,6 +1028,7 @@ impl Timeline {
             0.0,
         ));
         let mut labels: Vec<(f32, f32, f32, &str)> = Vec::new();
+        let has_scenarios = !project.scenarios.is_empty();
         // Assets whose waveform is not loaded yet.
         let mut wanted: Vec<AssetId> = Vec::new();
         let left = self.left;
@@ -1076,6 +1102,14 @@ impl Timeline {
                     }
                     if selected {
                         instances.push(Instance::new(quad(x0, y1 - 2.0, x1, y1), theme::ACCENT, 0.0, 0.0));
+                    }
+                    // The scenario of the clip's asset: a stripe in its colour along the top.
+                    if has_scenarios
+                        && track.kind == TrackKind::Video
+                        && let Some(scenario) = project.scenario_of(clip.asset)
+                    {
+                        let stripe = crate::colour_panel::stripe(scenario);
+                        instances.push(Instance::new(quad(x0 + 1.0, y0, x1 - 1.0, y0 + 3.0), stripe, 0.0, 0.0));
                     }
                     // A transition into this clip: a mark across the cut.
                     if track.props_of(clip.id).is_some_and(|p| p.transition.is_some()) {

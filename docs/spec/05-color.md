@@ -77,6 +77,25 @@ bypass and a mix amount. Initial modules:
 - The chain is compiled into as few shader passes as possible; pure colour
   modules fuse into one pass, spatial modules (glow, grain, sharpen) get their own.
 
+### As built (M9)
+
+- A scenario lists **assets**, not clips: every clip of an asset is in the
+  asset's scenario. An asset is in one scenario at most.
+- Measurement (`ColourStats`, kept in the scenario file next to each member):
+  mean and deviation of log luminance, the average cast of the nearly grey
+  parts (found in four rounds, taking the cast out each time), and mean
+  (max - min) / luminance after the cast is removed. Twelve frames per
+  asset at 160 pixels, in linear light.
+- The correction (`Correction::solve`) is gain per channel, a contrast
+  exponent around the target's mean luminance, and a saturation factor;
+  strength scales all of them in the log domain. The shader's arithmetic is
+  the model's (`Correction::apply`); a GPU test compares the two.
+- The look chain is a small program in the layer's uniform (kind, mix, four
+  knobs, eight slots) that the layer shader runs in order after the match,
+  so reordering costs nothing and there is one pass. Vignette is on the
+  picture (not the frame); grain is per frame pixel and new every frame.
+- Match and look act per layer before compositing, in linear light.
+
 ## Whip-pan transition
 
 Placed on a cut between two clips that have handles (spare frames past the cut).
