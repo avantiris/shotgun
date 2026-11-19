@@ -235,6 +235,16 @@ Status:
   real time at proxy quality), carrying 10-bit sources through at full
   depth, ramping the sound with the picture.
 
+
+- **Known problem, not found (2026-11-19).** One automated run out of
+  about sixty that night ended with a GPU error from wgpu (the program
+  stopped; nothing was lost, the journal had every edit). The run opened a
+  project, selected clips, took an off-screen picture and started a master
+  export. The message was not kept, and twenty repeats of the same run
+  were clean. Since then a GPU error is written to the log and the program
+  goes on (`sg_render::report_gpu_errors`); an export during which one is
+  reported fails rather than keeping a file with a wrong frame. If it
+  shows again the log has the cause.
 ## Stage 3: DAW
 
 Recording, MIDI/piano roll, plugin hosting (CLAP/VST3/LV2), mixing/mastering.
