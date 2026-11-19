@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
+pub use fx::Tone;
 pub use graph::{Processor, Transport};
 
 /// Internal rate. Everything on the timeline's audio tracks is in samples
@@ -71,6 +72,8 @@ pub struct TrackMix {
     pub mute: bool,
     /// Low cut in hertz; 0 is off.
     pub low_cut_hz: f32,
+    /// Equaliser and compressor.
+    pub tone: Tone,
     /// Noise reduction: the share of the treated sound, 0 (off) to 1.
     pub denoise: f32,
 }
@@ -143,6 +146,8 @@ pub(crate) struct Shared {
     /// Peak level per track since it was last read (f32 bits), then of the mix.
     meters: [AtomicU32; MAX_METERS],
     master_meter: AtomicU32,
+    /// Lowest gain the limiter applied since it was last read (f32 bits; 1.0 when idle).
+    limited: AtomicU32,
 }
 
 pub(crate) fn monotonic_ns() -> u64 {
@@ -167,6 +172,7 @@ pub struct Engine {
 impl Engine {
     pub fn start(backend: Backend) -> Result<Engine, AudioError> {
         let shared = Arc::new(Shared::default());
+        shared.limited.store(1.0f32.to_bits(), Ordering::Relaxed);
         let (rt, slot) = graph::Rt::new(shared.clone());
         let (control, control_rx) = crossbeam_channel::unbounded();
         let (mut pipewire, mut null, mut manual) = (None, None, None);
@@ -296,7 +302,7 @@ impl Engine {
 impl TrackMix {
     /// A track at unity gain, centred, with no clean-up.
     pub fn plain(clips: Vec<ClipSpan>) -> TrackMix {
-        TrackMix { clips, gain: 1.0, pan: 0.0, mute: false, low_cut_hz: 0.0, denoise: 0.0 }
+        TrackMix { clips, gain: 1.0, pan: 0.0, mute: false, low_cut_hz: 0.0, denoise: 0.0, tone: Tone::default() }
     }
 }
 
@@ -314,6 +320,13 @@ impl Meters {
             *out = f32::from_bits(meter.swap(0, Ordering::Relaxed));
         }
         f32::from_bits(self.shared.master_meter.swap(0, Ordering::Relaxed))
+    }
+
+    /// How far the limiter on the master had to turn the mix down since
+    /// the last call, in decibels (0: not at all).
+    pub fn take_limiting(&self) -> f32 {
+        let gain = f32::from_bits(self.shared.limited.swap(1.0f32.to_bits(), Ordering::Relaxed));
+        if gain > 0.0 && gain < 1.0 { -20.0 * gain.log10() } else { 0.0 }
     }
 }
 

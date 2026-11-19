@@ -569,6 +569,7 @@ impl App {
             playing: player.is_playing(),
             stats: player_lines(player),
             master_meter: player.take_meters(&mut self.meters),
+            limiting_db: player.take_limiting(),
             meters: self.meters.clone(),
             angles,
         }

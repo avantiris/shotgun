@@ -16,6 +16,8 @@ pub struct ViewerState {
     /// Peak level per audio track since the last frame (linear), and of the mix.
     pub meters: Vec<f32>,
     pub master_meter: f32,
+    /// Decibels the master limiter took off since the last frame.
+    pub limiting_db: f32,
     /// The camera angles side by side, while the sequence has camera tracks.
     pub angles: Option<AnglesView>,
     /// Lines for the performance overlay.

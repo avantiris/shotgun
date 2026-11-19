@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::fx::TrackFx;
-use crate::graph::{Fader, Graph, Live, MAX_BLOCK, Processor, Slot, Track};
+use crate::graph::{Fader, Graph, Limiter, Live, MAX_BLOCK, Processor, Slot, Track};
 use crate::{ClipSpan, Mix, SAMPLE_RATE, Shared};
 
 pub enum Control {
@@ -122,6 +122,7 @@ struct Feed {
     /// Settings of the clean-up, read at every fill.
     low_cut_hz: f32,
     denoise: f32,
+    tone: crate::fx::Tone,
     live: Arc<Live>,
 }
 
@@ -188,7 +189,7 @@ impl Disk {
             i += 1;
         }
         let feed = &mut self.feeds[index];
-        feed.fx.process(block, feed.low_cut_hz, feed.denoise);
+        feed.fx.process(block, feed.low_cut_hz, feed.denoise, &feed.tone);
         self.raw = raw;
     }
 
@@ -240,6 +241,7 @@ impl Disk {
                 fx: TrackFx::new(track.denoise > 0.0),
                 low_cut_hz: track.low_cut_hz,
                 denoise: track.denoise,
+                tone: track.tone,
                 live,
             });
         }
@@ -259,7 +261,9 @@ impl Disk {
         self.master = Live::new(self.mix.master_gain, 0.0, false);
         let mut master: Box<dyn Processor> = Box::new(Fader::new(self.master.clone()));
         master.prepare(SAMPLE_RATE, MAX_BLOCK);
-        let graph = Box::new(Graph { tracks, master: vec![master], start: pos, playing });
+        let mut limiter: Box<dyn Processor> = Box::new(Limiter::new(self.shared.clone()));
+        limiter.prepare(SAMPLE_RATE, MAX_BLOCK);
+        let graph = Box::new(Graph { tracks, master: vec![master, limiter], start: pos, playing });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
         self.offered += 1;
@@ -276,7 +280,7 @@ impl Disk {
                     // and nothing can click.
                     for (feed, track) in self.feeds.iter_mut().zip(&self.mix.tracks) {
                         feed.live.set(track.gain, track.pan, track.mute);
-                        (feed.low_cut_hz, feed.denoise) = (track.low_cut_hz, track.denoise);
+                        (feed.low_cut_hz, feed.denoise, feed.tone) = (track.low_cut_hz, track.denoise, track.tone);
                     }
                     self.master.set(self.mix.master_gain, 0.0, false);
                 } else if self.playing {

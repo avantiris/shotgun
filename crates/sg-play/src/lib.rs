@@ -224,6 +224,11 @@ impl Player {
         Some((view, self.shared.monitor_generation.load(Ordering::Relaxed), count, cols, rows))
     }
 
+    /// Decibels the master limiter took off since the last call.
+    pub fn take_limiting(&self) -> f32 {
+        self.meters.take_limiting()
+    }
+
     pub fn stats(&self) -> PlayStats {
         self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
@@ -763,6 +768,14 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
             mute: track.mix.mute || (any_solo && !track.mix.solo),
             low_cut_hz: track.mix.low_cut_hz,
             denoise: track.mix.denoise,
+            tone: sg_audio::Tone {
+                low_db: track.mix.eq_low_db,
+                mid_db: track.mix.eq_mid_db,
+                mid_hz: track.mix.eq_mid_hz,
+                high_db: track.mix.eq_high_db,
+                threshold_db: track.mix.comp_threshold_db,
+                ratio: track.mix.comp_ratio,
+            },
         })
         .collect();
     Mix { tracks, master_gain: db(sequence.master_db) }

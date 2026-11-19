@@ -357,3 +357,26 @@ fn faders_move_without_a_new_graph_and_meters_follow() {
     assert_eq!(engine.position(), 256 * 2);
     assert!((engine.take_meters(&mut meters) - 0.5).abs() < 0.01, "the ramp starts at the old level");
 }
+
+#[test]
+fn the_master_never_leaves_full_scale() {
+    let dir = tempfile::tempdir().unwrap();
+    // A tone at 0.8 on two tracks: 1.6 when summed.
+    let path = wav(dir.path(), "loud.wav", 1, 48_000, |i, _| 0.8 * (i as f32 * 0.05).sin());
+    let span =
+        ClipSpan { start: 0, len: 48_000, src_in: 0, wav: path, gain: 1.0, fade_in: 0, fade_out: 0, speed: (1, 1) };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(Mix { tracks: vec![track(vec![span.clone()]), track(vec![span])], master_gain: 1.0 });
+    engine.play(0);
+    let mut out = vec![0.0f32; 24_000 * 2];
+    for block in out.chunks_mut(512) {
+        engine.settle();
+        engine.pull(block);
+    }
+    let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(peak <= 1.0 && peak > 0.95, "peak {peak}");
+    // 1.6 down to 1.0 is 4.1 dB.
+    let taken = engine.meters().take_limiting();
+    assert!((taken - 4.1).abs() < 0.3, "{taken} dB");
+    assert_eq!(engine.meters().take_limiting(), 0.0);
+}

@@ -107,6 +107,46 @@ impl Processor for Fader {
     }
 }
 
+/// Keeps the mix below full scale: when a peak would go over the ceiling
+/// the level is turned down at once and comes back over a tenth of a
+/// second. Always on the master, so that a loud mix distorts neither in
+/// the room nor in the exported file; what it had to do is reported.
+pub struct Limiter {
+    shared: Arc<Shared>,
+    gain: f32,
+}
+
+/// Full scale itself: a sound that is already mastered up to it passes
+/// untouched; only what would clip is held back.
+const CEILING: f32 = 1.0;
+
+impl Limiter {
+    pub(crate) fn new(shared: Arc<Shared>) -> Limiter {
+        Limiter { shared, gain: 1.0 }
+    }
+}
+
+impl Processor for Limiter {
+    fn prepare(&mut self, _sample_rate: u32, _max_block: usize) {}
+
+    fn process(&mut self, audio: &mut [f32], _transport: Transport) {
+        // Back to unity with a time constant of about 100 ms at 48 kHz.
+        const RELEASE: f32 = 0.0002;
+        let mut lowest = 1.0f32;
+        for frame in audio.as_chunks_mut::<2>().0 {
+            let peak = frame[0].abs().max(frame[1].abs());
+            let needed = if peak > CEILING { CEILING / peak } else { 1.0 };
+            self.gain = if needed < self.gain { needed } else { self.gain + (1.0 - self.gain) * RELEASE };
+            // (Clamped as well: rounding must not put a sample over the line.)
+            frame[0] = (frame[0] * self.gain).clamp(-CEILING, CEILING);
+            frame[1] = (frame[1] * self.gain).clamp(-CEILING, CEILING);
+            lowest = lowest.min(self.gain);
+        }
+        // The strongest reduction since it was last read (a lock-free minimum).
+        self.shared.limited.fetch_min(lowest.to_bits(), Ordering::Relaxed);
+    }
+}
+
 pub struct Track {
     /// Interleaved stereo, filled by the disk thread from the graph's start
     /// position onwards.

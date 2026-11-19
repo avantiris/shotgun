@@ -20,6 +20,7 @@ pub struct Mixer {
     /// Meter readings as shown: they fall back slowly so that peaks can be read.
     levels: Vec<f32>,
     master: f32,
+    limiting: f32,
     /// Undo group of the drag in progress: one drag of a fader is one step.
     group: Option<u64>,
 }
@@ -146,6 +147,33 @@ impl Mixer {
                              Heard about half a second after a change.",
                         );
                         mix.denoise = percent / 100.0;
+                        ui.add_space(4.0);
+                        for (label, value, tip) in [
+                            ("EQ low", &mut mix.eq_low_db, "Shelf below 120 Hz"),
+                            ("EQ mid", &mut mix.eq_mid_db, "Bell one octave wide at the frequency below"),
+                            ("EQ high", &mut mix.eq_high_db, "Shelf above 8 kHz"),
+                        ] {
+                            field(ui, label, egui::DragValue::new(value).range(-18.0..=18.0).speed(0.1).fixed_decimals(1).suffix(" dB"), tip);
+                        }
+                        field(
+                            ui,
+                            "Mid at",
+                            egui::DragValue::new(&mut mix.eq_mid_hz).range(100.0..=10_000.0).speed(10.0).fixed_decimals(0).suffix(" Hz"),
+                            "Centre of the mid band",
+                        );
+                        ui.add_space(4.0);
+                        field(
+                            ui,
+                            "Compress above",
+                            egui::DragValue::new(&mut mix.comp_threshold_db).range(-60.0..=0.0).speed(0.2).fixed_decimals(1).suffix(" dB"),
+                            "Parts louder than this are turned down. 0 is off; -18 dB evens out a voice.",
+                        );
+                        field(
+                            ui,
+                            "Ratio",
+                            egui::DragValue::new(&mut mix.comp_ratio).range(1.0..=20.0).speed(0.05).fixed_decimals(1).suffix(" : 1"),
+                            "4 lets one decibel through for every four above the threshold",
+                        );
                     });
                     ui.separator();
                     if mix != track.mix {
@@ -157,6 +185,12 @@ impl Mixer {
                     ui.label(RichText::new("Master").strong());
                     if let Some(db) = fader(ui, self.master, sequence.master_db) {
                         ops.push(Op::SetMasterGain { id: sequence.id, db });
+                    }
+                    // What the limiter took off, held a little so that it can be read.
+                    self.limiting = if view.playing { view.limiting_db.max(self.limiting * 0.9) } else { 0.0 };
+                    if self.limiting > 0.1 {
+                        ui.label(RichText::new(format!("limit {:.1} dB", self.limiting)).size(11.0).color(theme::ACCENT))
+                            .on_hover_text("The mix was louder than full scale and was turned down by this much. Lower the faders for a cleaner sound.");
                     }
                     if to_db(self.master) > 0.0 {
                         ui.label(RichText::new("clipping").size(11.0).color(theme::ERROR));
@@ -187,6 +221,13 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "solo" => mix.solo = value != 0.0,
         "lowcut" => mix.low_cut_hz = value,
         "denoise" => mix.denoise = value,
+        "eqlow" => mix.eq_low_db = value,
+        "eqmid" => mix.eq_mid_db = value,
+        "eqmidhz" => mix.eq_mid_hz = value,
+        "eqhigh" => mix.eq_high_db = value,
+        "threshold" => mix.comp_threshold_db = value,
+        "ratio" => mix.comp_ratio = value,
+        "hidden" => mix.hidden = value != 0.0,
         _ => return false,
     }
     true

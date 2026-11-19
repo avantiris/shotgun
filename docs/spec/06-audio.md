@@ -121,6 +121,13 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
 - Meters: the realtime thread keeps the peak per track (first 32 audio
   tracks) and of the mix in atomics; the UI reads and resets them each frame.
 - Export renders sound through the same engine, so the mixer is in the file.
-- Not built: EQ, compressor, limiter, sends and buses, volume automation,
+- Added later the same night: a three-band equaliser (shelf at 120 Hz, a
+  bell with a movable centre, shelf at 8 kHz) and a compressor (threshold,
+  ratio; 5 ms up, 120 ms down, both channels together) per track, on the
+  disk thread after the noise reduction; and a limiter on the master in the
+  realtime graph, always on, with its ceiling at full scale: a mix that
+  stays below it passes untouched, one that would clip is turned down and
+  the mixer says by how much (`PROPOSED`: always on, no switch).
+- Not built: sends and buses, volume automation,
   loudness (LUFS) metering, a noise reduction suited to music, the
   `Processor` chain being editable by the user.

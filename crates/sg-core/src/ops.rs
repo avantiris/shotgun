@@ -863,7 +863,9 @@ mod mix_tests {
             solo: false,
             low_cut_hz: 80.0,
             denoise: 0.7,
-            hidden: false,
+            eq_mid_db: -3.0,
+            comp_threshold_db: -18.0,
+            ..TrackSettings::default()
         };
         let (p2, undo) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
         assert_eq!(p2.sequences[0].track(A1).unwrap().mix, mix);

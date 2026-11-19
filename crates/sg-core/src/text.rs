@@ -424,6 +424,10 @@ mod tests {
             low_cut_hz: 90.0,
             denoise: 0.6,
             hidden: true,
+            eq_low_db: 2.5,
+            eq_mid_hz: 2500.0,
+            comp_threshold_db: -12.0,
+            ..TrackSettings::default()
         };
         let (p, _) = apply(&base(), &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
         let (p, _) = apply(&p, &Op::SetMasterGain { id: SEQ, db: -2.0 }).unwrap();

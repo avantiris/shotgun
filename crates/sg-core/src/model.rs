@@ -160,7 +160,7 @@ impl Track {
 }
 
 /// Mixer settings of a track. The default is a track that changes nothing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrackSettings {
     /// Fader in decibels.
@@ -177,6 +177,36 @@ pub struct TrackSettings {
     pub hidden: bool,
     /// Noise reduction, 0 (off) to 1 (only the treated sound).
     pub denoise: f32,
+    /// Equaliser: gain in decibels of the low shelf (120 Hz), the bell at
+    /// `eq_mid_hz` and the high shelf (8 kHz).
+    pub eq_low_db: f32,
+    pub eq_mid_db: f32,
+    pub eq_mid_hz: f32,
+    pub eq_high_db: f32,
+    /// Compressor: the level in decibels below full scale above which it
+    /// turns the sound down (0 is off), and by what ratio.
+    pub comp_threshold_db: f32,
+    pub comp_ratio: f32,
+}
+
+impl Default for TrackSettings {
+    fn default() -> TrackSettings {
+        TrackSettings {
+            gain_db: 0.0,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            low_cut_hz: 0.0,
+            hidden: false,
+            denoise: 0.0,
+            eq_low_db: 0.0,
+            eq_mid_db: 0.0,
+            eq_mid_hz: 1000.0,
+            eq_high_db: 0.0,
+            comp_threshold_db: 0.0,
+            comp_ratio: 3.0,
+        }
+    }
 }
 
 impl TrackSettings {
@@ -192,6 +222,12 @@ impl TrackSettings {
             pan: finite(self.pan, -1.0, 1.0),
             low_cut_hz: finite(self.low_cut_hz, 0.0, 1000.0),
             denoise: finite(self.denoise, 0.0, 1.0),
+            eq_low_db: finite(self.eq_low_db, -18.0, 18.0),
+            eq_mid_db: finite(self.eq_mid_db, -18.0, 18.0),
+            eq_mid_hz: if self.eq_mid_hz.is_finite() { self.eq_mid_hz.clamp(100.0, 10_000.0) } else { 1000.0 },
+            eq_high_db: finite(self.eq_high_db, -18.0, 18.0),
+            comp_threshold_db: finite(self.comp_threshold_db, -60.0, 0.0),
+            comp_ratio: if self.comp_ratio.is_finite() { self.comp_ratio.clamp(1.0, 20.0) } else { 3.0 },
             ..self
         }
     }
