@@ -147,7 +147,11 @@ Status:
   a grid to snap to (tempo can be halved or doubled); takes found in the song
   by their camera sound and laid in time on hidden camera tracks; a monitor
   showing all angles at the playhead; keys 1 to 9 or a click cut the
-  programme track to an angle, also during playback. Design decisions taken
+  programme track to an angle, also during playback. Added later the same
+  night: "Cuts to the beat" (every cut of the programme moves onto the
+  nearest beat within a third of a beat, as a roll edit, so sync is kept)
+  and "Whip every cut", both in the SONG section of the inspector. Design
+  decisions taken
   without the user (night run), all `PROPOSED`: camera angles are ordinary
   video tracks marked hidden, the programme is the visible track above
   them, a cut overwrites the programme from the playhead to the end of the

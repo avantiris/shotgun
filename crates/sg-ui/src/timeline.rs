@@ -1708,6 +1708,133 @@ fn split_ops(seq: sg_core::SequenceId, track: &Track, lane: Lane, clip: &Clip, a
     ]
 }
 
+impl Timeline {
+    /// Moves every cut of the programme track onto the nearest line of the
+    /// beat grid, if one lies within a third of a beat: the clip before the
+    /// cut gets longer or shorter and the one after it starts later or
+    /// earlier in its source by as much, so nothing slips out of sync.
+    /// Returns how many cuts moved. One undo step.
+    pub fn cuts_to_beats(&mut self, session: &mut Session, error: &mut Option<String>) -> usize {
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return 0 };
+        let Some(track) = crate::session::program_row(sequence).map(|row| sequence.tracks[row].clone()) else {
+            return 0;
+        };
+        // Beats that arrived since the last frame was drawn count too.
+        self.follow_song(sequence);
+        if self.grid.len() < 2 {
+            *error = Some("There is no beat grid yet: choose the song first.".to_owned());
+            return 0;
+        }
+        // A third of a beat, in frames.
+        let reach = (self.grid[1] - self.grid[0]) as f64 / SAMPLE_RATE as f64 * sequence.rate.num() as f64
+            / sequence.rate.den() as f64
+            / 3.0;
+        // The clips as they are after the cuts moved so far: each one is the
+        // clip after one cut and the clip before the next.
+        let mut clips: Vec<Clip> = track.clips.iter().collect();
+        let mut ops = Vec::new();
+        for i in 1..clips.len() {
+            let (before, after) = (clips[i - 1], clips[i]);
+            if before.end() != after.start {
+                continue;
+            }
+            let cut = after.start;
+            let Some(beat) = self.nearest_beat(sequence, cut as f64).map(|b| b.round() as i64) else { continue };
+            let by = beat - cut;
+            // Not past the middle of either neighbour, and only with source to show.
+            let room = by.abs() as f64 <= reach && by.abs() * 2 < before.len.min(after.len) && after.src_in + by >= 0;
+            let long_enough = project.assets.get(&before.asset).is_none_or(|a| {
+                a.video
+                    .as_ref()
+                    .is_none_or(|v| v.is_still() || before.src_in + before.len + by <= a.frames_at(sequence.rate, 1))
+            });
+            if by == 0 || !room || !long_enough {
+                continue;
+            }
+            let (longer, later) = (
+                Clip { len: before.len + by, ..before },
+                Clip { start: beat, src_in: after.src_in + by, len: after.len - by, ..after },
+            );
+            let set =
+                |old: Clip, new: Clip| Op::SetClip { seq: sequence.id, track: track.id, start: old.start, clip: new };
+            // Make room first, then fill it.
+            ops.extend(if by > 0 {
+                [set(after, later), set(before, longer)]
+            } else {
+                [set(before, longer), set(after, later)]
+            });
+            (clips[i - 1], clips[i]) = (longer, later);
+            // Keyframes of the clip after the cut stay where they were on the timeline.
+            if let Some(props) = track.props_of(after.id) {
+                let mut moved = ClipProps::clone(props);
+                moved.picture_params().into_iter().for_each(|p| p.shift_keys(-by));
+                if moved != **props {
+                    ops.push(Op::SetClipProps {
+                        seq: sequence.id,
+                        track: track.id,
+                        clip: after.id,
+                        props: Some(Box::new(moved)),
+                    });
+                }
+            }
+        }
+        let moved = ops.iter().filter(|op| matches!(op, Op::SetClip { .. })).count() / 2;
+        if moved > 0 {
+            match session.apply(Op::Batch(ops), None) {
+                Ok(()) => self.selection.clear(),
+                Err(e) => {
+                    *error = Some(e.to_string());
+                    return 0;
+                }
+            }
+        }
+        moved
+    }
+
+    /// Puts a whip-pan on every cut of the programme track that has no
+    /// transition yet, left and right in turn. Returns how many. One undo step.
+    pub fn whip_every_cut(&mut self, session: &mut Session, error: &mut Option<String>) -> usize {
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return 0 };
+        let Some(track) = crate::session::program_row(sequence).map(|row| sequence.tracks[row].clone()) else {
+            return 0;
+        };
+        let clips: Vec<Clip> = track.clips.iter().collect();
+        let mut ops = Vec::new();
+        let mut angle = 0.0f32;
+        for pair in clips.windows(2) {
+            let (before, after) = (pair[0], pair[1]);
+            if before.end() != after.start {
+                continue;
+            }
+            let mut props = track.props_of(after.id).map(|p| ClipProps::clone(p)).unwrap_or_default();
+            match props.transition {
+                // Carry on from the direction of the ones that are there.
+                Some(existing) => angle = (existing.angle + 180.0).rem_euclid(360.0),
+                None => {
+                    props.transition = Some(sg_core::Transition { angle, ..Default::default() });
+                    ops.push(Op::SetClipProps {
+                        seq: sequence.id,
+                        track: track.id,
+                        clip: after.id,
+                        props: Some(Box::new(props)),
+                    });
+                    angle = (angle + 180.0).rem_euclid(360.0);
+                }
+            }
+        }
+        let count = ops.len();
+        if count > 0
+            && let Err(e) = session.apply(Op::Batch(ops), None)
+        {
+            *error = Some(e.to_string());
+            return 0;
+        }
+        count
+    }
+}
+
 /// Beat positions for a tempo choice: as found (0), with the beats between
 /// them (1, 2: doubled, quadrupled) or only every second or fourth (-1, -2).
 fn grid_of(beats: &[i64], tempo: i8) -> Vec<i64> {
@@ -2313,6 +2440,51 @@ mod tests {
         // One undo step.
         assert!(session.undo().unwrap());
         assert_eq!(session.project().sequences[0].tracks[0].clips.at(0).unwrap().len, 600);
+    }
+
+    #[test]
+    fn cuts_move_onto_beats_without_losing_sync_and_get_whips() {
+        let (_dir, mut session, _song) = with_song();
+        for (id, lag) in [(1, 0i64), (2, 0)] {
+            let asset = take(id);
+            session.apply(Op::AddAsset { asset: Box::new(asset.clone()) }, None).unwrap();
+            session.place_synced(&asset, lag).unwrap();
+        }
+        // Cuts by hand, a little off the beats: at frames 97, 208 and 331.
+        for (angle, frame) in [(1, 97), (0, 208), (1, 331)] {
+            session.switch_angle(angle, frame, None).unwrap();
+        }
+        let programme = |session: &Session| -> Vec<(u128, i64, i64, i64)> {
+            session.project().sequences[0].tracks[0]
+                .clips
+                .iter()
+                .map(|c| (c.asset.0, c.start, c.len, c.src_in))
+                .collect()
+        };
+        assert_eq!(programme(&session), vec![(1, 0, 97, 0), (2, 97, 111, 97), (1, 208, 123, 208), (2, 331, 269, 331)]);
+        // A beat every half second: every 30 frames.
+        let mut timeline = Timeline { grid: Arc::new((0..120).map(|n| n * 24_000).collect()), ..Timeline::default() };
+        let mut error = None;
+        assert_eq!(timeline.cuts_to_beats(&mut session, &mut error), 3);
+        assert_eq!(error, None);
+        // 97 -> 90, 208 -> 210, 331 -> 330; every clip still shows the frame of
+        // its take that belongs at that moment (source position = start).
+        assert_eq!(programme(&session), vec![(1, 0, 90, 0), (2, 90, 120, 90), (1, 210, 120, 210), (2, 330, 270, 330)]);
+        assert_eq!(timeline.cuts_to_beats(&mut session, &mut error), 0);
+        // A whip on each of the three cuts, left and right in turn.
+        assert_eq!(timeline.whip_every_cut(&mut session, &mut error), 3);
+        let project = session.project().clone();
+        let track = &project.sequences[0].tracks[0];
+        let angles: Vec<f32> = track
+            .clips
+            .iter()
+            .filter_map(|c| track.props_of(c.id).and_then(|p| p.transition).map(|t| t.angle))
+            .collect();
+        assert_eq!(angles, [0.0, 180.0, 0.0]);
+        assert_eq!(timeline.whip_every_cut(&mut session, &mut error), 0);
+        // Two undo steps bring the hand-made cuts back.
+        assert!(session.undo().unwrap() && session.undo().unwrap());
+        assert_eq!(programme(&session)[1], (2, 97, 111, 97));
     }
     /// The whole gesture through egui's own input handling: press on an
     /// asset tile, move over the timeline, let go.

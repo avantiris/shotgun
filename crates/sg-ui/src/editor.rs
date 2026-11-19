@@ -20,6 +20,8 @@ pub enum EditorRequest {
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
     SetSize(u32, u32),
+    CutsToBeats,
+    WhipAll,
     Help,
     /// Cut to this camera angle (0 is the first) at the playhead.
     Angle(usize),
@@ -257,6 +259,12 @@ impl Editor {
                     .clicked()
                 {
                     *request = Some(EditorRequest::SyncAll);
+                }
+                if ui.button("Cuts to the beat").on_hover_text("Moves every cut of the programme onto the nearest beat, if one is within a third of a beat. Nothing slips out of sync.").clicked() {
+                    *request = Some(EditorRequest::CutsToBeats);
+                }
+                if ui.button("Whip every cut").on_hover_text("A whip-pan on every cut of the programme that has no transition, left and right in turn").clicked() {
+                    *request = Some(EditorRequest::WhipAll);
                 }
                 if ui.button("No song").clicked() {
                     *request = Some(EditorRequest::ClearSong);

@@ -68,6 +68,8 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "hero" => Step::Dev(DevStep::Hero),
         "transition" => Step::Dev(DevStep::Act(Action::Transition)),
         "song" => Step::Dev(DevStep::Song),
+        "cutstobeats" => Step::Dev(DevStep::Programme(true)),
+        "whipall" => Step::Dev(DevStep::Programme(false)),
         "sync" => Step::Dev(DevStep::Sync(false)),
         "syncall" => Step::Dev(DevStep::Sync(true)),
         "tempo" => Step::Dev(DevStep::Tempo(need()?.parse()?)),

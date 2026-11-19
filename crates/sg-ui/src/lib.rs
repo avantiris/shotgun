@@ -169,6 +169,8 @@ pub enum DevStep {
     Drop(i64, Option<usize>, Option<sg_core::TrackKind>),
     /// Set a mixer field of the n-th audio track (`master` for the master fader).
     Mix(String, String, f32),
+    /// Programme track: cuts to the beat (`true`) or a whip on every cut.
+    Programme(bool),
     /// Make the selected asset the song.
     Song,
     /// Synchronise the selected asset (or, with `true`, every video) to the song.
@@ -318,6 +320,8 @@ impl Shell {
                     Some(EditorRequest::Export) => self.act(Action::Export, &mut commands),
                     Some(EditorRequest::Help) => self.act(Action::Help, &mut commands),
                     Some(EditorRequest::Tempo(tempo)) => self.set_tempo(tempo),
+                    Some(EditorRequest::CutsToBeats) => self.programme_action(true),
+                    Some(EditorRequest::WhipAll) => self.programme_action(false),
                     Some(EditorRequest::Angle(angle)) => self.switch_angle(angle + 1),
                     Some(EditorRequest::SyncAll) => self.sync_takes(true, &mut commands),
                     Some(EditorRequest::ClearSong) => {
@@ -667,6 +671,7 @@ impl Shell {
                 }
             }
             DevStep::Song => self.use_as_song(),
+            DevStep::Programme(beats) => self.programme_action(beats),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
             DevStep::Size(width, height) => {
@@ -1273,4 +1278,18 @@ fn help_panel(ctx: &egui::Context) {
             ui.label(RichText::new("Mouse: wheel zooms the timeline, Shift + wheel scrolls it; drag clips to move, their edges to trim; right click for menus; drag assets onto the timeline (Shift: only picture or only sound).").color(theme::DIM));
         });
     });
+}
+
+impl Shell {
+    /// "Cuts to the beat" (`true`) or "Whip every cut" on the programme track.
+    fn programme_action(&mut self, to_beats: bool) {
+        let Some(session) = &mut self.session else { return };
+        let count = if to_beats {
+            self.editor.timeline.cuts_to_beats(session, &mut self.error)
+        } else {
+            self.editor.timeline.whip_every_cut(session, &mut self.error)
+        };
+        let what = if to_beats { "cut(s) moved onto a beat" } else { "whip-pan(s) added" };
+        session.notice = Some(format!("{count} {what}."));
+    }
 }
