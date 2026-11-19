@@ -21,6 +21,8 @@ pub enum Control {
     Mix(Mix),
     Play(i64),
     Pause(i64),
+    /// While paused: let a short piece of sound at this position be heard.
+    Grain(i64),
     /// Reply once everything sent before is in place and buffered.
     Settle(Sender<()>),
     Quit,
@@ -32,6 +34,12 @@ const RING_FRAMES: usize = SAMPLE_RATE as usize / 2;
 const PREFILL_FRAMES: usize = 4096;
 /// How often the rings are topped up while playing.
 const FILL_INTERVAL: Duration = Duration::from_millis(5);
+/// Length of the piece of sound heard at the playhead while scrubbing: a
+/// tenth of a second, enough to recognise a beat or a syllable.
+pub const GRAIN_FRAMES: usize = SAMPLE_RATE as usize / 10;
+/// The device is kept running this long after a grain began, so that the
+/// next grain of the same scrub does not have to wake it again.
+const GRAIN_LINGER: Duration = Duration::from_millis(400);
 
 /// A conformed audio file: 32-bit float WAV, mono or stereo, 48 kHz.
 struct Wav {
@@ -135,6 +143,8 @@ struct Disk {
     master: Arc<Live>,
     files: HashMap<PathBuf, Option<Arc<Wav>>>,
     playing: bool,
+    /// A grain is (or was just) sounding; when to let the device rest.
+    grain_until: Option<Instant>,
     block: Vec<f32>,
     raw: Vec<u8>,
     /// Scratch for one clip's stretch of a block before gain and fades.
@@ -222,7 +232,7 @@ impl Disk {
     }
 
     /// Builds a graph for the current mix starting at `pos` and offers it.
-    fn rebuild(&mut self, pos: i64, playing: bool) {
+    fn rebuild(&mut self, pos: i64, playing: bool, grain: Option<usize>) {
         // Files that failed to open are tried again: their audio may have
         // been conformed since.
         self.files.retain(|_, wav| wav.is_some());
@@ -263,11 +273,21 @@ impl Disk {
         master.prepare(SAMPLE_RATE, MAX_BLOCK);
         let mut limiter: Box<dyn Processor> = Box::new(Limiter::new(self.shared.clone()));
         limiter.prepare(SAMPLE_RATE, MAX_BLOCK);
-        let graph = Box::new(Graph { tracks, master: vec![master, limiter], start: pos, playing });
+        let graph = Box::new(Graph { tracks, master: vec![master, limiter], start: pos, playing, grain });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
         self.offered += 1;
-        self.playing = playing;
+        // A grain is filled once, before it is offered; it is not playback.
+        self.playing = playing && grain.is_none();
+    }
+
+    /// Lets the device rest once the last grain has had its time.
+    fn end_grain(&mut self) {
+        self.grain_until = None;
+        // (The grain's graph stays where it is: it has gone quiet by itself.)
+        if let (false, Some(activate)) = (self.playing, &self.activate) {
+            activate(false);
+        }
     }
 
     fn handle(&mut self, control: Control) -> bool {
@@ -287,17 +307,30 @@ impl Disk {
                     // Continue from what the callback will render next.
                     let pos = self.shared.clock_pos.load(Ordering::Relaxed)
                         + self.shared.quantum.load(Ordering::Relaxed) as i64;
-                    self.rebuild(pos, true);
+                    self.rebuild(pos, true, None);
                 }
             }
             Control::Play(pos) => {
-                self.rebuild(pos, true);
+                self.grain_until = None;
+                self.rebuild(pos, true, None);
                 if let Some(activate) = &self.activate {
                     activate(true);
                 }
             }
+            Control::Grain(pos) => {
+                if !self.playing {
+                    // Half a second is prefilled by the ring's size at most; a grain is shorter.
+                    self.rebuild(pos, true, Some(GRAIN_FRAMES));
+                    self.fill_all(GRAIN_FRAMES);
+                    self.grain_until = Some(Instant::now() + GRAIN_LINGER);
+                    if let Some(activate) = &self.activate {
+                        activate(true);
+                    }
+                }
+            }
             Control::Pause(pos) => {
-                self.rebuild(pos, false);
+                self.grain_until = None;
+                self.rebuild(pos, false, None);
                 if let Some(activate) = &self.activate {
                     // Give the callback one more cycle to go quiet, then stop
                     // driving the device graph at our quantum.
@@ -343,6 +376,7 @@ pub fn run(
         master: Live::new(1.0, 0.0, false),
         files: HashMap::new(),
         playing: false,
+        grain_until: None,
         block: Vec::new(),
         raw: Vec::new(),
         segment: Vec::new(),
@@ -350,7 +384,16 @@ pub fn run(
     };
     loop {
         // Idle costs nothing: without playback the thread sleeps until told otherwise.
-        let message = if disk.playing {
+        let message = if let Some(until) = disk.grain_until.filter(|_| !disk.playing) {
+            match control.recv_deadline(until) {
+                Ok(message) => Some(message),
+                Err(RecvTimeoutError::Timeout) => {
+                    disk.end_grain();
+                    None
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        } else if disk.playing {
             match control.recv_timeout(FILL_INTERVAL) {
                 Ok(message) => Some(message),
                 Err(RecvTimeoutError::Timeout) => None,

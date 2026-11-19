@@ -50,8 +50,9 @@ Status:
   plan, on purpose: frames are decoded to system memory and uploaded
   (software for proxies, VAAPI with read-back for full-quality frames); the
   zero-copy import of S1 is left for M5, where three 4K layers must play in
-  real time. Playback shows proxies. Not built: audio grains while
-  scrubbing, plugin delay compensation (no processor with latency exists
+  real time. Playback shows proxies. Not built: (audio grains while scrubbing
+  were added 2026-11-19, see 06)
+  plugin delay compensation (no processor with latency exists
   yet), the user-adjustable A/V offset. Not verifiable without a person:
   sound through the real device, A/V sync, smoothness on a real monitor.
 

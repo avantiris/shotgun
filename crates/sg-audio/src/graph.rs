@@ -160,7 +160,13 @@ pub struct Graph {
     /// Timeline sample the rings start at.
     pub start: i64,
     pub playing: bool,
+    /// A grain for scrubbing: only this many frames are played, faded at
+    /// both ends, and the clock stays where it is.
+    pub grain: Option<usize>,
 }
+
+/// Frames over which a grain comes up and goes down (5 ms): no click.
+const GRAIN_EDGE: usize = 240;
 
 /// Single-slot hand-over of graphs between the disk thread and the callback.
 pub struct Slot {
@@ -213,13 +219,22 @@ pub struct Rt {
     scratch: Vec<f32>,
     /// A retired graph that could not be parked yet.
     limbo: Option<Box<Graph>>,
+    /// Frames of the current grain already played.
+    grain_done: usize,
 }
 
 impl Rt {
     pub(crate) fn new(shared: Arc<Shared>) -> (Rt, Arc<Slot>) {
         let slot = Arc::new(Slot { incoming: AtomicPtr::default(), retired: AtomicPtr::default() });
-        let rt =
-            Rt { shared, slot: slot.clone(), graph: None, position: 0, scratch: vec![0.0; MAX_BLOCK * 2], limbo: None };
+        let rt = Rt {
+            shared,
+            slot: slot.clone(),
+            graph: None,
+            position: 0,
+            scratch: vec![0.0; MAX_BLOCK * 2],
+            limbo: None,
+            grain_done: 0,
+        };
         (rt, slot)
     }
 
@@ -244,14 +259,16 @@ impl Rt {
         }
         if let Some(graph) = Slot::take(&self.slot.incoming) {
             self.position = graph.start;
-            self.shared.running.store(graph.playing, Ordering::Release);
+            self.grain_done = 0;
+            self.shared.running.store(graph.playing && graph.grain.is_none(), Ordering::Release);
             if let Some(old) = self.graph.replace(graph) {
                 self.retire(old);
             }
             self.shared.adopted.fetch_add(1, Ordering::Release);
         }
         let frames = out.len() / 2;
-        let playing = self.graph.as_ref().is_some_and(|g| g.playing);
+        let grain = self.graph.as_ref().and_then(|g| g.grain);
+        let playing = self.graph.as_ref().is_some_and(|g| g.playing) && grain.is_none_or(|len| self.grain_done < len);
 
         // Publish the clock before rendering: readers extrapolate from it.
         self.shared.seq.fetch_add(1, Ordering::AcqRel);
@@ -300,7 +317,16 @@ impl Rt {
                 let peak = block.iter().fold(0.0f32, |m, s| m.max(s.abs()));
                 self.shared.master_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
             }
-            if dry {
+            if let Some(len) = grain {
+                for (i, frame) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    let at = self.grain_done + i;
+                    let left = len.saturating_sub(at);
+                    let level = (at.min(left) as f32 / GRAIN_EDGE as f32).min(1.0);
+                    frame[0] *= level;
+                    frame[1] *= level;
+                }
+                self.grain_done += frames;
+            } else if dry {
                 self.shared.underruns.fetch_add(1, Ordering::Relaxed);
             }
             self.position += frames as i64;

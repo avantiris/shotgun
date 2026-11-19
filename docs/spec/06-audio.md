@@ -96,7 +96,7 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
   a block boundary and parks the old one for the disk thread to free.
 - Clock: the callback publishes (position, monotonic time, delay) behind a
   sequence lock; `Engine::position()` extrapolates from it.
-- Not built yet: audio grains while scrubbing, plugin delay compensation,
+- Not built yet: plugin delay compensation,
   the user-adjustable A/V offset, sidechain and event ports (the `Processor`
   trait has only audio in/out so far), allocation asserts in debug builds.
 
@@ -131,3 +131,19 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
 - Not built: sends and buses, volume automation,
   loudness (LUFS) metering, a noise reduction suited to music, the
   `Processor` chain being editable by the user.
+
+## Scrub grains (added 2026-11-19)
+
+- A move of the playhead while paused lets a tenth of a second of the mix at
+  the new position be heard, faded over 5 ms at both ends. The engine gets a
+  graph marked as a grain: the realtime thread plays that many frames and
+  goes quiet by itself; the clock stays parked, so nothing "plays".
+- Grains follow each other no faster than they last (105 ms), so none is cut
+  off; the device stream is kept awake for 0.4 s after the last one.
+- Checked on a null sink with the PipeWire backend: three seeks a second
+  apart gave three sounds of 100 ms, three seeks in quick succession one
+  unbroken sound of 0.33 s.
+- `PROPOSED`: every jump while paused sounds (dragging, stepping, clicking
+  in the ruler, Home/End), there is no switch for it, and the grain plays
+  forwards at normal speed whatever the direction of the scrub. Not heard by
+  a person yet.

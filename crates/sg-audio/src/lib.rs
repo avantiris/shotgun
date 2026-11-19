@@ -227,6 +227,16 @@ impl Engine {
         }
     }
 
+    /// While paused: moves the playhead to `pos` and lets a short piece of
+    /// the sound there be heard, for finding a place by ear while scrubbing.
+    pub fn grain(&self, pos: i64) {
+        if self.is_playing() {
+            return;
+        }
+        self.shared.parked_pos.store(pos, Ordering::Relaxed);
+        self.send(disk::Control::Grain(pos));
+    }
+
     pub fn is_playing(&self) -> bool {
         self.shared.running.load(Ordering::Relaxed)
     }

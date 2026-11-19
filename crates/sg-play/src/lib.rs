@@ -33,6 +33,8 @@ const READ_AHEAD: i64 = 6;
 const MONITOR_CELL_H: u32 = 270;
 /// Angles the monitor shows at most (the keys 1 to 9).
 const MONITOR_MAX: usize = 9;
+/// Scrub grains follow each other no faster than they last, so that none is cut off.
+const GRAIN_SPACING: std::time::Duration = std::time::Duration::from_millis(105);
 
 enum Command {
     Project {
@@ -134,6 +136,7 @@ impl Player {
             monitor_rendered: None,
             titles: HashMap::new(),
             seek_started: None,
+            last_grain: None,
             full_started: None,
             play_started: None,
             last_played: None,
@@ -277,6 +280,8 @@ struct State {
     /// Rasterised titles.
     titles: HashMap<TitleKey, (wgpu::TextureView, (u32, u32))>,
     seek_started: Option<Instant>,
+    /// When the last scrub grain was asked for.
+    last_grain: Option<Instant>,
     full_started: Option<Instant>,
     play_started: Option<Instant>,
     last_played: Option<i64>,
@@ -355,6 +360,10 @@ impl State {
         if self.playing {
             self.last_played = None;
             self.audio.play(self.samples_of(self.frame));
+        } else if self.last_grain.is_none_or(|at| at.elapsed() >= GRAIN_SPACING) {
+            // Scrubbing is heard: a short piece of the sound at the playhead.
+            self.last_grain = Some(Instant::now());
+            self.audio.grain(self.samples_of(self.frame));
         } else {
             self.audio.seek(self.samples_of(self.frame));
         }

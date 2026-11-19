@@ -445,3 +445,42 @@ fn volume_keyframes_move_the_level_along_the_clip() {
     assert!((at(18_000) - 0.5 * 10f32.powf(-0.5)).abs() < 1e-3, "{}", at(18_000));
     assert!((at(30_000) - 0.05).abs() < 1e-4, "{}", at(30_000));
 }
+
+#[test]
+fn a_grain_is_heard_at_the_playhead_and_the_clock_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = wav(dir.path(), "one.wav", 1, 48_000, |_, _| 0.5);
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(Mix {
+        master_gain: 1.0,
+        tracks: vec![track(vec![ClipSpan {
+            start: 0,
+            len: 48_000,
+            src_in: 0,
+            wav: file,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            speed: (1, 1),
+            gain_keys: Vec::new(),
+        }])],
+    });
+    engine.grain(10_000);
+    engine.settle();
+    let out = pull(&engine, 6000);
+    // Comes up without a click, holds, goes down, and is over after a tenth of a second.
+    assert_eq!(out[0], 0.0);
+    assert!(out[2 * 100] > 0.1 && out[2 * 100] < 0.4, "{}", out[2 * 100]);
+    assert!(close(out[2 * 2400], 0.5));
+    assert!(out[2 * 4700] > 0.1 && out[2 * 4700] < 0.4, "{}", out[2 * 4700]);
+    assert!(out[2 * 4800..].iter().all(|s| *s == 0.0));
+    assert!(pull(&engine, 512).iter().all(|s| *s == 0.0));
+    // The playhead is where the grain was asked for; nothing is "playing".
+    assert!(!engine.is_playing());
+    assert_eq!(engine.position(), 10_000);
+    // Playback afterwards starts as always.
+    engine.play(0);
+    engine.settle();
+    assert!(close(pull(&engine, 256)[0], 0.5));
+    assert!(engine.is_playing());
+}
