@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use sg_core::{
-    AssetId, Clip, ClipId, ClipProps, Grade, Project, Sequence, Track, TrackKind, Transition, TransitionKind,
+    AssetId, Clip, ClipId, ClipProps, Grade, Project, Sequence, Track, TrackKind, Transfer, Transition, TransitionKind,
 };
 
 use crate::compositor::{LayerDraw, Motion};
@@ -27,6 +27,8 @@ pub struct PlanLayer {
     pub props: Option<Arc<ClipProps>>,
     /// Colour treatment of the picture, from the scenario of its asset.
     pub grade: Option<Grade>,
+    /// How the asset's stored values relate to light.
+    pub transfer: Transfer,
     /// Length of the clip in frames, for its fades.
     pub len: i64,
     /// Sequence frame this layer was planned for.
@@ -61,6 +63,7 @@ impl PlanLayer {
             natural_size,
             motion: self.motion,
             grade: self.grade.as_ref(),
+            transfer: self.transfer,
             // Any number that is new each frame and the same in preview and export.
             seed: (self.frame.rem_euclid(4093)) as f32,
         }
@@ -139,6 +142,7 @@ fn layer(
             grade: None,
             frame,
             len: clip.len,
+            transfer: Transfer::Sdr,
         });
     }
     let video = project.assets.get(&clip.asset).and_then(|a| a.video.as_ref())?;
@@ -169,6 +173,7 @@ fn layer(
         grade,
         frame,
         len: clip.len,
+        transfer: Transfer::of(video.color_transfer.as_deref()),
     })
 }
 

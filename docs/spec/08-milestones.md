@@ -193,11 +193,17 @@ Status:
   (exposure, warmth) in the clip inspector; and the Film look module: a
   `.cube` look-up table (dropped onto the window, kept in `assets/lut/`)
   chosen per scenario and applied where the module sits in the chain.
-  **Not built**: built-in film looks to choose from (only tables you bring),
+  Also the input transform for phone HDR: HLG and PQ sources (BT.2020) are
+  brought to standard range by a fixed tone map (ordinary white at 203 nits
+  stays white, highlights above three quarters of white roll off), in the
+  layer shader and in the measurement alike. Checked by a round trip: a clip
+  converted to HLG with ffmpeg and shown next to its original (average
+  colour 72 81 48 against 80 91 53). HDR frames are still decoded to 8 bits
+  first. **Not built**: built-in film looks to choose from (only tables you bring),
   the hue-shift knob and skin protection of the Colour module (vibrance
   protects what is already saturated, not skin as such), membership per
   clip (it is per asset), analysis
-  per cut range, the input transform for HDR sources, dithering of the
+  per cut range, dithering of the
   output, the skin-tone part of the measurement. The A/B switches are part
   of the project (and of the export) rather than a view setting. Not
   verified: the match on real multi-camera footage (`docs/perf-log.md` has

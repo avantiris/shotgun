@@ -438,3 +438,24 @@ fn a_look_up_table_is_applied_where_its_module_sits() {
     let mixed = shot(&mut comp, &half);
     assert!(mixed[0] < 200 && mixed[0] > 60 && mixed[2] > 60 && mixed[2] < 200, "{mixed:?}");
 }
+
+#[test]
+fn the_shader_decodes_phone_hdr_as_the_model_does() {
+    use sg_core::Transfer;
+    let Some((device, queue)) = device() else { return };
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 16, 16);
+    for transfer in [Transfer::Hlg, Transfer::Pq] {
+        for source in
+            [[191u8, 191, 191, 255], [97, 97, 97, 255], [200, 120, 60, 255], [255, 255, 255, 255], [20, 90, 160, 255]]
+        {
+            let view =
+                Compositor::upload(&device, &queue, 2, 2, &solid(2, 2, |_, _| source)).create_view(&Default::default());
+            comp.render(&[LayerDraw { transfer, ..LayerDraw::fitted(&view, (16, 16), 0) }]);
+            let got = pixel(&comp.read_output().unwrap(), 16, 8, 8);
+            let linear =
+                transfer.decode([source[0] as f32 / 255.0, source[1] as f32 / 255.0, source[2] as f32 / 255.0]);
+            let expected = [linear_to_srgb(linear[0]), linear_to_srgb(linear[1]), linear_to_srgb(linear[2]), 255];
+            assert!(near(got, expected), "{transfer:?} {source:?}: {got:?} instead of {expected:?}");
+        }
+    }
+}

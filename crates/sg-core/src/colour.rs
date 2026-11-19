@@ -636,3 +636,103 @@ mod lut_tests {
         assert_eq!(toml::from_str::<Scenario>(&text).unwrap(), scenario);
     }
 }
+
+/// How a source's stored values relate to light: the input transform of
+/// 05-color.md. Standard video goes through the sRGB curve as before;
+/// phone HDR is brought to the same footing by a fixed tone map.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Transfer {
+    #[default]
+    Sdr = 0,
+    /// Hybrid log-gamma with BT.2020 primaries (iPhone "HDR video", many Android phones).
+    Hlg = 1,
+    /// SMPTE ST 2084 "PQ" with BT.2020 primaries (HDR10).
+    Pq = 2,
+}
+
+impl Transfer {
+    /// From the transfer tag ffprobe reports for a stream.
+    pub fn of(tag: Option<&str>) -> Transfer {
+        match tag {
+            Some("arib-std-b67") => Transfer::Hlg,
+            Some("smpte2084") => Transfer::Pq,
+            _ => Transfer::Sdr,
+        }
+    }
+
+    /// Stored R'G'B' (0 to 1) to linear light with BT.709 primaries, where
+    /// 1 is the white of a standard display. The shader does the same sums
+    /// (`decode` in composite.wgsl).
+    pub fn decode(self, c: [f32; 3]) -> [f32; 3] {
+        if self == Transfer::Sdr {
+            return c.map(|v| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) });
+        }
+        // Light as a display of the HDR kind would show it, in units of
+        // 203 nits: the level HDR video puts ordinary white at.
+        let nits = match self {
+            Transfer::Hlg => {
+                let scene = c.map(|v| {
+                    if v <= 0.5 {
+                        v * v / 3.0
+                    } else {
+                        (((v - 0.559_910_7) / 0.178_832_77).exp() + 0.284_668_92) / 12.0
+                    }
+                });
+                // On a 1000 nit display, brighter scenes are shown with more contrast.
+                let y = 0.2627 * scene[0] + 0.678 * scene[1] + 0.0593 * scene[2];
+                let gain = y.max(1e-6).powf(0.2) * 1000.0;
+                scene.map(|v| v * gain)
+            }
+            _ => c.map(|v| {
+                let p = v.max(0.0).powf(1.0 / 78.843_75);
+                10_000.0 * ((p - 0.835_937_5).max(0.0) / (18.851_562 - 18.6875 * p)).powf(1.0 / 0.159_301_76)
+            }),
+        };
+        let wide = nits.map(|v| v / 203.0);
+        // BT.2020 primaries to BT.709.
+        let narrow = [
+            1.6605 * wide[0] - 0.5876 * wide[1] - 0.0728 * wide[2],
+            -0.1246 * wide[0] + 1.1329 * wide[1] - 0.0083 * wide[2],
+            -0.0182 * wide[0] - 0.1006 * wide[1] + 1.1187 * wide[2],
+        ]
+        .map(|v| v.max(0.0));
+        // Highlights above three quarters of white are rolled off towards
+        // white instead of clipping; colours keep their hue.
+        const KNEE: f32 = 0.75;
+        let peak = narrow[0].max(narrow[1]).max(narrow[2]);
+        if peak <= KNEE {
+            return narrow;
+        }
+        let rolled = KNEE + (1.0 - KNEE) * (1.0 - (-(peak - KNEE) / (1.0 - KNEE)).exp());
+        narrow.map(|v| v * rolled / peak)
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+
+    #[test]
+    fn hdr_white_and_grey_land_where_sdr_has_them() {
+        // HLG puts ordinary white at 75 % of its signal: 203 nits.
+        let white = Transfer::Hlg.decode([0.75; 3]);
+        assert!(white.iter().all(|v| (v - 0.908).abs() < 0.01), "{white:?}");
+        // Below the knee nothing is rolled off: 38 % signal is 18 % grey or so.
+        let grey = Transfer::Hlg.decode([0.38; 3]);
+        assert!(grey.iter().all(|v| *v > 0.1 && *v < 0.2), "{grey:?}");
+        // The brightest HLG signal stays just under white instead of clipping.
+        let peak = Transfer::Hlg.decode([1.0; 3]);
+        assert!(peak.iter().all(|v| *v > 0.99 && *v <= 1.0), "{peak:?}");
+        // PQ: 203 nits is at about 58 % of the signal.
+        let pq_white = Transfer::Pq.decode([0.58; 3]);
+        assert!(pq_white.iter().all(|v| (v - 0.908).abs() < 0.03), "{pq_white:?}");
+        assert_eq!(Transfer::Pq.decode([0.0; 3]), [0.0; 3]);
+        // A pure BT.2020 red is outside BT.709: it comes out as the reddest red there is, not as an error.
+        let red = Transfer::Hlg.decode([0.6, 0.0, 0.0]);
+        assert!(red[0] > 0.3 && red[1] == 0.0 && red[2] == 0.0, "{red:?}");
+        assert_eq!(Transfer::of(Some("arib-std-b67")), Transfer::Hlg);
+        assert_eq!(Transfer::of(Some("smpte2084")), Transfer::Pq);
+        assert_eq!(Transfer::of(Some("bt709")), Transfer::Sdr);
+        assert_eq!(Transfer::of(None), Transfer::Sdr);
+    }
+}

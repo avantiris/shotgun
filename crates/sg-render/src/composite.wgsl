@@ -58,6 +58,44 @@ fn to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3<f32>(0.04045));
 }
 
+// The input transform: stored values to linear light with BT.709
+// primaries, 1 being the white of a standard display. Standard video goes
+// through the sRGB curve; phone HDR (layer.extra.z: 1 HLG, 2 PQ, both with
+// BT.2020 primaries) is brought to the same footing with a fixed tone map.
+// The sums are those of `sg_core::colour::Transfer::decode`.
+fn decode(c: vec3<f32>) -> vec3<f32> {
+    let kind = u32(layer.extra.z);
+    if (kind == 0u) {
+        return to_linear(c);
+    }
+    var nits: vec3<f32>;
+    if (kind == 1u) {
+        let low = c * c / 3.0;
+        let high = (exp((c - vec3<f32>(0.55991073)) / 0.17883277) + vec3<f32>(0.28466892)) / 12.0;
+        let scene = select(high, low, c <= vec3<f32>(0.5));
+        let y = dot(scene, vec3<f32>(0.2627, 0.678, 0.0593));
+        nits = scene * pow(max(y, 1e-6), 0.2) * 1000.0;
+    } else {
+        let p = pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 78.84375));
+        nits = 10000.0 * pow(max(p - vec3<f32>(0.8359375), vec3<f32>(0.0)) / (vec3<f32>(18.8515625) - 18.6875 * p), vec3<f32>(1.0 / 0.1593017578125));
+    }
+    let wide = nits / 203.0;
+    let narrow = max(
+        vec3<f32>(
+            1.6605 * wide.r - 0.5876 * wide.g - 0.0728 * wide.b,
+            -0.1246 * wide.r + 1.1329 * wide.g - 0.0083 * wide.b,
+            -0.0182 * wide.r - 0.1006 * wide.g + 1.1187 * wide.b,
+        ),
+        vec3<f32>(0.0),
+    );
+    let peak = max(narrow.r, max(narrow.g, narrow.b));
+    if (peak <= 0.75) {
+        return narrow;
+    }
+    let rolled = 0.75 + 0.25 * (1.0 - exp(-(peak - 0.75) / 0.25));
+    return narrow * (rolled / peak);
+}
+
 fn to_display(c: vec3<f32>) -> vec3<f32> {
     let x = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     let lo = x * 12.92;
@@ -81,7 +119,7 @@ fn hue_tint(degrees: f32) -> vec3<f32> {
 // The picture near `uv`, in linear light with the match gain: what the
 // modules that look at a pixel's surroundings (sharpen, glow) sample.
 fn nearby(uv: vec2<f32>) -> vec3<f32> {
-    return to_linear(textureSampleLevel(picture, picture_sampler, uv, 0.0).rgb) * layer.grade0.rgb;
+    return decode(textureSampleLevel(picture, picture_sampler, uv, 0.0).rgb) * layer.grade0.rgb;
 }
 
 fn grade(colour: vec3<f32>, q: vec2<f32>, pixel: vec2<f32>, uv: vec2<f32>) -> vec3<f32> {
@@ -209,7 +247,7 @@ fn layer_fs(v: LayerV) -> @location(0) vec4<f32> {
         let uv = layer.uv_centre.xy + vec2<f32>(dot(layer.uv.xy, t), dot(layer.uv.zw, t));
         let texel = textureSampleLevel(picture, picture_sampler, uv, 0.0);
         // Averaged in linear light and premultiplied, as light adds up on a sensor.
-        sum += vec4<f32>(to_linear(texel.rgb) * texel.a, texel.a);
+        sum += vec4<f32>(decode(texel.rgb) * texel.a, texel.a);
     }
     let mean = sum / f32(taps);
     // Colour is worked on unmultiplied, then weighted by coverage again.

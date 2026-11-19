@@ -1,6 +1,6 @@
 //! GPU compositing on wgpu.
 
-use sg_core::{Grade, Lut, Shift};
+use sg_core::{Grade, Lut, Shift, Transfer};
 use wgpu::util::DeviceExt;
 
 /// One picture to draw: fitted into the frame, turned and faded.
@@ -36,6 +36,8 @@ pub struct LayerDraw<'a> {
     pub crop: [f32; 4],
     /// Draw at one texture pixel per frame pixel instead of fitting (titles).
     pub natural_size: bool,
+    /// How the stored values relate to light (standard video, or phone HDR).
+    pub transfer: Transfer,
     /// Colour treatment (match and look) of the picture, if it has one.
     pub grade: Option<&'a Grade>,
     /// A number that differs from frame to frame, for the grain.
@@ -60,6 +62,7 @@ impl<'a> LayerDraw<'a> {
             natural_size: false,
             motion: None,
             grade: None,
+            transfer: Transfer::Sdr,
             seed: 0.0,
         }
     }
@@ -405,9 +408,9 @@ impl Compositor {
                         .ceil()
                         .clamp(1.0, 64.0);
                     let taps = if m.from == m.to { 1.0 } else { MOTION_TAPS };
-                    (state(m.from), state(m.to), [reach, taps, 0.0, 0.0])
+                    (state(m.from), state(m.to), [reach, taps, layer.transfer as u8 as f32, 0.0])
                 }
-                None => ([0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0]),
+                None => ([0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 1.0, layer.transfer as u8 as f32, 0.0]),
             };
             let (hex, hey) = ((1.0 - l - r) / 2.0, (1.0 - t - b) / 2.0);
             let (du, dv) = ((l - r) / 2.0, (t - b) / 2.0);

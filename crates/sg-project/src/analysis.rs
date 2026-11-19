@@ -58,13 +58,8 @@ pub fn colour(root: &Path, asset: &sg_core::Asset, cancel: &Cancel) -> Result<sg
     decoder.set_rate(video.rate.num(), video.rate.den());
     decoder.set_max_dim(160);
     let frames = if video.is_still() { 1 } else { 12 };
-    // The curve the compositor uses to get to linear light.
-    let linear: Vec<f32> = (0..256)
-        .map(|v| {
-            let c = v as f32 / 255.0;
-            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-        })
-        .collect();
+    // The same input transform the compositor applies to this asset.
+    let transfer = sg_core::Transfer::of(video.color_transfer.as_deref());
     let mut pixels: Vec<[f32; 3]> = Vec::new();
     for n in 0..frames {
         if cancel.is_cancelled() {
@@ -79,7 +74,7 @@ pub fn colour(root: &Path, asset: &sg_core::Asset, cancel: &Cancel) -> Result<sg
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .map(|p| [linear[p[0] as usize], linear[p[1] as usize], linear[p[2] as usize]]),
+                .map(|p| transfer.decode([p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0])),
         );
     }
     sg_core::ColourStats::measure(pixels.into_iter()).ok_or_else(|| ToolError::other("its picture is black throughout"))
