@@ -216,6 +216,32 @@ fn the_song_and_sync_are_asked_for_from_the_asset_menu() {
     harness.state_mut().shell.synced(&root, AssetId(2), Ok(unsure));
     harness.run_steps(3);
     assert_eq!(tracks(&harness).len(), 3);
+    // Such a take is placed by hand: picture on a camera track, sound on a
+    // muted track of its own, both selected so that the arrow keys move them.
+    playhead(&mut harness, 90);
+    right_click(&mut harness, "second take");
+    click(&mut harness, "Camera angle at the playhead, synced by hand");
+    let names: Vec<(String, usize)> = tracks(&harness).into_iter().map(|t| (t.1, t.2)).collect();
+    assert_eq!(
+        names,
+        [
+            ("V1".to_owned(), 1),
+            ("Cam 1".to_owned(), 1),
+            ("Cam 2".to_owned(), 1),
+            ("A1".to_owned(), 1),
+            ("Cam 2 sound".to_owned(), 1)
+        ]
+    );
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let sequence = &project.sequences[0];
+    assert!(sequence.tracks[2].mix.hidden && sequence.tracks[4].mix.mute);
+    assert_eq!(sequence.tracks[2].clips.iter().next().map(|c| c.start), Some(90));
+    harness.key_press(Key::ArrowRight);
+    harness.run_steps(3);
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let sequence = &project.sequences[0];
+    assert_eq!(sequence.tracks[2].clips.iter().next().map(|c| c.start), Some(91));
+    assert_eq!(sequence.tracks[4].clips.iter().next().map(|c| c.start), Some(91 * 800));
 }
 
 /// A point on the timeline: `x` points right of the start of the lanes,

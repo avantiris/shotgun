@@ -37,6 +37,8 @@ pub enum AssetRequest {
     UseAsSong,
     /// Find the selected take (`false`) or every take (`true`) in the song.
     Sync(bool),
+    /// Lay the selected take at the playhead as a camera angle to be put in time by hand.
+    AngleByHand,
     /// Put the selected asset into a scenario, or take it out.
     Scenario(crate::session::ScenarioChoice),
     /// Remove the selected asset from the project.
@@ -271,6 +273,19 @@ impl AssetsPanel {
                         }
                         if ui.button("Sync all takes to the song").clicked() {
                             out.push(AssetRequest::Sync(true));
+                            ui.close();
+                        }
+                        if asset.video.is_some()
+                            && ui
+                                .button("Camera angle at the playhead, synced by hand")
+                                .on_hover_text(
+                                    "For a take the automatic sync cannot place: its picture goes on a camera track and its \
+                                     sound on a muted track below. Drag it, or move it with the arrow keys, until its \
+                                     waveform lines up with the song's.",
+                                )
+                                .clicked()
+                        {
+                            out.push(AssetRequest::AngleByHand);
                             ui.close();
                         }
                         ui.separator();

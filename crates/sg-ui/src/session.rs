@@ -507,6 +507,67 @@ impl Session {
         Ok(start)
     }
 
+    /// Lays a take at `frame` as a camera angle to be put in time by hand:
+    /// its picture on a new hidden camera track and, if it has sound, that
+    /// on a new muted audio track, so that its waveform can be lined up
+    /// with the song's (picture and sound move together). Nothing goes on
+    /// the programme track: the angle is cut to once it sits right.
+    /// One undo step.
+    pub fn place_angle_by_hand(&mut self, asset: &Asset, frame: i64) -> Result<(), SyncError> {
+        let project = self.project().clone();
+        let sequence = project.sequences.first().ok_or(SyncError::NoSong)?;
+        if asset.video.is_none() {
+            return Err(SyncError::NoPicture);
+        }
+        let rate = sequence.rate;
+        let start = frame.max(0);
+        let len = asset.frames_at(rate, 1).max(1);
+        let mut ops = Vec::new();
+        let angles = angle_rows(sequence);
+        // A programme track on top, if there is none yet, for the cuts to come.
+        let mut shift = 0;
+        if program_row(sequence).is_none() {
+            let header =
+                sg_core::TrackHeader { id: self.ids.track(), kind: TrackKind::Video, name: "Program".to_owned() };
+            ops.push(Op::AddTrack { seq: sequence.id, index: 0, track: header });
+            shift = 1;
+        }
+        let below = angles
+            .last()
+            .copied()
+            .or_else(|| (0..sequence.tracks.len()).rev().find(|r| sequence.tracks[*r].kind == TrackKind::Video));
+        let index = below.map_or(0, |row| row + 1) + shift;
+        let name = format!("Cam {}", angles.len() + 1);
+        let camera = self.ids.track();
+        ops.push(Op::AddTrack {
+            seq: sequence.id,
+            index,
+            track: sg_core::TrackHeader { id: camera, kind: TrackKind::Video, name: name.clone() },
+        });
+        let hidden = sg_core::TrackSettings { hidden: true, ..Default::default() };
+        ops.push(Op::SetTrackMix { seq: sequence.id, track: camera, mix: hidden });
+        let picture = Clip { id: self.ids.clip(), asset: asset.id, start, len, src_in: 0 };
+        ops.push(Op::InsertClip { seq: sequence.id, track: camera, clip: picture });
+        if asset.audio.is_some() {
+            let sound = self.ids.track();
+            // At the bottom: two tracks were added above at most.
+            let bottom = sequence.tracks.len() + shift + 1;
+            ops.push(Op::AddTrack {
+                seq: sequence.id,
+                index: bottom,
+                track: sg_core::TrackHeader { id: sound, kind: TrackKind::Audio, name: format!("{name} sound") },
+            });
+            let muted = sg_core::TrackSettings { mute: true, ..Default::default() };
+            ops.push(Op::SetTrackMix { seq: sequence.id, track: sound, mix: muted });
+            let samples = |frames: i64| rate.frames_to_samples(frames, SAMPLE_RATE);
+            let clip =
+                Clip { id: self.ids.clip(), asset: asset.id, start: samples(start), len: samples(len), src_in: 0 };
+            ops.push(Op::InsertClip { seq: sequence.id, track: sound, clip });
+        }
+        self.apply(Op::Batch(ops), None)?;
+        Ok(())
+    }
+
     /// Cuts the programme to camera angle `angle` (0 is the first) from
     /// `frame` to the end of that angle's take. `Ok(false)` if there is no
     /// such angle or it has no picture at this time. Switches made with

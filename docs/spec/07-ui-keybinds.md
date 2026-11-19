@@ -51,7 +51,7 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Right click on the timeline | add a video or audio track, remove the empty track under the pointer |
 | Right click on a clip | remove its sound and keep the picture, or the reverse; delete it |
 | Shift while dragging an asset onto a track | place only the part that belongs there (the sound on an audio track, the picture on a video track) |
-| Right click on an asset | place it, or only its sound or picture, at the playhead; use it as the song; sync it (or all takes) to the song; remove it from the project |
+| Right click on an asset | place it, or only its sound or picture, at the playhead; use it as the song; sync it (or all takes) to the song; lay it as a camera angle to sync by hand; remove it from the project |
 | `shown` / `hidden` next to a video track name | take the track out of the picture: a camera angle to cut from |
 | `M` / `S` next to an audio track name | mute, solo |
 

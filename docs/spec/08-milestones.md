@@ -163,9 +163,12 @@ Status:
   take; the camera sound of a synced take is not put on the timeline; takes
   whose match is not clear are not placed at all. Not built: correcting a
   clock difference between camera and song (measured and reported; the take
-  is exact at its middle), choosing the first beat of the bar, syncing a
-  take by hand when the automatic match fails (it can be dragged, with the
-  waveform of its sound as a guide only if that sound is placed), a
+  is exact at its middle), choosing the first beat of the bar, a
+  tempo-changing grid editor. Added later the same night: a take the
+  automatic match cannot place is laid by hand ("Camera angle at the
+  playhead, synced by hand" in the asset menu): picture on a camera track,
+  sound on a muted track below, moved together by dragging or the arrow
+  keys until the waveforms line up (`PROPOSED`). **Not verified with real footage**: every
   tempo-changing grid editor. **Not verified with real footage**: every
   number comes from synthetic recordings (`docs/spikes/s6-sync-beats.md`).
   Not verifiable without a person: cutting live by ear and eye, and whether

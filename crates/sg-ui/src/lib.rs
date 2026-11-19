@@ -395,6 +395,7 @@ impl Shell {
                     }
                 }
                 AssetRequest::Sync(all) => self.sync_takes(all, &mut commands),
+                AssetRequest::AngleByHand => self.angle_by_hand(),
                 AssetRequest::Remove => {
                     if let Some(id) = self.editor.assets.selected {
                         self.remove_asset(id);
@@ -1041,6 +1042,23 @@ impl Shell {
 
 impl Shell {
     /// Makes the selected asset the song of the sequence.
+    fn angle_by_hand(&mut self) {
+        let Some(session) = &mut self.session else { return };
+        let Some(asset) = self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned()) else {
+            return;
+        };
+        match session.place_angle_by_hand(&asset, self.playhead) {
+            Ok(()) => {
+                self.editor.timeline.select_dropped(session, asset.id, self.playhead);
+                session.notice = Some(format!(
+                    "{} is a camera angle. Drag it or use the arrow keys until its waveform lines up with the song's; then cut to it with its number.",
+                    asset.label
+                ));
+            }
+            Err(e) => self.error = Some(format!("{} was not placed: {e}.", asset.label)),
+        }
+    }
+
     fn use_as_song(&mut self) {
         let Some(session) = &mut self.session else { return };
         let Some(asset) = self.editor.assets.selected.and_then(|id| session.project().assets.get(&id).cloned()) else {
@@ -1146,7 +1164,8 @@ impl Shell {
         if !offset.is_confident() {
             self.error = Some(format!(
                 "{} was not placed: its sound does not clearly match one place in the song (likeness {:.2}, next best {:.2}). \
-                 It may be too short, too noisy, or from another song.",
+                 It may be too short, too noisy, or from another song. To place it yourself: right click it, \
+                 \"Camera angle at the playhead, synced by hand\".",
                 asset.label, offset.likeness, offset.runner_up
             ));
             return;
