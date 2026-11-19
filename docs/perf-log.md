@@ -335,3 +335,21 @@ picture (a look, or a match between two or more takes); an ungraded 8-bit
 source has no values between its steps to keep. A 4K graded master is
 below realtime. The earlier M6 figure of 57 fps for the ungraded case was
 measured under load 9; this one under load 3.
+
+## 2026-11-19, re-run after the night's additions, commit 64b2bbf
+
+Commands: `scripts/bench-m3.sh`, `scripts/bench-m5.sh`. Load average 2 to 5.
+Since the last run of these the layer shader gained the input transform
+and look chain, and every jump while paused now asks the audio engine for a
+scrub grain.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Scrub latency, proxy, 4K60 1 s GOP | p50 3.0, p95 5.7 ms | <= 33 ms p95 | pass |
+| Scrub latency, full quality, same source | p50 195, p95 310 ms | <= 150 ms p95 | **miss** (as before: 175 / 332) |
+| Scrub latency, proxy, long-GOP sources | p50 3.1, p95 13.2 ms | <= 33 ms p95 | pass |
+| Play start | p50 4.9, p95 6.6 ms | <= 50 ms | pass |
+| Audio start on a null sink | p50 0.5, p99 18.6 ms | <= 80 ms p99 | pass |
+| Audio over 20 s | 0 xruns, 0 underruns, worst process() 5.6 us | 0 | pass |
+| Three 4K60 layers playing (proxy quality) | 1796 frames, 0 late | 0 late | pass (proxy quality only, as before) |
+| Scrub grains on a null sink (PipeWire) | three seeks 1 s apart: three sounds of 100 ms; three seeks 0.12 s apart: one unbroken 0.33 s | none | works |
