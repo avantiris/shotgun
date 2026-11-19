@@ -220,6 +220,16 @@ struct WaveSpan<'a> {
     y: (f32, f32),
 }
 
+/// The frames (from the clip's start) at which any value of a clip has a
+/// keyframe, in order, each once.
+fn key_frames(props: &sg_core::ClipProps) -> Vec<i64> {
+    let animated = [&props.x, &props.y, &props.scale, &props.rotation, &props.opacity, &props.ramp, &props.gain_db];
+    let mut frames: Vec<i64> = animated.iter().flat_map(|p| p.keys.iter().map(|k| k.frame)).collect();
+    frames.sort_unstable();
+    frames.dedup();
+    frames
+}
+
 /// One vertical line per physical pixel between `x.0` and `x.1`, from the
 /// peak level whose blocks are about a pixel wide: the cost depends on the
 /// width on screen, not on the length of the sound.
@@ -1154,6 +1164,25 @@ impl Timeline {
                             px(3.0),
                             0.0,
                         ));
+                    }
+                    // Keyframes: a small mark on the clip's lower edge at each.
+                    if x1 - x0 >= 12.0
+                        && let Some(props) = track.props_of(clip.id)
+                    {
+                        let mut last = f32::MIN;
+                        for frame in key_frames(props).into_iter().take(64) {
+                            let x = x_of(clip.start as f64 / per + frame as f64);
+                            // (Marks closer than their own width would only smear.)
+                            if x > x0 && x < x1 && x - last >= 7.0 {
+                                instances.push(Instance::new(
+                                    quad(x - 3.0, y1 - 7.0, x + 3.0, y1 - 1.0),
+                                    theme::TEXT,
+                                    px(1.0),
+                                    0.0,
+                                ));
+                                last = x;
+                            }
+                        }
                     }
                     // The poster of the asset at the head of a clip that has room for it.
                     let mut thumb_w = 0.0;
