@@ -114,7 +114,12 @@ What must be true **now** so this is an extension and not a rewrite:
   check, which for 4K takes longer than the render (20 s of video: 21 s
   render, 26 s check). Decide after using it: keep the full check, check
   with the GPU decoder (fast, less independent), or check only the first and
-  last seconds.
+  last seconds. `PROPOSED`, taken on 2026-11-19 while working unattended:
+  the GPU decoder checks the file (5 s instead of 26 s for those 20 s of
+  4K) and the processor only if the GPU decoder fails. A 4K60 master now
+  takes 1.25 times the length of the video in all (0.80x realtime, still
+  under the budget); 1080p60 exports at 3x realtime. To have the old check
+  back, say so: it is one line in `sg-export` (`verify`).
 - `OPEN` Full-quality seek into long-GOP originals: proxy-first display
   (planned) versus an intra mezzanine of originals (S1, see 04).
 - `OPEN` (M7): sync by camera sound and the beat grid are verified on

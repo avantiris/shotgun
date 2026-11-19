@@ -496,14 +496,28 @@ fn render(
     Ok((total as f64 / started.elapsed().as_secs_f64().max(1e-6), per_frame))
 }
 
-/// Decodes the whole file once and counts its frames.
+/// Decodes the whole file once and counts its frames. The graphics card
+/// decodes it (five times faster than the processor for a 4K master, and
+/// what a player on this machine would use); if that fails for any reason
+/// the processor has the last word.
 fn verify(path: &Path, expected_frames: i64, cancel: &Cancel) -> Result<(), ExportError> {
-    let mut decode = Command::new("ffmpeg");
-    decode.args(["-v", "error", "-xerror", "-i"]).arg(path).args(["-f", "null", "-"]);
-    run_lines(decode, cancel, |_| {}).map_err(|e| match e {
-        ToolError::Cancelled => ExportError::Cancelled,
-        other => ExportError::Verify(other.to_string()),
-    })?;
+    let decode = |hardware: bool| {
+        let mut decode = Command::new("ffmpeg");
+        decode.args(["-v", "error", "-xerror"]);
+        if hardware {
+            decode.args(["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]);
+        }
+        decode.arg("-i").arg(path).args(["-f", "null", "-"]);
+        run_lines(decode, cancel, |_| {})
+    };
+    match decode(true) {
+        Ok(()) => {}
+        Err(ToolError::Cancelled) => return Err(ExportError::Cancelled),
+        Err(_) => decode(false).map_err(|e| match e {
+            ToolError::Cancelled => ExportError::Cancelled,
+            other => ExportError::Verify(other.to_string()),
+        })?,
+    }
     let mut probe = Command::new("ffprobe");
     probe
         .args([

@@ -353,3 +353,18 @@ scrub grain.
 | Audio over 20 s | 0 xruns, 0 underruns, worst process() 5.6 us | 0 | pass |
 | Three 4K60 layers playing (proxy quality) | 1796 frames, 0 late | 0 late | pass (proxy quality only, as before) |
 | Scrub grains on a null sink (PipeWire) | three seeks 1 s apart: three sounds of 100 ms; three seeks 0.12 s apart: one unbroken 0.33 s | none | works |
+
+## 2026-11-19, export check decoded by the graphics card, commit after 48cebf3
+
+Command: `scripts/bench-m6.sh`. Load average 2.4 to 6.9. The check that an
+exported file plays (decode all of it once) now uses VAAPI and falls back
+to the processor if that fails; before, the processor decoded it.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| 4K60 master, 20 s, whole export | 25.1 s = 0.80x realtime (was 0.41x); render pass 62.8 fps | >= realtime where the encoder allows | **miss**, by a fifth; the render pass alone is at 1.05x |
+| Check decode of that file alone | 5.2 s by VAAPI, 26.5 s by the processor | none | |
+| 1080p60 master, two layers and a title, 20 s | 6.5 s = 3.09x (was 1.8x) | same | pass |
+| 1080p60 vertical | 6.7 s = 2.98x | same | pass |
+| Share copy under 10 MB / 25 MB | 26.4 s / 27.6 s = 0.76x / 0.73x | none (two-pass x264) | |
+| GIF, 3 s | 2.6 s | none | |
