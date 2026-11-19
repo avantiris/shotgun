@@ -471,6 +471,28 @@ fn a_title_is_added_and_its_text_edited() {
     assert_eq!(title(&harness).map(|t| t.text), Some("Title".to_owned()));
     // The new title is selected: its position can be set in the inspector.
     assert!(harness.query_by_label("Position X").is_some());
+    // The cursor is in its text with everything selected: typing replaces it.
+    assert!(harness.query_by_label("TITLE").is_some());
+    harness.event(egui::Event::Text("Hello".to_owned()));
+    harness.run_steps(3);
+    assert_eq!(title(&harness).map(|t| t.text), Some("Hello".to_owned()));
+    // Escape lets go of the field; keys are keys again (G: a marker).
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    harness.key_press(Key::G);
+    harness.run_steps(3);
+    assert_eq!(title(&harness).map(|t| t.text), Some("Hello".to_owned()));
+    let project = harness.state().shell.session().unwrap().project().clone();
+    assert_eq!(project.sequences[0].markers.len(), 1);
+    // With the mixer in the way, "Edit text" in the title's menu brings its text back.
+    // (A double click on the title does the same; the test's clock cannot make one.)
+    click(&mut harness, "Mixer");
+    assert!(harness.query_by_label("TITLE").is_none());
+    let rect = harness.get_by_label("Timeline").rect();
+    let on_title = egui::pos2(rect.left() + 120.0 + 6.0, rect.top() + 22.0 + 20.0);
+    pointer(&mut harness, on_title, egui::PointerButton::Secondary);
+    click(&mut harness, "Edit text");
+    assert!(harness.query_by_label("TITLE").is_some());
 }
 
 #[test]
@@ -831,14 +853,22 @@ fn the_way_between_two_keyframes_can_be_made_smooth() {
     assert!(end > 0.05 && x_at(&harness, 0) == 0.0);
     playhead(&mut harness, 10);
     assert!((x_at(&harness, 10) - end / 4.0).abs() < 1e-5);
+    // The clip's keyframes have a page of their own in the inspector.
+    click(&mut harness, "Keyframes");
     click(&mut harness, "Smooth");
     assert!(x_at(&harness, 10) < end * 0.17, "{}", x_at(&harness, 10));
     assert!((x_at(&harness, 20) - end / 2.0).abs() < 1e-5);
     click(&mut harness, "Hold");
     assert_eq!((x_at(&harness, 39), x_at(&harness, 40)), (0.0, end));
-    // Outside the keyframes there is nothing to choose.
-    playhead(&mut harness, 50);
-    assert!(harness.query_by_label("Smooth").is_none());
+    // The list names both keyframes by their time; a click on one moves the playhead there.
+    click(&mut harness, "00:00:00:40");
+    assert!(transport(&harness).contains(&sg_ui::Transport::Seek(40)));
+    // Its values can be read and changed there; "x" removes it.
+    let remove: Vec<_> = harness.get_all_by_label("x").collect();
+    remove.last().unwrap().click();
+    harness.run_steps(3);
+    assert_eq!(x_at(&harness, 40), 0.0);
+    assert!(harness.query_by_label("00:00:00:40").is_none());
 }
 
 #[test]

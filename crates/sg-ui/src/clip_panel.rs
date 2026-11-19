@@ -44,6 +44,14 @@ pub struct ClipPanel {
     /// The list of fonts is wanted; taken by the shell.
     pub fonts_request: bool,
     fonts_asked: bool,
+    /// Put the cursor into the title's text field with the next frame (a
+    /// title was just added, or asked for by double click or menu).
+    focus_title: bool,
+    /// A keyframe in the list was clicked: move the playhead to this
+    /// sequence frame. Taken by the editor.
+    pub seek_request: Option<i64>,
+    /// The inspector shows the clip's keyframes instead of its settings.
+    keys_tab: bool,
 }
 
 /// Writes changed properties back as an op.
@@ -64,6 +72,16 @@ fn commit(
 }
 
 impl ClipPanel {
+    /// Shows the settings page with the cursor in the title's text.
+    pub fn show_title_text(&mut self) {
+        (self.keys_tab, self.focus_title) = (false, true);
+    }
+
+    /// Shows the keyframes page (or the settings).
+    pub fn show_keyframes(&mut self, shown: bool) {
+        self.keys_tab = shown;
+    }
+
     /// The undo group for an edit made now. While a pointer button is held
     /// (a drag), every edit shares one group.
     fn group_for(&mut self, ui_dragging: bool, session: &mut Session) -> Option<u64> {
@@ -82,17 +100,60 @@ impl ClipPanel {
         target: &Target,
         error: &mut Option<String>,
     ) {
-        ui.label(RichText::new("CLIP").size(11.0).strong().color(theme::DIM));
         let mut props = target.props.clone();
+        let heading = if props.title.is_some() { "TITLE" } else { "CLIP" };
+        ui.label(RichText::new(heading).size(11.0).strong().color(theme::DIM));
+        // Two pages: the clip's settings, and its keyframes in detail.
+        let keyframes = {
+            let ClipProps { x, y, scale, rotation, opacity, ramp, gain_db, .. } = &props;
+            let frames: std::collections::BTreeSet<i64> = [x, y, scale, rotation, opacity, ramp, gain_db]
+                .iter()
+                .flat_map(|p| p.keys.iter().map(|k| k.frame))
+                .collect();
+            frames.len()
+        };
+        ui.horizontal(|ui| {
+            if ui.selectable_label(!self.keys_tab, "Settings").clicked() {
+                self.keys_tab = false;
+            }
+            let tab = ui.selectable_label(self.keys_tab, format!("Keyframes ({keyframes})"));
+            tab.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Keyframes"));
+            if tab.on_hover_text("Every keyframe of this clip: when, which values, and how they travel on").clicked() {
+                self.keys_tab = true;
+            }
+        });
+        ui.add_space(4.0);
+        if self.keys_tab {
+            let start = match target.track.kind {
+                TrackKind::Video => target.clip.start,
+                TrackKind::Audio => sequence.rate.samples_to_frames(target.clip.start, SAMPLE_RATE),
+            };
+            let changed = keyframe_list(ui, &mut props, target.at, start, sequence.rate, &mut self.seek_request);
+            return self.finish(ui, changed, session, sequence, target, props, error);
+        }
         let at = target.at;
         let video = target.track.kind == TrackKind::Video;
         let fps = sequence.rate.num() as f32 / sequence.rate.den() as f32;
         let mut changed = false;
 
         if let Some(title) = &mut props.title {
-            ui.add(egui::TextEdit::multiline(&mut title.text).desired_rows(2).desired_width(f32::INFINITY))
-                .changed()
-                .then(|| changed = true);
+            ui.label(RichText::new("Text (type here; Enter starts a new line)").size(10.5).color(theme::DIM));
+            let mut shown = egui::TextEdit::multiline(&mut title.text)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY)
+                .hint_text("What the title says")
+                .show(ui);
+            let field = shown.response;
+            field.widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, "Title text"));
+            if std::mem::take(&mut self.focus_title) && !self.keys_tab {
+                // With everything selected: typing replaces the text that is there.
+                use egui::text::{CCursor, CCursorRange};
+                field.request_focus();
+                let all = CCursorRange::two(CCursor::new(0), CCursor::new(title.text.chars().count()));
+                shown.state.cursor.set_char_range(Some(all));
+                shown.state.store(ui.ctx(), field.id);
+            }
+            changed |= field.changed();
             ui.horizontal(|ui| {
                 ui.add_sized(
                     [84.0, 16.0],
@@ -214,29 +275,6 @@ impl ClipPanel {
         } else {
             changed |= value_row(ui, "Volume", &mut props.gain_db, at, -60.0..=24.0, 0.1, " dB");
         }
-        // Between two keyframes: how the values travel from one to the other.
-        let ClipProps { x, y, scale, rotation, opacity, ramp, gain_db, .. } = &mut props;
-        let mut animated = [x, y, scale, rotation, opacity, ramp, gain_db];
-        if let Some(now) = animated.iter().find_map(|p| p.ease_at(at)) {
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [84.0, 16.0],
-                    egui::Label::new(RichText::new("Between keys").color(theme::DIM)).halign(egui::Align::LEFT),
-                );
-                for ease in sg_core::Ease::ALL {
-                    let tip = match ease {
-                        sg_core::Ease::Linear => "At a steady pace from the keyframe before the playhead to the next",
-                        sg_core::Ease::Smooth => "Starts and arrives gently",
-                        sg_core::Ease::Hold => "Stays, then jumps at the next keyframe",
-                    };
-                    if ui.selectable_label(now == ease, ease.label()).on_hover_text(tip).clicked() {
-                        for param in &mut animated {
-                            changed |= param.set_ease(at, ease);
-                        }
-                    }
-                }
-            });
-        }
         if props.title.is_none() {
             ui.horizontal(|ui| {
                 ui.add_sized(
@@ -311,6 +349,21 @@ impl ClipPanel {
         if video {
             changed |= transition_rows(ui, &mut props.transition, target);
         }
+        self.finish(ui, changed, session, sequence, target, props, error);
+    }
+
+    /// Writes what the panel changed this frame; one drag is one undo step.
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &mut self,
+        ui: &egui::Ui,
+        changed: bool,
+        session: &mut Session,
+        sequence: &Sequence,
+        target: &Target,
+        props: ClipProps,
+        error: &mut Option<String>,
+    ) {
         if changed {
             let dragging = ui.input(|i| i.pointer.any_down());
             let group = self.group_for(dragging, session);
@@ -418,6 +471,107 @@ fn value_row(
             ui.label(RichText::new(if on_key { "key" } else { "animated" }).size(10.0).color(theme::ACCENT));
         }
     });
+    changed
+}
+
+/// Every keyframe of the clip in detail (feedback F6.3): when it is, what
+/// it fixes and at which values, and how the values travel on from it.
+/// A click on its time moves the playhead there; the values can be
+/// changed in place. `start` is the clip's first sequence frame. Returns
+/// whether anything changed.
+fn keyframe_list(
+    ui: &mut egui::Ui,
+    props: &mut ClipProps,
+    at: i64,
+    start: i64,
+    rate: sg_core::Rate,
+    seek: &mut Option<i64>,
+) -> bool {
+    /// More than this are a recorded movement: listed up to here.
+    const SHOWN: usize = 80;
+    let ClipProps { x, y, scale, rotation, opacity, ramp, gain_db, .. } = props;
+    let mut params: [(&str, &mut Param, std::ops::RangeInclusive<f32>, f32); 7] = [
+        ("X", x, -2.0..=2.0, 0.002),
+        ("Y", y, -2.0..=2.0, 0.002),
+        ("Scale", scale, 0.01..=10.0, 0.005),
+        ("Rotation", rotation, -360.0..=360.0, 0.5),
+        ("Opacity", opacity, 0.0..=1.0, 0.005),
+        ("Speed ramp", ramp, 0.05..=8.0, 0.005),
+        ("Volume dB", gain_db, -60.0..=24.0, 0.1),
+    ];
+    let frames: std::collections::BTreeSet<i64> =
+        params.iter().flat_map(|(_, param, _, _)| param.keys.iter().map(|k| k.frame)).collect();
+    if frames.is_empty() {
+        ui.label(
+            RichText::new(
+                "None yet. A keyframe fixes the clip's values at the playhead (F, or the Keyframe button). \
+                 Move the playhead, change a value, set another: the clip moves from one to the other.",
+            )
+            .color(theme::DIM),
+        );
+        return false;
+    }
+    let mut changed = false;
+    let last = frames.last().copied();
+    for frame in frames.iter().copied().take(SHOWN) {
+        ui.push_id(("keyframe", frame), |ui| {
+            let here = frame == at;
+            let fill = if here { theme::RAISED } else { egui::Color32::TRANSPARENT };
+            egui::Frame::new().fill(fill).corner_radius(4.0).inner_margin(egui::Margin::symmetric(4, 3)).show(
+                ui,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let time = crate::stage::timecode(start + frame, rate);
+                        let text =
+                            RichText::new(time).monospace().color(if here { theme::ACCENT } else { theme::TEXT });
+                        if ui
+                            .add(egui::Button::new(text).small())
+                            .on_hover_text("Move the playhead to this keyframe")
+                            .clicked()
+                        {
+                            *seek = Some(start + frame);
+                        }
+                        let now = params
+                            .iter()
+                            .find_map(|(_, p, _, _)| p.keys.iter().find(|k| k.frame == frame))
+                            .map(|k| k.ease);
+                        // (After the last keyframe nothing travels any more.)
+                        for ease in sg_core::Ease::ALL.into_iter().filter(|_| Some(frame) != last) {
+                            let label = RichText::new(ease.label()).size(10.5);
+                            let chosen = ui.selectable_label(now == Some(ease), label);
+                            if chosen.on_hover_text("How the values travel from this keyframe to the next").clicked() {
+                                for (_, param, _, _) in &mut params {
+                                    for key in param.keys.iter_mut().filter(|k| k.frame == frame) {
+                                        changed |= key.ease != ease;
+                                        key.ease = ease;
+                                    }
+                                }
+                            }
+                        }
+                        if ui.add(egui::Button::new("x").small()).on_hover_text("Remove this keyframe").clicked() {
+                            for (_, param, _, _) in &mut params {
+                                changed |= param.remove_key(frame);
+                            }
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (name, param, range, speed) in &mut params {
+                            let Some(key) = param.keys.iter_mut().find(|k| k.frame == frame) else { continue };
+                            ui.label(RichText::new(*name).size(10.5).color(theme::DIM));
+                            let value =
+                                egui::DragValue::new(&mut key.value).speed(*speed).range(range.clone()).max_decimals(3);
+                            changed |= ui.add(value).changed();
+                            ui.add_space(4.0);
+                        }
+                    });
+                },
+            );
+        });
+    }
+    if frames.len() > SHOWN {
+        ui.label(RichText::new(format!("and {} more", frames.len() - SHOWN)).color(theme::DIM));
+    }
     changed
 }
 

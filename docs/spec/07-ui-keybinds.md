@@ -75,6 +75,19 @@ Buttons and menu entries run the same action as the key (`Shell::act`), so
 they cannot drift apart. The key shown is the one in force, the user's key
 file included.
 
+## Inspector of a clip: two pages (feedback F6.1, F6.3; `PROPOSED`)
+
+- **Settings**: what the clip is given. For a title, headed TITLE: its
+  text first, then size, colour, shadow, font, then placement like any
+  picture. `T` adds a title and puts the cursor into its text with
+  everything selected; Esc leaves the field. A double click on a title in
+  the timeline or "Edit text" in its menu does the same.
+- **Keyframes (n)**: every keyframe of the clip, in order: its time (click:
+  the playhead goes there), the values it fixes, changeable in place, how
+  they travel to the next keyframe (linear, smooth, hold; this replaced the
+  "Between keys" row), and a button to remove it. More than 80 (a recorded
+  movement) are listed up to there.
+
 ## Keys (left hand, bound by physical position)
 
 Labels below are the **Swiss German (QWERTZ)** key caps. Bottom row is

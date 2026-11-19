@@ -86,6 +86,10 @@ impl Editor {
             |ui| {
                 self.tools(ui);
                 self.timeline.ui(ui, session, view, transport, error);
+                // A title asked for its text: the inspector shows it with the cursor in the field.
+                if std::mem::take(&mut self.timeline.edit_title) {
+                    self.show_title_text();
+                }
                 // Posters at the heads of clips: the asset panel holds the textures.
                 let painter = ui.painter().with_clip_rect(self.timeline.lanes);
                 let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
@@ -118,6 +122,9 @@ impl Editor {
                 }
             });
         });
+        if let Some(frame) = self.clip_panel.seek_request.take() {
+            transport.push(Transport::Seek(frame));
+        }
         let recording = self.clip_panel.recording;
         // The angle the programme shows at the playhead, to mark it in the monitor.
         let live = crate::session::program_row(sequence)
@@ -461,6 +468,12 @@ impl Editor {
         Some(Target::new(sequence, &track, clip, playhead))
     }
 
+    /// Brings the inspector to the selected title with the cursor in its text.
+    fn show_title_text(&mut self) {
+        (self.mixer.open, self.colour.open) = (false, false);
+        self.clip_panel.show_title_text();
+    }
+
     /// Adds a track: video on top, audio at the bottom.
     pub fn add_track(&mut self, session: &mut Session, kind: sg_core::TrackKind, error: &mut Option<String>) {
         if let Err(e) = session.add_track(kind) {
@@ -547,7 +560,10 @@ impl Editor {
                 ops.push(Op::InsertClip { seq: sequence.id, track, clip });
                 ops.push(Op::SetClipProps { seq: sequence.id, track, clip: clip.id, props: Some(Box::new(props)) });
                 match session.apply(Op::Batch(ops), None) {
-                    Ok(()) => self.timeline.select_only(track, &clip),
+                    Ok(()) => {
+                        self.timeline.select_only(track, &clip);
+                        self.show_title_text();
+                    }
                     Err(e) => *error = Some(e.to_string()),
                 }
             }
@@ -583,6 +599,10 @@ impl Editor {
         value: &str,
         error: &mut Option<String>,
     ) {
+        // Not a property: which page of the clip's inspector is shown (`page=keys`).
+        if name == "page" {
+            return self.clip_panel.show_keyframes(value == "keys");
+        }
         let project = session.project().clone();
         let (Some(sequence), Some(target)) = (project.sequences.first(), self.target(session, playhead)) else {
             *error = Some("No clip is selected.".to_owned());

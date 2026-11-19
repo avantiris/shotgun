@@ -183,6 +183,8 @@ pub struct Timeline {
     menu_group: Option<u64>,
     /// Actions chosen in the menus this frame; the shell runs them like keys.
     pub actions: Vec<Action>,
+    /// The selected title's text was asked for (double click, or its menu); taken by the editor.
+    pub edit_title: bool,
     /// The volume being pulled or pointed at: where to write it, and its decibels.
     gain_label: Option<(egui::Pos2, f32)>,
     /// Quads drawn in the last frame, for the performance overlay.
@@ -211,6 +213,7 @@ impl Default for Timeline {
             menu_row: None,
             menu_group: None,
             actions: Vec::new(),
+            edit_title: false,
             gain_label: None,
             menu_clip: None,
             scenario_request: None,
@@ -753,6 +756,10 @@ impl Timeline {
                     });
                 }
                 ui.separator();
+                if track.props_of(clip.id).is_some_and(|p| p.title.is_some()) && ui.button("Edit text").clicked() {
+                    self.edit_title = true;
+                    ui.close();
+                }
                 for (action, label) in [
                     (Action::KeyframeSet, "Keyframe at the playhead"),
                     (Action::KeyframeRemove, "Remove the keyframe here"),
@@ -1048,6 +1055,14 @@ impl Timeline {
             self.drag = Drag::Pan;
         }
 
+        // A double click on a title goes to its text.
+        if response.double_clicked_by(PointerButton::Primary)
+            && let Some(pos) = pointer
+            && let Some((row, clip, _)) = self.hit(sequence, row_at(pos.y), frame_at(pos.x))
+            && sequence.tracks[row].props_of(clip.id).is_some_and(|p| p.title.is_some())
+        {
+            self.edit_title = true;
+        }
         if response.clicked_by(PointerButton::Primary)
             && let Some(pos) = pointer
         {

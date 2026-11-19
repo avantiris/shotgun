@@ -343,7 +343,8 @@ pub fn take_actions(ctx: &egui::Context, screen: Scope) -> Vec<Action> {
             match lookup(screen, typing, physical_key.unwrap_or(*key), *modifiers) {
                 Some(action) => {
                     actions.push(action);
-                    false
+                    // Escape also reaches a text field that has the cursor, which lets go of it.
+                    typing && action == Action::Cancel
                 }
                 None => true,
             }
