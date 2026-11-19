@@ -210,6 +210,8 @@ pub struct Shell {
     /// Files dropped on the timeline: where the next imported assets go
     /// (frame, track row) and how many imports are still expected there.
     dropped_at: Option<(i64, Option<usize>, usize)>,
+    /// The key reference is showing.
+    help: bool,
     /// Undo group of the angle switches of the playback pass in progress.
     angle_group: Option<u64>,
     /// The playhead as of the last frame, for key actions.
@@ -314,6 +316,7 @@ impl Shell {
                 match request {
                     Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
                     Some(EditorRequest::Export) => self.act(Action::Export, &mut commands),
+                    Some(EditorRequest::Help) => self.act(Action::Help, &mut commands),
                     Some(EditorRequest::Tempo(tempo)) => self.set_tempo(tempo),
                     Some(EditorRequest::Angle(angle)) => self.switch_angle(angle + 1),
                     Some(EditorRequest::SyncAll) => self.sync_takes(true, &mut commands),
@@ -398,6 +401,9 @@ impl Shell {
                 }
             }
         }
+        if self.help {
+            help_panel(&ctx);
+        }
         self.perf.ui(&ctx, self.session.as_ref(), &view.stats);
         commands
     }
@@ -435,7 +441,11 @@ impl Shell {
             Action::TogglePerf => self.perf.show = !self.perf.show,
             Action::Cancel => {
                 // Dismiss one thing per press, most urgent first.
-                if self.error.take().is_some() || self.history.cancel() || self.export.cancel() || self.editor.cancel()
+                if self.error.take().is_some()
+                    || std::mem::take(&mut self.help)
+                    || self.history.cancel()
+                    || self.export.cancel()
+                    || self.editor.cancel()
                 {
                     return;
                 }
@@ -529,6 +539,7 @@ impl Shell {
                     self.history.begin_checkpoint();
                 }
             }
+            Action::Help => self.help = !self.help,
             Action::Mixer => {
                 self.editor.mixer.open = !self.editor.mixer.open;
                 self.editor.colour.open = false;
@@ -1229,4 +1240,37 @@ impl Shell {
             self.error = Some(e.to_string());
         }
     }
+}
+
+/// The key reference (F1): every key and what it does, in columns.
+fn help_panel(ctx: &egui::Context) {
+    use egui::{Align2, RichText, Stroke, vec2};
+    egui::Area::new(egui::Id::unique("help")).fade_in(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        egui::Frame::new().fill(theme::RAISED).stroke(Stroke::new(1.0, theme::LINE)).corner_radius(6.0).inner_margin(16.0).show(ui, |ui| {
+            ui.label(RichText::new("KEYS").size(11.0).strong().color(theme::DIM));
+            ui.label(RichText::new("As printed on a Swiss German keyboard. Esc or F1 closes this.").color(theme::DIM));
+            ui.add_space(6.0);
+            ui.horizontal_top(|ui| {
+                // Three columns of two groups each.
+                for column in keymap::reference().chunks(2) {
+                    ui.vertical(|ui| {
+                        for (group, lines) in column {
+                            ui.label(RichText::new(*group).strong());
+                            egui::Grid::new(*group).num_columns(2).spacing(vec2(14.0, 3.0)).show(ui, |ui| {
+                                for (keys, what) in lines {
+                                    ui.label(RichText::new(keys).monospace().color(theme::ACCENT));
+                                    ui.label(*what);
+                                    ui.end_row();
+                                }
+                            });
+                            ui.add_space(10.0);
+                        }
+                    });
+                    ui.add_space(18.0);
+                }
+            });
+            ui.set_max_width(1180.0);
+            ui.label(RichText::new("Mouse: wheel zooms the timeline, Shift + wheel scrolls it; drag clips to move, their edges to trim; right click for menus; drag assets onto the timeline (Shift: only picture or only sound).").color(theme::DIM));
+        });
+    });
 }

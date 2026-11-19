@@ -546,3 +546,16 @@ fn the_wheel_zooms_the_timeline_around_the_pointer() {
         further_after - here_after
     );
 }
+
+#[test]
+fn f1_shows_every_key_and_esc_closes_it() {
+    let mut harness = editor();
+    harness.key_press(Key::F1);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("KEYS").is_some());
+    // The Swiss caps: undo is on the key that reads Y.
+    assert!(harness.query_by_label("Y, Ctrl+Z").is_some());
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("KEYS").is_none());
+}

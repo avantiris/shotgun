@@ -57,6 +57,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             Step::Dev(DevStep::Drop(frame.parse()?, row, only))
         }
         "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
+        "help" => Step::Dev(DevStep::Act(Action::Help)),
         "colourpanel" => Step::Dev(DevStep::Act(Action::Colour)),
         "lookab" => Step::Dev(DevStep::Act(Action::ToggleLook)),
         "matchab" => Step::Dev(DevStep::Act(Action::ToggleMatch)),

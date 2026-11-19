@@ -20,6 +20,7 @@ pub enum EditorRequest {
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
     SetSize(u32, u32),
+    Help,
     /// Cut to this camera angle (0 is the first) at the playhead.
     Angle(usize),
     Tempo(i8),
@@ -199,6 +200,9 @@ impl Editor {
             {
                 self.colour.open = !self.colour.open;
                 self.mixer.open = false;
+            }
+            if ui.button("Keys").on_hover_text("What every key does (F1)").clicked() {
+                *request = Some(EditorRequest::Help);
             }
             if ui.button("Export").on_hover_text("Ctrl+E").clicked() {
                 *request = Some(EditorRequest::Export);

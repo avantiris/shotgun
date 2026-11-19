@@ -49,6 +49,8 @@ pub enum Action {
     /// A/B: switch the look chain, or the match, of the shown scenario on and off.
     ToggleLook,
     ToggleMatch,
+    /// Show or hide the list of keys.
+    Help,
     /// Show or hide the mixer.
     Mixer,
     /// Show saved states and checkpoints.
@@ -130,6 +132,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, true, Key::F, Action::KeyframeRemove),
     bind(Scope::Editor, false, false, Key::T, Action::AddTitle),
     bind(Scope::Editor, false, false, Key::M, Action::Mixer),
+    bind(Scope::Any, false, false, Key::F1, Action::Help),
     bind(Scope::Editor, false, false, Key::K, Action::Colour),
     bind(Scope::Editor, false, false, Key::J, Action::ToggleLook),
     bind(Scope::Editor, false, true, Key::J, Action::ToggleMatch),
@@ -182,6 +185,95 @@ pub fn take_actions(ctx: &egui::Context, screen: Scope) -> Vec<Action> {
         });
         actions
     })
+}
+
+/// What an action does, in a few words, and the group it is listed under
+/// in the key reference. `None`: not listed (one line stands for several).
+pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
+    Some(match action {
+        Action::PlayPause => ("Playing", "play / pause"),
+        Action::StepBack => ("Playing", "one frame back"),
+        Action::StepForward => ("Playing", "one frame forward"),
+        Action::PrevCut => ("Playing", "to the previous cut or marker"),
+        Action::NextCut => ("Playing", "to the next cut or marker"),
+        Action::ToStart => ("Playing", "to the start"),
+        Action::ToEnd => ("Playing", "to the end"),
+        Action::Split => ("Cutting", "split at the playhead"),
+        Action::RippleStart => ("Cutting", "remove from the clip's start to the playhead"),
+        Action::RippleEnd => ("Cutting", "remove from the playhead to the clip's end"),
+        Action::RippleDelete => ("Cutting", "delete the selection and close the gap"),
+        Action::Delete => ("Cutting", "delete, leave the gap (or remove the selected asset)"),
+        Action::SelectUnder => ("Cutting", "select the clip under the playhead (again: next track)"),
+        Action::Copy => ("Cutting", "copy the selected clips"),
+        Action::PasteClips => ("Cutting", "paste them at the playhead"),
+        Action::Marker => ("Cutting", "marker at the playhead (again: remove it)"),
+        Action::Undo => ("Cutting", "undo"),
+        Action::Redo => ("Cutting", "redo"),
+        Action::InsertAsset => ("Making", "put the selected asset on the timeline"),
+        Action::AddTitle => ("Making", "add a title"),
+        Action::Transition => ("Making", "whip-pan on the nearest cut (again: remove it)"),
+        Action::KeyframeSet => ("Making", "keyframe for the selected clip at the playhead"),
+        Action::KeyframeRemove => ("Making", "remove that keyframe"),
+        Action::LiveRecord => ("Making", "record the picture's movement while playing"),
+        Action::Angle(1) => ("Making", "cut to camera angle 1 (2 to 9 likewise)"),
+        Action::Angle(_) => return None,
+        Action::AddAsset => ("Project", "add an asset: link or files"),
+        Action::Paste => ("Project", "paste: a link, file or image is imported"),
+        Action::Mixer => ("Panels", "mixer"),
+        Action::Colour => ("Panels", "colour: scenarios, match and look"),
+        Action::ToggleLook => ("Panels", "look of the shown scenario off / on"),
+        Action::ToggleMatch => ("Panels", "match of the shown scenario off / on"),
+        Action::History => ("Panels", "saved states and checkpoints"),
+        Action::Help => ("Panels", "this list"),
+        Action::TogglePerf => ("Panels", "performance numbers"),
+        Action::Export => ("Output", "export panel"),
+        Action::ExportAgain => ("Output", "the last export again"),
+        Action::ExportGif => ("Output", "selection or marked range as a GIF to the clipboard"),
+        Action::Checkpoint => ("Project", "name the current state"),
+        Action::Rename => ("Project", "rename the project"),
+        Action::CloseProject => ("Project", "close the project"),
+        Action::NewProject => ("Project", "new project named as typed (in the library)"),
+        Action::Cancel => ("Project", "close what is open, dismiss a message"),
+    })
+}
+
+/// The key as its cap reads on the Swiss German keyboard the map is laid
+/// out for (the map itself is by position: 07-ui-keybinds.md).
+pub fn cap(binding: &Binding) -> String {
+    let key = match binding.key {
+        Key::Z => "Y".to_owned(),
+        Key::Y => "Z".to_owned(),
+        Key::Backtick => "\u{a7}".to_owned(),
+        Key::Num1 => "1".to_owned(),
+        Key::Space => "Space".to_owned(),
+        Key::Escape => "Esc".to_owned(),
+        Key::Delete => "Del".to_owned(),
+        other => other.name().to_owned(),
+    };
+    format!("{}{}{key}", if binding.ctrl { "Ctrl+" } else { "" }, if binding.shift { "Shift+" } else { "" })
+}
+
+/// The key reference: every listed action once, with all its keys, by group.
+pub fn reference() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+    let mut groups: Vec<(&'static str, Vec<(String, &'static str)>)> = Vec::new();
+    for order in ["Playing", "Cutting", "Making", "Panels", "Output", "Project"] {
+        let mut lines: Vec<(String, &'static str)> = Vec::new();
+        for binding in KEYMAP {
+            let Some((group, what)) = describe(binding.action) else { continue };
+            if group != order {
+                continue;
+            }
+            match lines.iter_mut().find(|(_, w)| *w == what) {
+                Some((keys, _)) => {
+                    keys.push_str(", ");
+                    keys.push_str(&cap(binding));
+                }
+                None => lines.push((cap(binding), what)),
+            }
+        }
+        groups.push((order, lines));
+    }
+    groups
 }
 
 #[cfg(test)]
