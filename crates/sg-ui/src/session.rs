@@ -283,6 +283,22 @@ pub fn place_at(
 }
 
 impl Session {
+    /// A move that covers other clips: `removes` takes the moving clips
+    /// out, then each of `clips` is put down over what is in its place.
+    /// One undo step.
+    pub fn move_over(&mut self, removes: Vec<Op>, clips: Vec<(sg_core::TrackId, Clip)>) -> Result<(), OpError> {
+        // Each step is planned on the state the one before leaves behind.
+        let (mut project, _) = sg_core::apply(self.project(), &Op::Batch(removes.clone()))?;
+        let mut ops = removes;
+        for (track, clip) in clips {
+            let Some(sequence) = project.sequences.first() else { break };
+            let Some(op) = Op::overwrite(sequence, track, clip, self.ids.clip()) else { continue };
+            project = sg_core::apply(&project, &op)?.0;
+            ops.push(op);
+        }
+        self.apply(Op::Batch(ops), None)
+    }
+
     /// Adds a track: video on top, audio at the bottom.
     pub fn add_track(&mut self, kind: TrackKind) -> Result<(), OpError> {
         let project = self.project().clone();

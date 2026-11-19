@@ -65,7 +65,7 @@ Status:
   on the timeline, track buttons and menu. Not built at M4:
   dragging an asset from the panel onto the timeline (Enter or a double-click
   places it at the playhead instead), dropping a file directly onto a
-  position in the timeline, overwrite and insert edits (a move onto occupied
+  position in the timeline, insert edits (overwrite was added 2026-11-19: a move with Ctrl held goes over what is in the way, `PROPOSED`; without Ctrl a move onto occupied
   space is refused), waveforms and thumbnails on clips, track add/remove/
   mute in the UI, renaming markers, (the key map file was added 2026-11-19, see 07), journal
   compaction. After restoring an older state, media of assets that state does

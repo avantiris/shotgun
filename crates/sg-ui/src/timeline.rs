@@ -126,6 +126,9 @@ pub struct Timeline {
     drag: Drag,
     /// Where a move or trim in progress would end, for the ghost and the commit.
     pending: Option<Vec<Op>>,
+    /// With `pending` holding the removals of a move: the clips to put
+    /// down over whatever is in their place (a move with Ctrl held).
+    pending_over: Vec<(TrackId, Clip)>,
     ghosts: Vec<(usize, i64, i64, bool)>,
     clipboard: Vec<Copied>,
     instances: Arc<Mutex<Vec<Instance>>>,
@@ -173,6 +176,7 @@ impl Default for Timeline {
             selection: Vec::new(),
             drag: Drag::None,
             pending: None,
+            pending_over: Vec::new(),
             ghosts: Vec::new(),
             clipboard: Vec::new(),
             instances: Arc::default(),
@@ -816,7 +820,15 @@ impl Timeline {
                 Drag::Move { grab_frame, grab_row, primary } => {
                     let (grab_frame, grab_row, primary) = (*grab_frame, *grab_row, *primary);
                     let row_delta = (row_at(pos.y).max(0.0) as isize) - grab_row as isize;
-                    self.plan_move(sequence, view, frame_at(pos.x) - grab_frame, row_delta, primary, !modifiers.alt);
+                    self.plan_move(
+                        sequence,
+                        view,
+                        frame_at(pos.x) - grab_frame,
+                        row_delta,
+                        primary,
+                        !modifiers.alt,
+                        modifiers.ctrl,
+                    );
                 }
                 Drag::Trim { sel, edge, ripple } => {
                     let (sel, edge, ripple) = (*sel, *edge, *ripple);
@@ -827,12 +839,18 @@ impl Timeline {
         }
 
         if response.drag_stopped() {
+            let over = std::mem::take(&mut self.pending_over);
             if let Some(ops) = self.pending.take().filter(|ops| !ops.is_empty()) {
                 // One gesture, one undo step.
-                match session.apply(Op::Batch(ops), None) {
+                let done =
+                    if over.is_empty() { session.apply(Op::Batch(ops), None) } else { session.move_over(ops, over) };
+                match done {
                     Ok(()) => self.reselect_after_gesture(session),
                     Err(_) => *error = Some("No room for that here.".to_owned()),
                 }
+            } else if matches!(self.drag, Drag::Move { .. }) && self.ghosts.iter().any(|g| !g.3) {
+                *error =
+                    Some("No room there. Hold Ctrl while dropping to put the clip over what is in the way.".to_owned());
             }
             self.ghosts.clear();
             self.drag = Drag::None;
@@ -865,9 +883,11 @@ impl Timeline {
         row_delta: isize,
         primary: Sel,
         snapping: bool,
+        over: bool,
     ) {
         self.ghosts.clear();
         self.pending = None;
+        self.pending_over.clear();
         let Some(primary_track) = sequence.track(primary.track) else { return };
         let Some(primary_clip) = primary_track.clips.get(primary.start) else { return };
         let per = Lane::of(primary_track, sequence).per_frame();
@@ -895,6 +915,7 @@ impl Timeline {
         let mut removes = Vec::new();
         let mut inserts = Vec::new();
         let mut fits = true;
+        let mut covers = false;
         for sel in &self.selection {
             let Some(row) = sequence.tracks.iter().position(|t| t.id == sel.track) else { continue };
             let track = &sequence.tracks[row];
@@ -916,14 +937,20 @@ impl Timeline {
                 .clips
                 .range(moved.start, moved.end())
                 .any(|c| !self.selection.iter().any(|s| s.track == target.id && s.id == c.id));
-            fits &= !blocked;
+            // With Ctrl the clip goes over what is in the way.
+            fits &= !blocked || over;
+            covers |= blocked;
             let target_row = sequence.tracks.iter().position(|t| t.id == target.id).unwrap_or(row);
-            self.ghosts.push((target_row, moved.start, moved.len, !blocked));
+            self.ghosts.push((target_row, moved.start, moved.len, !blocked || over));
             removes.push(Op::RemoveClip { seq: sequence.id, track: track.id, start: clip.start });
-            inserts.push(Op::InsertClip { seq: sequence.id, track: target.id, clip: moved });
+            inserts.push((target.id, moved));
         }
-        if fits {
-            removes.extend(inserts);
+        if fits && covers {
+            // What has to give way is worked out when the button is released.
+            self.pending = Some(removes);
+            self.pending_over = inserts;
+        } else if fits {
+            removes.extend(inserts.into_iter().map(|(track, clip)| Op::InsertClip { seq: sequence.id, track, clip }));
             self.pending = Some(removes);
         }
     }
@@ -2115,11 +2142,20 @@ mod tests {
         let primary = timeline.selection[0];
 
         // Onto the first take: no room.
-        timeline.plan_move(&seq, &view, -300.0, 0, primary, false);
+        timeline.plan_move(&seq, &view, -300.0, 0, primary, false, false);
         assert!(timeline.pending.is_none());
         assert!(timeline.ghosts.iter().any(|g| !g.3));
+        // With Ctrl it goes over the first take, which keeps its first half
+        // (picture and sound alike); undo brings everything back.
+        timeline.plan_move(&seq, &view, -300.0, 0, primary, false, true);
+        assert!(timeline.ghosts.iter().all(|g| g.3));
+        let (removes, over) = (timeline.pending.take().unwrap(), std::mem::take(&mut timeline.pending_over));
+        session.move_over(removes, over).unwrap();
+        assert_eq!(layout(&session), (vec![(0, 300), (300, 600)], vec![(0, 300), (300, 600)]));
+        session.undo().unwrap();
+        assert_eq!(layout(&session), (vec![(0, 600), (600, 600)], vec![(0, 600), (600, 600)]));
         // To the right by 100 frames: both clips move, as one undo step.
-        timeline.plan_move(&seq, &view, 100.0, 0, primary, false);
+        timeline.plan_move(&seq, &view, 100.0, 0, primary, false, false);
         let ops = timeline.pending.take().unwrap();
         session.apply(Op::Batch(ops), None).unwrap();
         assert_eq!(layout(&session), (vec![(0, 600), (700, 600)], vec![(0, 600), (700, 600)]));
@@ -2127,7 +2163,7 @@ mod tests {
         let seq = session.project().sequences[0].clone();
         let moved = seq.tracks[0].clips.get(700).unwrap();
         timeline.select(&seq, &seq.tracks[0], &moved, false, false);
-        timeline.plan_move(&seq, &view, -96.0, 0, timeline.selection[0], true);
+        timeline.plan_move(&seq, &view, -96.0, 0, timeline.selection[0], true, false);
         session.apply(Op::Batch(timeline.pending.take().unwrap()), None).unwrap();
         assert_eq!(layout(&session).0, [(0, 600), (600, 600)]);
 
