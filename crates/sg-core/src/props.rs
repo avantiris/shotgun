@@ -73,6 +73,35 @@ impl Param {
         true
     }
 
+    /// A constant 1 (the resting state of a factor).
+    pub fn is_one(&self) -> bool {
+        self.keys.is_empty() && self.value == 1.0
+    }
+
+    /// The area under the curve from frame 0 to `to` (which may be
+    /// negative: the value at the start then counts backwards).
+    pub fn integral(&self, to: i64) -> f64 {
+        let Some(first) = self.keys.first() else { return self.value as f64 * to as f64 };
+        if to <= 0 {
+            return self.at(0) as f64 * to as f64;
+        }
+        // Held at the first key's value up to it.
+        let mut area = first.value as f64 * (first.frame.clamp(0, to)) as f64;
+        for pair in self.keys.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (from, until) = (a.frame.max(0), b.frame.min(to));
+            if until > from {
+                // Linear in between: the mean of the two ends times the width.
+                area += (self.at(from) as f64 + self.at(until) as f64) / 2.0 * (until - from) as f64;
+            }
+        }
+        // Held at the last key's value after it.
+        if let Some(last) = self.keys.last().filter(|k| to > k.frame) {
+            area += last.value as f64 * (to - last.frame.max(0)) as f64;
+        }
+        area
+    }
+
     /// Moves every keyframe by `delta` frames (after a head trim or split).
     pub fn shift_keys(&mut self, delta: i64) {
         for key in &mut self.keys {
@@ -115,6 +144,10 @@ pub struct ClipProps {
     /// Fade lengths in sequence frames.
     pub fade_in: i64,
     pub fade_out: i64,
+    /// Speed ramp: a factor on the speed that can change along the clip
+    /// (keyframes), for the picture. 1 is the clip's speed as set.
+    #[serde(skip_serializing_if = "Param::is_one")]
+    pub ramp: Param,
     /// Playback speed as a fraction: 2/1 is double speed.
     pub speed: (u32, u32),
     /// How the picture arrives from the clip before it on the track.
@@ -136,6 +169,7 @@ impl Default for ClipProps {
             gain_db: Param::constant(0.0),
             fade_in: 0,
             fade_out: 0,
+            ramp: Param::constant(1.0),
             speed: (1, 1),
             title: None,
             transition: None,
@@ -145,8 +179,9 @@ impl Default for ClipProps {
 
 impl ClipProps {
     /// The animatable picture parameters, for "keyframe everything here".
-    pub fn picture_params(&mut self) -> [&mut Param; 5] {
-        [&mut self.x, &mut self.y, &mut self.scale, &mut self.rotation, &mut self.opacity]
+    /// The values the keyframe keys act on (the speed ramp among them).
+    pub fn picture_params(&mut self) -> [&mut Param; 6] {
+        [&mut self.x, &mut self.y, &mut self.scale, &mut self.rotation, &mut self.opacity, &mut self.ramp]
     }
 
     pub fn speed_valid(&self) -> bool {
@@ -155,10 +190,13 @@ impl ClipProps {
 
     /// Source units consumed after `elapsed` timeline units at this speed.
     pub fn source_offset(&self, elapsed: i64) -> i64 {
-        if !self.speed_valid() {
-            return elapsed;
+        let (num, den) = if self.speed_valid() { self.speed } else { (1, 1) };
+        if !self.ramp.is_animated() && self.ramp.value == 1.0 {
+            // No ramp: exact integer arithmetic.
+            return (elapsed as i128 * num as i128 / den as i128) as i64;
         }
-        (elapsed as i128 * self.speed.0 as i128 / self.speed.1 as i128) as i64
+        // With a ramp the source position is the area under the speed curve.
+        (self.ramp.integral(elapsed) * num as f64 / den as f64).floor() as i64
     }
 
     /// Linear gain of fades at `elapsed` of a clip `len` long (same unit as
@@ -434,5 +472,43 @@ mod transition_tests {
         assert_eq!(props.transition, None);
         let json = serde_json::to_string(&ClipProps::default()).unwrap();
         assert!(!json.contains("transition"));
+    }
+}
+
+#[cfg(test)]
+mod ramp_tests {
+    use super::*;
+
+    #[test]
+    fn the_area_under_a_ramp_is_the_source_position() {
+        // Constant: plain multiplication.
+        assert_eq!(Param::constant(0.5).integral(100), 50.0);
+        // Held at 1 until frame 20, down to 0.25 at frame 60, held after.
+        let ramp = Param { value: 1.0, keys: vec![Key { frame: 20, value: 1.0 }, Key { frame: 60, value: 0.25 }] };
+        assert_eq!(ramp.integral(10), 10.0);
+        assert_eq!(ramp.integral(20), 20.0);
+        // Halfway down the slope the speed is 0.625: 20 frames at a mean of 0.8125.
+        assert!((ramp.integral(40) - (20.0 + 20.0 * 0.8125)).abs() < 1e-6);
+        assert!((ramp.integral(60) - (20.0 + 40.0 * 0.625)).abs() < 1e-6);
+        assert!((ramp.integral(100) - (45.0 + 40.0 * 0.25)).abs() < 1e-6);
+        assert_eq!(ramp.integral(-8), -8.0);
+        // It never runs backwards while the speed is positive.
+        let mut last = -1.0;
+        for frame in 0..120 {
+            assert!(ramp.integral(frame) > last);
+            last = ramp.integral(frame);
+        }
+    }
+
+    #[test]
+    fn a_ramp_scales_the_set_speed_and_no_ramp_stays_exact() {
+        let mut props = ClipProps { speed: (2, 1), ..ClipProps::default() };
+        assert_eq!(props.source_offset(7), 14);
+        props.ramp = Param { value: 1.0, keys: vec![Key { frame: 0, value: 1.0 }, Key { frame: 100, value: 0.0 }] };
+        // After 100 frames at a mean of half the doubled speed: 100 source frames.
+        assert_eq!(props.source_offset(100), 100);
+        assert_eq!(props.source_offset(50), 75);
+        // Without a ramp the field is not written to files at all.
+        assert!(!serde_json::to_string(&ClipProps::default()).unwrap().contains("ramp"));
     }
 }

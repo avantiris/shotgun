@@ -176,7 +176,13 @@ Status:
 - **M10 in progress.** Done: 10-bit masters with real 10-bit values where
   the picture is graded (the compositor's floating-point result leaves the
   GPU as P010). Sources are still decoded to 8 bits, so a 10-bit *source*
-  is not yet carried through at full depth. Open: speed ramps,
+  is not yet carried through at full depth. Speed ramps: a keyframeable
+  factor on a clip's speed ("Speed ramp" in the clip inspector; `F` sets a
+  key at the playhead); the source position is the area under the curve.
+  The picture follows the ramp, the sound of the take does not, and the
+  clip keeps its length. Checked in the app: a ramp from 1 to 0.2 between
+  frames 60 and 300 showed source second 4.4 at frame 600, as computed.
+  Open:
   stabilisation, background render cache.
 
 ## Stage 3: DAW

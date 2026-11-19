@@ -160,6 +160,11 @@ impl ClipPanel {
             });
         }
         ui.horizontal(|ui| {
+            if video && props.title.is_none() {
+                // A factor on the speed that keyframes can change along the clip.
+                // The sound of the take is not ramped with it.
+                changed |= value_row(ui, "Speed ramp", &mut props.ramp, at, 0.05..=8.0, 0.005, " x");
+            }
             ui.add_sized(
                 [84.0, 16.0],
                 egui::Label::new(RichText::new("Fade in / out").color(theme::DIM)).halign(egui::Align::LEFT),
