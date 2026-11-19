@@ -635,11 +635,6 @@ impl Shell {
             }
             Action::Help => self.help = !self.help,
             Action::FitTimeline => self.editor.timeline.refit(),
-            Action::ZoomIn | Action::ZoomOut => {
-                if let Some(sequence) = self.session.as_ref().and_then(|s| s.project().sequences.first().cloned()) {
-                    self.editor.timeline.zoom_step(action == Action::ZoomIn, &sequence);
-                }
-            }
             Action::Mixer => {
                 self.editor.mixer.open = !self.editor.mixer.open;
                 self.editor.colour.open = false;

@@ -37,7 +37,7 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Action | Result |
 |--------|--------|
 | Wheel on timeline | move along the sequence (asked for in feedback F4.5; it zoomed before) |
-| Ctrl + wheel, or a pinch | zoom around the pointer (F4.5). `Zoom in`, `Zoom out`, `Show all` above the timeline do it in steps |
+| Ctrl + wheel, or a pinch | zoom around the pointer (F4.5); H shows the whole sequence |
 | Drag the line across a sound clip up or down | that clip's volume (F4.2), from +12 dB at the top to silence at the bottom, 0 dB a quarter down; in whole decibels, with Shift a tenth per point. All selected sound clips change by as much. One undo step per pull. The same is in the clip's menu (`Clip volume`) and the inspector |
 | Middle drag | pan timeline / viewer |
 | Click or drag on the ruler or on empty timeline | set / scrub playhead |
@@ -50,28 +50,26 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Drag an asset from the panel onto the timeline | place it where it is let go: picture on the video track under the pointer, sound on an audio track; snaps like a moved clip (Alt disables). Where the spot is taken, or outside the tracks, it goes to the next free track, and a new track is made if there is none. A ghost shows the result before the button is released |
 | Drop files from another application onto the timeline | import them and place them there, one after the other |
 | `+ Video` / `+ Audio` above the track names | add a track (video on top, audio at the bottom) |
-| Right click on the timeline | paste, marker, title, show all; add a video or audio track, remove the empty track under the pointer |
-| Right click on a clip | remove its sound and keep the picture, or the reverse; its scenario; its volume; split, cut off start or end, copy, cut, delete, keyframe, whip-pan (each with its key written beside it) |
+| Right click on the timeline | marker, title; add a video or audio track, remove the empty track under the pointer |
+| Right click on a clip | remove its sound and keep the picture, or the reverse; its scenario; its volume; keyframe, remove keyframe, whip-pan, delete (each with its key written beside it) |
 | Shift while dragging an asset onto a track | place only the part that belongs there (the sound on an audio track, the picture on a video track) |
 | Right click on an asset | place it, or only its sound or picture, at the playhead; use it as the song; sync it (or all takes) to the song; lay it as a camera angle to sync by hand; remove it from the project |
 | `shown` / `hidden` next to a video track name | take the track out of the picture: a camera angle to cut from |
 | `M` / `S` next to an audio track name | mute, solo |
 
-## Buttons for what the keys do (feedback F4.1)
+## Buttons for the less obvious keys (feedback F4.1, narrowed in F5.1)
 
-Everything that has a key can also be clicked, and the key is written on
-the button or beside the menu entry, so that the keys are learnt by using
-the buttons (`PROPOSED` where and how):
+What is not found by trying has a button with its key written on it, so
+that the key is learnt by using the button. The classic actions (split,
+cut off, delete, copy, cut, paste, undo, redo, zoom, play, stepping) have
+no buttons: the user asked for them to be taken out again.
 
-- Under the viewer: start, previous cut, frame back, play / pause, frame
-  on, next cut, end, record movement.
-- Above the timeline: undo, redo; split, cut off start, cut off end,
-  delete and close the gap, delete; copy, cut, paste; marker, title,
-  whip-pan, keyframe; zoom out, zoom in, show all. Buttons that need a
-  selection are grey without one.
-- Top bar: `Menu` (every action of the key map, by group, as the key list
-  shows them), checkpoint, history, export, keys, colour, mixer.
-- Right click on a clip or on the timeline: see the mouse table.
+- Above the timeline: keyframe, remove keyframe, record movement,
+  whip-pan, title, marker. Those that need a selected clip are grey
+  without one.
+- Top bar: checkpoint, history, export, keys, colour, mixer.
+- Right click on a clip: keyframe, remove keyframe, whip-pan, delete, and
+  the clip's volume, sound / picture and scenario.
 
 Buttons and menu entries run the same action as the key (`Shell::act`), so
 they cannot drift apart. The key shown is the one in force, the user's key

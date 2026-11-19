@@ -754,15 +754,10 @@ impl Timeline {
                 }
                 ui.separator();
                 for (action, label) in [
-                    (Action::Split, "Split at the playhead"),
-                    (Action::RippleStart, "Remove up to the playhead"),
-                    (Action::RippleEnd, "Remove from the playhead on"),
-                    (Action::Copy, "Copy"),
-                    (Action::Cut, "Cut"),
-                    (Action::RippleDelete, "Delete and close the gap"),
-                    (Action::Delete, "Delete, leave the gap"),
                     (Action::KeyframeSet, "Keyframe at the playhead"),
+                    (Action::KeyframeRemove, "Remove the keyframe here"),
                     (Action::Transition, "Whip-pan on the nearest cut"),
+                    (Action::Delete, "Delete clip"),
                 ] {
                     if crate::actions::entry(ui, action, label) {
                         self.actions.push(action);
@@ -770,12 +765,7 @@ impl Timeline {
                 }
                 ui.separator();
             }
-            for (action, label) in [
-                (Action::PasteClips, "Paste at the playhead"),
-                (Action::Marker, "Marker at the playhead"),
-                (Action::AddTitle, "Add a title"),
-                (Action::FitTimeline, "Show the whole sequence"),
-            ] {
+            for (action, label) in [(Action::Marker, "Marker at the playhead"), (Action::AddTitle, "Add a title")] {
                 if crate::actions::entry(ui, action, label) {
                     self.actions.push(action);
                 }
@@ -847,14 +837,6 @@ impl Timeline {
         let widest = ((end * 2.0).max(600.0) / lanes_width.max(1.0) as f64).max(0.01);
         self.frames_per_point = (self.frames_per_point * factor).clamp(0.005, widest);
         self.left = anchor - x as f64 * self.frames_per_point;
-    }
-
-    /// Zooms in (`true`) or out one step around the playhead, or around
-    /// the middle if the playhead is out of view: the zoom buttons.
-    pub fn zoom_step(&mut self, closer: bool, sequence: &Sequence) {
-        let at = ((self.last_playhead as f64 - self.left) / self.frames_per_point) as f32;
-        let x = if (0.0..=self.lanes_w).contains(&at) { at } else { self.lanes_w / 2.0 };
-        self.zoom_around(if closer { 0.6 } else { 1.0 / 0.6 }, x, self.lanes_w, sequence_end(sequence) as f64);
     }
 
     /// The clip under a point and, if the point is near one of its ends, that end.

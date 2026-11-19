@@ -589,15 +589,11 @@ fn the_wheel_moves_along_the_timeline_and_with_ctrl_zooms_around_the_pointer() {
     let (here_moved, further_moved) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
     assert!(here_moved > here_after + 10, "{here_after} -> {here_moved}");
     assert!(((further_moved - here_moved) - (further_after - here_after)).abs() <= 2);
-    // H shows the whole sequence again; so does its button.
+    // H shows the whole sequence again.
     harness.key_press(Key::H);
     harness.run_steps(3);
     let (here_again, further_again) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
     assert_eq!((here_again, further_again), (here, further));
-    click(&mut harness, "Zoom in");
-    assert!(seek_at(&mut harness, at + vec2(200.0, 0.0)) - seek_at(&mut harness, at) < further - here);
-    click(&mut harness, "Show all");
-    assert_eq!(seek_at(&mut harness, at), here);
 }
 
 #[test]
@@ -645,50 +641,38 @@ fn ctrl_c_x_and_v_copy_cut_and_paste_the_selected_clips() {
 }
 
 #[test]
-fn the_buttons_do_what_the_keys_do_and_show_them() {
+fn the_less_obvious_keys_have_buttons_that_show_them() {
     let mut harness = editor();
     place(&mut harness, "first take");
-    // Above the timeline: split at the playhead, then undo and redo.
-    playhead(&mut harness, 300);
-    click(&mut harness, "Split");
-    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300)]);
-    click(&mut harness, "Undo");
-    assert_eq!(clips(&harness, 0), vec![(0, 600)]);
-    click(&mut harness, "Redo");
-    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300)]);
-    // The key is on the button.
-    assert_eq!(
-        (sg_ui::keymap::hint(sg_ui::Action::Cut), sg_ui::keymap::hint(sg_ui::Action::Undo)),
-        ("Ctrl+X".to_owned(), "Y".to_owned())
-    );
-    // Select the second half, copy and paste by button.
-    let second = on_timeline(&harness, 400.0, 0);
-    pointer(&mut harness, second, egui::PointerButton::Primary);
-    click(&mut harness, "Copy");
-    playhead(&mut harness, 1200);
-    click(&mut harness, "Paste");
-    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300), (1200, 300)]);
-    click(&mut harness, "Delete");
-    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300)]);
-    // Under the viewer: the playing keys.
-    click(&mut harness, "Play");
-    click(&mut harness, "Frame on");
-    click(&mut harness, "Next cut");
-    let sent = transport(&harness);
-    assert!(sent.contains(&sg_ui::Transport::Toggle) && sent.contains(&sg_ui::Transport::Step(1)));
-    assert!(sent.iter().any(|t| matches!(t, sg_ui::Transport::Seek(_))));
-    // The right-click menu of a clip carries the cutting actions with their keys.
-    playhead(&mut harness, 100);
+    place(&mut harness, "second take");
+    let markers = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0].markers.iter().map(|m| m.frame).collect::<Vec<_>>()
+    };
+    let props = |harness: &Harness<'_, App>, start: i64| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = &project.sequences[0].tracks[0];
+        track.props_of(track.clips.at(start).unwrap().id).map(|p| sg_core::ClipProps::clone(p))
+    };
+    // The key is on the button (here: as the map in force names it).
+    assert_eq!(sg_ui::keymap::hint(sg_ui::Action::KeyframeSet), "F");
+    // Above the timeline: marker, whip-pan on the nearest cut, keyframe.
+    playhead(&mut harness, 590);
+    click(&mut harness, "Marker");
+    assert_eq!(markers(&harness), [590]);
+    click(&mut harness, "Whip-pan");
+    assert!(props(&harness, 600).is_some_and(|p| p.transition.is_some()));
     let first = on_timeline(&harness, 12.0, 0);
+    pointer(&mut harness, first, egui::PointerButton::Primary);
+    playhead(&mut harness, 100);
+    click(&mut harness, "Keyframe");
+    assert_eq!(props(&harness, 0).unwrap().x.keys.iter().map(|k| k.frame).collect::<Vec<_>>(), [100]);
+    click(&mut harness, "Remove keyframe");
+    assert!(props(&harness, 0).is_none_or(|p| p.x.keys.is_empty()));
+    // The same in the clip's right-click menu.
     pointer(&mut harness, first, egui::PointerButton::Secondary);
-    click(&mut harness, "Split at the playhead");
-    assert_eq!(clips(&harness, 0), vec![(0, 100), (100, 200), (300, 300)]);
-    // The menu at the top lists everything that has a key.
-    click(&mut harness, "Menu");
-    click(&mut harness, "Cutting");
-    click(&mut harness, "Marker at the playhead (again: remove it)");
-    let project = harness.state().shell.session().unwrap().project().clone();
-    assert_eq!(project.sequences[0].markers.iter().map(|m| m.frame).collect::<Vec<_>>(), [100]);
+    click(&mut harness, "Keyframe at the playhead");
+    assert_eq!(props(&harness, 0).unwrap().x.keys.len(), 1);
 }
 
 #[test]

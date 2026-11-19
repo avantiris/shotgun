@@ -50,10 +50,6 @@ pub enum Action {
     Nudge(i8),
     /// Show the whole sequence in the timeline.
     FitTimeline,
-    /// Show less (or more) of the sequence, larger (or smaller). No keys
-    /// of their own: Ctrl + wheel, or the buttons.
-    ZoomIn,
-    ZoomOut,
     /// Show or hide the colour panel.
     Colour,
     /// A/B: switch the look chain, or the match, of the shown scenario on and off.
@@ -398,8 +394,6 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::History => ("Panels", "saved states and checkpoints"),
         Action::Help => ("Panels", "this list"),
         Action::FitTimeline => ("Playing", "show the whole sequence in the timeline"),
-        Action::ZoomIn => ("Playing", "zoom into the timeline"),
-        Action::ZoomOut => ("Playing", "zoom out of the timeline"),
         Action::TogglePerf => ("Panels", "performance numbers"),
         Action::Export => ("Output", "export panel"),
         Action::ExportAgain => ("Output", "the last export again"),
@@ -434,25 +428,6 @@ pub fn cap(binding: &Binding) -> String {
 /// hint on buttons and menu entries. Empty if the action has no key.
 pub fn hint(action: Action) -> String {
     active().iter().find(|b| b.action == action).map(cap).unwrap_or_default()
-}
-
-/// Every action a menu can offer, once, by group: the key reference as
-/// things to click. (`Angle` and `Nudge` stand for their whole family.)
-pub fn menu() -> Vec<(&'static str, Vec<(Action, &'static str)>)> {
-    let mut groups: Vec<(&'static str, Vec<(Action, &'static str)>)> = Vec::new();
-    for order in ["Playing", "Cutting", "Making", "Panels", "Output", "Project"] {
-        let mut lines: Vec<(Action, &'static str)> = Vec::new();
-        for binding in KEYMAP {
-            if let Some((group, what)) = describe(binding.action)
-                && group == order
-                && !lines.iter().any(|(action, _)| *action == binding.action)
-            {
-                lines.push((binding.action, what));
-            }
-        }
-        groups.push((order, lines));
-    }
-    groups
 }
 
 /// The key reference: every listed action once, with all its keys, by group.

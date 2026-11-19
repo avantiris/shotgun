@@ -43,7 +43,6 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "copy" => Step::Dev(DevStep::Act(Action::Copy)),
         "cut" => Step::Dev(DevStep::Act(Action::Cut)),
         "ctrlv" => Step::Dev(DevStep::Act(Action::Paste)),
-        "zoomin" => Step::Dev(DevStep::Act(Action::ZoomIn)),
         "paste" => Step::Dev(DevStep::Act(Action::PasteClips)),
         "marker" => Step::Dev(DevStep::Act(Action::Marker)),
         "history" => Step::Dev(DevStep::Act(Action::History)),

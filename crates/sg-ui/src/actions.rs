@@ -27,7 +27,7 @@ fn tip(action: Action) -> Option<String> {
 }
 
 /// The descriptions of the key reference start in lower case.
-pub fn sentence(what: &str) -> String {
+fn sentence(what: &str) -> String {
     let mut letters = what.chars();
     letters.next().map(|first| first.to_uppercase().chain(letters).collect()).unwrap_or_default()
 }
@@ -37,6 +37,7 @@ pub fn button(ui: &mut egui::Ui, action: Action, label: &str) -> bool {
     enabled_button(ui, true, action, label)
 }
 
+/// The same, grey while the action has nothing to act on.
 pub fn enabled_button(ui: &mut egui::Ui, enabled: bool, action: Action, label: &str) -> bool {
     let response = ui.add_enabled(enabled, widget(action, label));
     // Named by what it does alone, without the key drawn beside it.
