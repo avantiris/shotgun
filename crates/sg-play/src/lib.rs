@@ -799,6 +799,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                         fade_in: samples(props.fade_in),
                         fade_out: samples(props.fade_out),
                         speed: if props.speed_valid() { props.speed } else { (1, 1) },
+                        warp: speed_warp(sequence, &c, props),
                     }
                 })
                 .collect(),
@@ -846,4 +847,99 @@ fn level_points(level: &sg_core::Param, samples: impl Fn(i64) -> i64) -> Vec<(i6
     // Keyframes a frame apart can make points fall on the same sample.
     points.dedup_by_key(|p| p.0);
     points
+}
+
+/// The source position of a sound clip along a speed ramp, for the engine.
+/// The ramp is a property of the picture; the sound of the same take (same
+/// asset, same place) follows it. Empty when no ramp applies.
+fn speed_warp(sequence: &Sequence, clip: &sg_core::Clip, own: &ClipProps) -> Vec<(i64, f64)> {
+    let samples = |frames: i64| sequence.rate.frames_to_samples(frames, SAMPLE_RATE);
+    let start = sequence.rate.samples_to_frames(clip.start, SAMPLE_RATE);
+    if samples(start) != clip.start {
+        // Not on a frame: no picture clip can be its partner.
+        return Vec::new();
+    }
+    let ramp = sequence
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video)
+        .filter_map(|t| {
+            let picture = t.clips.get(start).filter(|p| p.asset == clip.asset && samples(p.len) == clip.len)?;
+            t.props_of(picture.id).map(|p| &p.ramp)
+        })
+        .find(|ramp| !ramp.is_one());
+    let Some(ramp) = ramp else { return Vec::new() };
+    let (num, den) = if own.speed_valid() { own.speed } else { (1, 1) };
+    let frames = sequence.rate.samples_to_frames(clip.len, SAMPLE_RATE);
+    // The area under a moving speed is curved: points along every stretch.
+    let mut at: Vec<i64> = vec![0, frames];
+    let mut edges: Vec<i64> = std::iter::once(0)
+        .chain(ramp.keys.iter().map(|k| k.frame.clamp(0, frames)))
+        .chain(std::iter::once(frames))
+        .collect();
+    edges.dedup();
+    for pair in edges.windows(2) {
+        const STEPS: i64 = 16;
+        at.extend((0..=STEPS).map(|step| pair[0] + (pair[1] - pair[0]) * step / STEPS));
+    }
+    at.sort_unstable();
+    at.dedup();
+    let per_frame = samples(1_000_000) as f64 / 1_000_000.0;
+    at.into_iter().map(|f| (samples(f), ramp.integral(f) * num as f64 / den as f64 * per_frame)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use sg_core::model::{SequenceHeader, TrackHeader};
+    use sg_core::time::Rate;
+    use sg_core::{AssetId, Clip, ClipId, Key, Op, Param, Project, ProjectId, SequenceId, TrackId, apply};
+
+    use super::*;
+
+    #[test]
+    fn the_sound_of_a_take_follows_the_pictures_speed_ramp() {
+        let (seq, v1, a1) = (SequenceId(1), TrackId(1), TrackId(2));
+        let picture = Clip { id: ClipId(1), asset: AssetId(7), start: 120, len: 600, src_in: 0 };
+        // The same stretch in samples: 60 frames a second, 800 samples a frame.
+        let sound = Clip { id: ClipId(2), start: 120 * 800, len: 600 * 800, ..picture };
+        // Normal speed for a second, then down to half speed over two seconds.
+        let ramp = Param { value: 1.0, keys: vec![Key::new(60, 1.0), Key::new(180, 0.5)] };
+        let props = ClipProps { ramp: ramp.clone(), ..ClipProps::default() };
+        let ops = [
+            Op::AddSequence {
+                index: 0,
+                sequence: SequenceHeader {
+                    id: seq,
+                    name: "Main".into(),
+                    rate: Rate::FPS_60,
+                    width: 1920,
+                    height: 1080,
+                },
+            },
+            Op::AddTrack { seq, index: 0, track: TrackHeader { id: v1, kind: TrackKind::Video, name: "V1".into() } },
+            Op::AddTrack { seq, index: 1, track: TrackHeader { id: a1, kind: TrackKind::Audio, name: "A1".into() } },
+            Op::InsertClip { seq, track: v1, clip: picture },
+            Op::InsertClip { seq, track: a1, clip: sound },
+            Op::SetClipProps { seq, track: v1, clip: picture.id, props: Some(Box::new(props)) },
+        ];
+        let mut project = std::sync::Arc::new(Project::new(ProjectId(1), "p"));
+        for op in &ops {
+            project = apply(&project, op).unwrap().0;
+        }
+        let mix = audio_mix(std::path::Path::new("/nowhere"), &project.sequences[0]);
+        let warp = &mix.tracks[0].clips[0].warp;
+        assert_eq!(warp.first(), Some(&(0, 0.0)));
+        // At the first keyframe a second of source has gone by; at the end
+        // the area under the curve: 60 + 120 * 0.75 + 420 * 0.5 frames.
+        assert!(warp.contains(&(60 * 800, 60.0 * 800.0)));
+        let end = warp.last().unwrap();
+        assert_eq!(end.0, 600 * 800);
+        assert!((end.1 - (60.0 + 90.0 + 210.0) * 800.0).abs() < 1.0, "{end:?}");
+        assert!(warp.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 < w[1].1));
+        // Without a ramp nothing is handed over.
+        let plain = apply(&project, &Op::SetClipProps { seq, track: v1, clip: picture.id, props: None }).unwrap().0;
+        assert!(audio_mix(std::path::Path::new("/nowhere"), &plain.sequences[0]).tracks[0].clips[0].warp.is_empty());
+    }
 }

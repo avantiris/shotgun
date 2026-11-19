@@ -220,7 +220,9 @@ Status:
   is not yet carried through at full depth. Speed ramps: a keyframeable
   factor on a clip's speed ("Speed ramp" in the clip inspector; `F` sets a
   key at the playhead); the source position is the area under the curve.
-  The picture follows the ramp, the sound of the take does not, and the
+  The picture follows the ramp and, since later the same night, so does the
+  sound of the same take (resampled along the curve, so its pitch moves
+  with the speed; the waveform drawn on the clip does not show it). The
   clip keeps its length. Checked in the app: a ramp from 1 to 0.2 between
   frames 60 and 300 showed source second 4.4 at frame 600, as computed.
   Stabilisation: "Stabilise" in the clip inspector shows a copy of the
@@ -233,7 +235,7 @@ Status:
   frames); the whole asset is processed even for a short clip. Not built:
   the background render cache (nothing built so far needs it to play in
   real time at proxy quality), carrying 10-bit sources through at full
-  depth, ramping the sound with the picture.
+  depth.
 
 
 - **Known problem, not found (2026-11-19).** One automated run out of

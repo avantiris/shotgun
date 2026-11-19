@@ -74,6 +74,7 @@ fn clips_land_on_their_timeline_samples() {
             fade_out: 0,
             speed: (1, 1),
             gain_keys: Vec::new(),
+            warp: Vec::new(),
         }])],
     });
     assert_eq!(engine.position(), 0);
@@ -114,6 +115,7 @@ fn mono_gain_pan_mute_and_mixing() {
         fade_out: 0,
         speed: (1, 1),
         gain_keys: Vec::new(),
+        warp: Vec::new(),
     };
     let engine = Engine::start(Backend::Manual).unwrap();
     let mix = |pan: f32, mute: bool| Mix {
@@ -161,6 +163,7 @@ fn pause_seek_and_resume_are_sample_accurate() {
             fade_out: 0,
             speed: (1, 1),
             gain_keys: Vec::new(),
+            warp: Vec::new(),
         }])],
     });
     engine.play(0);
@@ -208,6 +211,7 @@ fn a_missing_file_is_silence_until_it_appears() {
             fade_out: 0,
             speed: (1, 1),
             gain_keys: Vec::new(),
+            warp: Vec::new(),
         }])],
     };
     engine.set_mix(mix.clone());
@@ -260,6 +264,7 @@ fn fades_and_speed() {
         fade_out: 100,
         speed: (1, 1),
         gain_keys: Vec::new(),
+        warp: Vec::new(),
     };
     engine.set_mix(Mix { tracks: vec![track(vec![faded])], master_gain: 1.0 });
     engine.play(0);
@@ -287,6 +292,7 @@ fn fades_and_speed() {
             fade_out: 0,
             speed,
             gain_keys: Vec::new(),
+            warp: Vec::new(),
         };
         engine.set_mix(Mix { tracks: vec![track(vec![clip])], master_gain: 1.0 });
         engine.play(0);
@@ -337,6 +343,7 @@ fn noise_reduction_keeps_the_track_in_time() {
         fade_out: 0,
         speed: (1, 1),
         gain_keys: Vec::new(),
+        warp: Vec::new(),
     };
     let plain = rendered(Mix { tracks: vec![track(vec![span.clone()])], master_gain: 1.0 }, 48_000);
     // Blended half and half, the treated sound must line up with the plain
@@ -364,6 +371,7 @@ fn faders_move_without_a_new_graph_and_meters_follow() {
         fade_out: 0,
         speed: (1, 1),
         gain_keys: Vec::new(),
+        warp: Vec::new(),
     };
     let mix = |gain: f32, master: f32| Mix {
         tracks: vec![TrackMix { gain, ..track(vec![span.clone()]) }],
@@ -405,6 +413,7 @@ fn the_master_never_leaves_full_scale() {
         fade_out: 0,
         speed: (1, 1),
         gain_keys: Vec::new(),
+        warp: Vec::new(),
     };
     let engine = Engine::start(Backend::Manual).unwrap();
     engine.set_mix(Mix { tracks: vec![track(vec![span.clone()]), track(vec![span])], master_gain: 1.0 });
@@ -437,6 +446,7 @@ fn volume_keyframes_move_the_level_along_the_clip() {
         fade_out: 0,
         speed: (1, 1),
         gain_keys: vec![(12_000, 0.0), (24_000, -20.0)],
+        warp: Vec::new(),
     };
     let out = rendered(Mix { tracks: vec![track(vec![span])], master_gain: 1.0 }, 36_000);
     let at = |sample: usize| out[sample * 2];
@@ -463,6 +473,7 @@ fn a_grain_is_heard_at_the_playhead_and_the_clock_stays() {
             fade_out: 0,
             speed: (1, 1),
             gain_keys: Vec::new(),
+            warp: Vec::new(),
         }])],
     });
     engine.grain(10_000);
@@ -483,4 +494,38 @@ fn a_grain_is_heard_at_the_playhead_and_the_clock_stays() {
     engine.settle();
     assert!(close(pull(&engine, 256)[0], 0.5));
     assert!(engine.is_playing());
+}
+
+#[test]
+fn a_changing_speed_reads_the_source_along_its_curve() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = wav(dir.path(), "r.wav", 1, 48_000, |n, _| ramp(n));
+    // Normal speed for 1000 samples, then half speed.
+    let warp = vec![(0, 0.0), (1000, 1000.0), (5000, 3000.0)];
+    let out = rendered(
+        Mix {
+            master_gain: 1.0,
+            tracks: vec![track(vec![ClipSpan {
+                start: 0,
+                len: 5000,
+                src_in: 200,
+                wav: file,
+                gain: 1.0,
+                fade_in: 0,
+                fade_out: 0,
+                speed: (1, 1),
+                gain_keys: Vec::new(),
+                warp,
+            }])],
+        },
+        5000,
+    );
+    // Each output sample holds the source position it was read from.
+    for (n, source) in [(0, 200.0), (999, 1199.0), (1000, 1200.0), (1001, 1200.5), (3000, 2200.0), (4999, 3199.5)] {
+        assert!(
+            (out[2 * n] * 100_000.0 - source).abs() < 0.2,
+            "sample {n}: {} instead of {source}",
+            out[2 * n] * 100_000.0
+        );
+    }
 }

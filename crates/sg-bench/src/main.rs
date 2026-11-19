@@ -333,6 +333,7 @@ fn bench_audio(target: Option<&str>, secs: u64, dir: &Path) -> anyhow::Result<()
         fade_out: 0,
         speed: (1, 1),
         gain_keys: Vec::new(),
+        warp: Vec::new(),
     };
     engine.set_mix(Mix { tracks: vec![TrackMix::plain(vec![clip])], master_gain: 1.0 });
 

@@ -64,6 +64,10 @@ pub struct ClipSpan {
     /// decibels), ascending. Empty: `gain` alone. Between two the level moves
     /// evenly in decibels; before the first and after the last it holds.
     pub gain_keys: Vec<(i64, f32)>,
+    /// A changing speed: (samples of timeline time since the clip's start,
+    /// samples of source consumed by then), ascending, straight lines
+    /// between. Empty: `speed` alone. The sound is resampled along it.
+    pub warp: Vec<(i64, f64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

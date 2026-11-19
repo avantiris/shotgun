@@ -442,6 +442,14 @@ fn key_level(keys: &[(i64, f32)], at: i64) -> f32 {
     }
 }
 
+/// Source samples consumed `at` samples into a clip with a changing speed.
+/// Outside the points the nearest stretch is continued.
+fn warp_at(warp: &[(i64, f64)], at: i64) -> f64 {
+    let after = warp.partition_point(|p| p.0 <= at).clamp(1, warp.len() - 1);
+    let (a, b) = (warp[after - 1], warp[after]);
+    a.1 + (b.1 - a.1) * ((at - a.0) as f64 / (b.0 - a.0).max(1) as f64)
+}
+
 /// Adds the part of `clip` that starts at timeline sample `from` to `out`
 /// (interleaved stereo), with the clip's speed, gain and fades applied.
 fn render_clip(wav: &Wav, clip: &ClipSpan, from: i64, out: &mut [f32], raw: &mut Vec<u8>, segment: &mut Vec<f32>) {
@@ -450,7 +458,23 @@ fn render_clip(wav: &Wav, clip: &ClipSpan, from: i64, out: &mut [f32], raw: &mut
     segment.clear();
     segment.resize(out.len(), 0.0);
     let (num, den) = (clip.speed.0.max(1) as i64, clip.speed.1.max(1) as i64);
-    if num == den {
+    if clip.warp.len() >= 2 {
+        // A speed that changes along the clip: each output sample is picked
+        // from where the curve says the source has got to.
+        let first = warp_at(&clip.warp, elapsed).floor().max(0.0);
+        let last = warp_at(&clip.warp, elapsed + frames as i64);
+        let needed = (last - first).max(0.0).ceil() as usize + 3;
+        let mut source = vec![0.0f32; needed * 2];
+        wav.mix_into(clip.src_in + first as i64, &mut source, 1.0, raw);
+        for (i, frame) in segment.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            let position = (warp_at(&clip.warp, elapsed + i as i64) - first).max(0.0);
+            let index = (position.floor() as usize).min(needed - 2);
+            let t = (position - index as f64).clamp(0.0, 1.0) as f32;
+            for (c, sample) in frame.iter_mut().enumerate() {
+                *sample = source[index * 2 + c] * (1.0 - t) + source[index * 2 + 2 + c] * t;
+            }
+        }
+    } else if num == den {
         wav.mix_into(clip.src_in + elapsed, segment, 1.0, raw);
     } else {
         // Read the stretch of source this block covers, then pick each
