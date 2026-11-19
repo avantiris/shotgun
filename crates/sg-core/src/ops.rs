@@ -670,7 +670,7 @@ pub(crate) mod tests {
     /// An op on the two test tracks, valid or not. `pick` selects an
     /// existing clip where one is needed.
     pub(crate) fn any_op() -> impl Strategy<Value = (u8, bool, i64, i64, usize, u64)> {
-        (0u8..6, any::<bool>(), 0i64..2000, 1i64..60, any::<usize>(), 1u64..u64::MAX)
+        (0u8..13, any::<bool>(), 0i64..2000, 1i64..60, any::<usize>(), 1u64..u64::MAX)
     }
 
     pub(crate) fn make_op(p: &Project, (kind, video, a, b, pick, id): (u8, bool, i64, i64, usize, u64)) -> Op {
@@ -678,7 +678,68 @@ pub(crate) mod tests {
         let clips = &p.sequence(SEQ).unwrap().track(track).unwrap().clips;
         let existing = (!clips.is_empty()).then(|| clips.iter().nth(pick % clips.len()).unwrap());
         match (kind, existing) {
+            // Settings of tracks, the sequence and scenarios need no clip.
+            (7, _) => {
+                let mix = TrackSettings {
+                    gain_db: -(b as f32) / 2.0,
+                    mute: pick % 2 == 0,
+                    hidden: pick % 3 == 0,
+                    eq_mid_hz: 500.0 + a as f32,
+                    comp_threshold_db: -(a % 40) as f32,
+                    ..TrackSettings::default()
+                };
+                Op::SetTrackMix { seq: SEQ, track, mix }
+            }
+            (8, _) => Op::SetMasterGain { id: SEQ, db: (b - 30) as f32 / 4.0 },
+            (9, _) => {
+                let song = Song { asset: AssetId(id as u128 % 5), tempo: (b % 3) as i8 - 1 };
+                Op::SetSong { id: SEQ, song: (pick % 4 != 0).then_some(song) }
+            }
+            (10, _) => {
+                // One of three scenarios: made, changed or removed.
+                let scenario_id = ScenarioId(1 + id % 3);
+                let mut scenario = match p.scenarios.get(&scenario_id) {
+                    Some(known) => Scenario::clone(known),
+                    None => Scenario::new(scenario_id, format!("s{b}"), (a % 8) as u8),
+                };
+                scenario.strength = (b % 5) as f32 / 4.0;
+                scenario.lut = if pick % 2 == 0 { "film.cube".to_owned() } else { String::new() };
+                let stats = crate::colour::ColourStats {
+                    log_lum: -(a as f32) / 512.0,
+                    spread: 1.0,
+                    wb: [0.25, -0.125],
+                    saturation: 0.5,
+                };
+                let member = crate::colour::Member { stats: (pick % 3 != 0).then_some(stats) };
+                scenario.members.insert(AssetId(a as u128 % 4), member);
+                if pick % 4 == 0 && scenario.look.len() < crate::colour::MAX_MODULES {
+                    scenario.look.push(crate::colour::Module::new(crate::colour::ModuleKind::ALL[b as usize % 9]));
+                }
+                Op::SetScenario { id: scenario_id, scenario: (pick % 7 != 0).then(|| Box::new(scenario)) }
+            }
             (0, _) | (_, None) => Op::InsertClip { seq: SEQ, track, clip: clip(id, a, b) },
+            (6, Some(c)) => {
+                // Properties of every kind, in values that are exact in text.
+                let transition = crate::props::Transition {
+                    frames: 2 + 2 * (b % 4) as u8,
+                    angle: (a % 4) as f32 * 90.0,
+                    ..Default::default()
+                };
+                let props = ClipProps {
+                    exposure: (b % 8) as f32 / 4.0,
+                    stabilise: pick % 2 == 0,
+                    ramp: crate::props::Param {
+                        value: 1.0,
+                        keys: vec![crate::props::Key { frame: a % 50, value: 0.5 }],
+                    },
+                    transition: (pick % 3 == 0).then_some(transition),
+                    ..ClipProps::default()
+                };
+                Op::SetClipProps { seq: SEQ, track, clip: c.id, props: (pick % 5 != 0).then(|| Box::new(props)) }
+            }
+            (11 | 12, Some(_)) => {
+                Op::overwrite(p.sequence(SEQ).unwrap(), track, clip(id, a, b), ClipId(id ^ 1)).unwrap()
+            }
             (1, Some(c)) => Op::RemoveClip { seq: SEQ, track, start: c.start },
             (2, Some(c)) => Op::SetClip { seq: SEQ, track, start: c.start, clip: Clip { start: a, len: b, ..c } },
             (3, Some(c)) => Op::split(SEQ, track, &c, c.start + b % c.len, ClipId(id))
