@@ -169,7 +169,6 @@ Status:
   playhead, synced by hand" in the asset menu): picture on a camera track,
   sound on a muted track below, moved together by dragging or the arrow
   keys until the waveforms line up (`PROPOSED`). **Not verified with real footage**: every
-  tempo-changing grid editor. **Not verified with real footage**: every
   number comes from synthetic recordings (`docs/spikes/s6-sync-beats.md`).
   Not verifiable without a person: cutting live by ear and eye, and whether
   the cuts land where they were meant.
