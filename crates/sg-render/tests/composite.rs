@@ -459,3 +459,24 @@ fn the_shader_decodes_phone_hdr_as_the_model_does() {
         }
     }
 }
+
+#[test]
+fn hue_shift_turns_one_colour_and_leaves_the_others() {
+    use sg_core::{Correction, Grade, Module, ModuleKind};
+    let Some((device, queue)) = device() else { return };
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 16, 16);
+    // Red towards yellow by 60 degrees; saturation and vibrance at rest.
+    let module = Module { knobs: [1.0, 0.0, 0.0, 60.0], ..Module::new(ModuleKind::Colour) };
+    let grade = Grade { correction: Correction::NONE, look: vec![module], lut: None };
+    let mut shot = |source: [u8; 4]| {
+        let view =
+            Compositor::upload(&device, &queue, 2, 2, &solid(2, 2, |_, _| source)).create_view(&Default::default());
+        comp.render(&[LayerDraw { grade: Some(&grade), ..LayerDraw::fitted(&view, (16, 16), 0) }]);
+        pixel(&comp.read_output().unwrap(), 16, 8, 8)
+    };
+    let red = shot([200, 40, 40, 255]);
+    assert!(red[1] > 90 && red[2] < 60 && red[0] > red[2], "red became {red:?}");
+    // Blue and grey are far from the range: untouched.
+    assert!(near(shot([40, 40, 200, 255]), [40, 40, 200, 255]));
+    assert!(near(shot([120, 120, 120, 255]), [120, 120, 120, 255]));
+}

@@ -236,6 +236,14 @@ impl ModuleKind {
                     &[
                         knob("Saturation", 0.0, 2.0, 1.0, "0 is black and white"),
                         knob("Vibrance", -1.0, 1.0, 0.0, "Saturation for the dull colours only: skin stays as it is"),
+                        knob(
+                            "Hue range",
+                            0.0,
+                            360.0,
+                            0.0,
+                            "The colour the hue shift acts on: 0 red, 60 yellow, 120 green, 240 blue",
+                        ),
+                        knob("Hue shift", -90.0, 90.0, 0.0, "Turns colours near the hue range by this many degrees"),
                     ]
                 }
             }

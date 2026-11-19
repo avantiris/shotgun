@@ -200,7 +200,7 @@ Status:
   converted to HLG with ffmpeg and shown next to its original (average
   colour 72 81 48 against 80 91 53). HDR frames are still decoded to 8 bits
   first. **Not built**: built-in film looks to choose from (only tables you bring),
-  the hue-shift knob and skin protection of the Colour module (vibrance
+  skin protection in the Colour module (its hue-shift knobs were added; vibrance
   protects what is already saturated, not skin as such), membership per
   clip (it is per asset), analysis
   per cut range, dithering of the

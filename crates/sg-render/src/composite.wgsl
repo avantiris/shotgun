@@ -157,6 +157,22 @@ fn grade(colour: vec3<f32>, q: vec2<f32>, pixel: vec2<f32>, uv: vec2<f32>) -> ve
                 let vivid = (high - low) / max(high, 1e-6);
                 let factor = k.x * (1.0 + k.y * (1.0 - vivid));
                 o = max(vec3<f32>(l) + (c - vec3<f32>(l)) * factor, vec3<f32>(0.0));
+                // Hue shift of one range: colours within about 40 degrees of
+                // the chosen hue are turned on the colour wheel, keeping
+                // their brightness.
+                if (k.w != 0.0) {
+                    let d = o - vec3<f32>(l);
+                    let grey = (d.r + d.g + d.b) / 3.0;
+                    let a = dot(d, vec3<f32>(0.8164966, -0.4082483, -0.4082483));
+                    let b = dot(d, vec3<f32>(0.0, 0.7071068, -0.7071068));
+                    let near = smoothstep(0.766, 1.0, cos(atan2(b, a) - radians(k.z)));
+                    let turn = radians(k.w) * near;
+                    let a2 = a * cos(turn) - b * sin(turn);
+                    let b2 = a * sin(turn) + b * cos(turn);
+                    let turned = vec3<f32>(l + grey) + a2 * vec3<f32>(0.8164966, -0.4082483, -0.4082483) + b2 * vec3<f32>(0.0, 0.7071068, -0.7071068);
+                    let clipped = max(turned, vec3<f32>(0.0));
+                    o = clipped * (l / max(luma(clipped), 1e-6));
+                }
             }
             // Split tone: shadow hue, highlight hue, amount, balance.
             case 4u: {
