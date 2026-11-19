@@ -298,3 +298,251 @@ fn right_click_on_the_empty_timeline_adds_and_removes_tracks() {
     let names: Vec<String> = tracks(&harness).into_iter().map(|t| t.1).collect();
     assert_eq!(names, ["V2", "V1"]);
 }
+
+/// (start, length) of the clips on a track row, in the row's own units.
+fn clips(harness: &Harness<'_, App>, row: usize) -> Vec<(i64, i64)> {
+    let project = harness.state().shell.session().unwrap().project().clone();
+    project.sequences[0].tracks[row].clips.iter().map(|c| (c.start, c.len)).collect()
+}
+
+fn drag(harness: &mut Harness<'_, App>, from: egui::Pos2, to: egui::Pos2) {
+    let button = egui::PointerButton::Primary;
+    harness.event(egui::Event::PointerMoved(from));
+    harness.run_steps(1);
+    harness.event(egui::Event::PointerButton { pos: from, button, pressed: true, modifiers: Modifiers::NONE });
+    harness.run_steps(1);
+    // In steps, as a hand moves: the first one only starts the drag.
+    for step in 1..=4 {
+        harness.event(egui::Event::PointerMoved(from + (to - from) * (step as f32 / 4.0)));
+        harness.run_steps(1);
+    }
+    harness.event(egui::Event::PointerButton { pos: to, button, pressed: false, modifiers: Modifiers::NONE });
+    harness.run_steps(3);
+}
+
+fn place(harness: &mut Harness<'_, App>, label: &str) {
+    right_click(harness, label);
+    click(harness, "Place at the playhead (Enter)");
+}
+
+fn transport(harness: &Harness<'_, App>) -> Vec<sg_ui::Transport> {
+    harness
+        .state()
+        .commands
+        .iter()
+        .filter_map(|c| if let Command::Transport(t) = c { Some(t.clone()) } else { None })
+        .collect()
+}
+
+#[test]
+fn keys_cut_and_ripple_at_the_playhead() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    assert_eq!((clips(&harness, 0), clips(&harness, 1)), (vec![(0, 600)], vec![(0, 480_000)]));
+    // S splits picture and sound at the playhead.
+    harness.state_mut().shell.set_playhead(300);
+    harness.key_press(Key::S);
+    harness.run_steps(3);
+    assert_eq!(
+        (clips(&harness, 0), clips(&harness, 1)),
+        (vec![(0, 300), (300, 300)], vec![(0, 240_000), (240_000, 240_000)])
+    );
+    // Q removes from the start of the clip under the playhead up to it, and closes the gap.
+    harness.state_mut().shell.set_playhead(400);
+    harness.key_press(Key::Q);
+    harness.run_steps(3);
+    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 200)]);
+    // E removes from the playhead to the end of the clip.
+    harness.state_mut().shell.set_playhead(100);
+    harness.key_press(Key::E);
+    harness.run_steps(3);
+    assert_eq!(clips(&harness, 0), vec![(0, 100), (100, 200)]);
+    assert_eq!(clips(&harness, 1), vec![(0, 80_000), (80_000, 160_000)]);
+    // Three undos (the cap Y) bring the whole take back.
+    for _ in 0..3 {
+        harness.key_press(Key::Z);
+        harness.run_steps(2);
+    }
+    assert_eq!((clips(&harness, 0), clips(&harness, 1)), (vec![(0, 600)], vec![(0, 480_000)]));
+    // Space, A and D reach the player.
+    harness.key_press(Key::Space);
+    harness.key_press(Key::D);
+    harness.run_steps(3);
+    assert!(
+        transport(&harness).contains(&sg_ui::Transport::Toggle)
+            && transport(&harness).contains(&sg_ui::Transport::Step(1))
+    );
+}
+
+#[test]
+fn a_clip_is_moved_by_dragging_and_takes_its_sound_along() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let grab = on_timeline(&harness, 200.0, 0);
+    drag(&mut harness, grab, grab + vec2(250.0, 0.0));
+    let (picture, sound) = (clips(&harness, 0), clips(&harness, 1));
+    // 250 points at about 0.8 frames per point (20 s across the lanes).
+    assert!(picture[0].0 > 150 && picture[0].0 < 260 && picture[0].1 == 600, "{picture:?}");
+    assert_eq!(sound[0].0, picture[0].0 * 800, "{sound:?}");
+    // One undo step.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(clips(&harness, 0), vec![(0, 600)]);
+    // X with the clip selected (the drag selected it) removes it and its sound.
+    pointer(&mut harness, grab, egui::PointerButton::Primary);
+    harness.key_press(Key::X);
+    harness.run_steps(3);
+    assert_eq!((clips(&harness, 0).len(), clips(&harness, 1).len()), (0, 0));
+}
+
+#[test]
+fn a_clip_edge_is_trimmed_by_dragging() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    // The right edge: where the 600th frame is. Find it from the left: the
+    // clip is under the pointer just before it and not just after.
+    let rect = harness.get_by_label("Timeline").rect();
+    let frames_per_point = 1200.0 / (rect.width() - 120.0);
+    let edge = on_timeline(&harness, 600.0 / frames_per_point - 2.0, 0);
+    drag(&mut harness, edge, edge - vec2(150.0, 0.0));
+    let (picture, sound) = (clips(&harness, 0), clips(&harness, 1));
+    assert!(picture[0].0 == 0 && picture[0].1 > 420 && picture[0].1 < 520, "{picture:?}");
+    assert_eq!(sound[0].1, picture[0].1 * 800, "the sound is trimmed with the picture: {sound:?}");
+}
+
+#[test]
+fn a_click_on_the_ruler_moves_the_playhead() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let rect = harness.get_by_label("Timeline").rect();
+    pointer(&mut harness, egui::pos2(rect.left() + 120.0 + 370.0, rect.top() + 8.0), egui::PointerButton::Primary);
+    let seeks: Vec<i64> = transport(&harness)
+        .into_iter()
+        .filter_map(|t| if let sg_ui::Transport::Seek(f) = t { Some(f) } else { None })
+        .collect();
+    assert!(seeks.last().is_some_and(|f| (250..=350).contains(f)), "{seeks:?}");
+}
+
+#[test]
+fn a_title_is_added_and_its_text_edited() {
+    let mut harness = editor();
+    harness.key_press(Key::T);
+    harness.run_steps(3);
+    let title = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| !t.clips.is_empty())?.clone();
+        let clip = track.clips.iter().next()?;
+        track.props_of(clip.id)?.title.clone()
+    };
+    assert_eq!(title(&harness).map(|t| t.text), Some("Title".to_owned()));
+    // The new title is selected: its position can be set in the inspector.
+    assert!(harness.query_by_label("Position X").is_some());
+}
+
+#[test]
+fn the_add_popover_imports_a_link_as_sound_only() {
+    let mut harness = editor();
+    harness.key_press_modifiers(Modifiers::CTRL, Key::Q);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("ADD ASSET").is_some());
+    harness.event(egui::Event::Text("https://example.org/a-song".to_owned()));
+    harness.run_steps(2);
+    click(&mut harness, "Sound only");
+    click(&mut harness, "Import link");
+    let imported = harness.state().commands.iter().any(|c| {
+        matches!(c, Command::Import { source: sg_project::ImportSource::UrlSound(url), .. } if url == "https://example.org/a-song")
+    });
+    assert!(imported);
+    assert!(harness.query_by_label("ADD ASSET").is_none());
+}
+
+#[test]
+fn the_library_makes_a_project_from_what_was_typed() {
+    let mut shell = Shell::new();
+    shell.set_library(Ok(Vec::new()));
+    let dir = tempfile::tempdir().unwrap();
+    let app = App { shell, view: ViewerState::default(), commands: Vec::new(), root: dir.path().to_owned(), _dir: dir };
+    let mut harness = Harness::builder().with_size(vec2(1600.0, 900.0)).with_accessibility_check(false).build_ui_state(
+        |ui, app: &mut App| {
+            let commands = app.shell.frame(ui, 0, &app.view);
+            app.commands.extend(commands);
+        },
+        app,
+    );
+    harness.run_steps(3);
+    harness.event(egui::Event::Text("Summer film".to_owned()));
+    harness.run_steps(2);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::N);
+    harness.run_steps(3);
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Create { name } if name == "Summer film")));
+}
+
+#[test]
+fn dragging_in_the_viewer_moves_the_selected_picture() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let on_clip = on_timeline(&harness, 100.0, 0);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    // The viewer is what is left between the asset panel, the inspector and the timeline.
+    let middle = egui::pos2(810.0, 330.0);
+    drag(&mut harness, middle, middle + vec2(120.0, -40.0));
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = &project.sequences[0].tracks[0];
+    let props = track.props_of(track.clips.at(0).unwrap().id).expect("the drag set a position");
+    assert!(props.x.at(0) > 0.05 && props.y.at(0) < -0.02, "{:?} {:?}", props.x, props.y);
+    // One drag, one undo step.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = &project.sequences[0].tracks[0];
+    assert!(track.props_of(track.clips.at(0).unwrap().id).is_none());
+}
+
+#[test]
+fn an_asset_dragged_from_the_panel_lands_on_the_timeline() {
+    let mut harness = editor();
+    let tile = harness.get_by_label("second take").rect().center();
+    let target = on_timeline(&harness, 400.0, 0);
+    drag(&mut harness, tile, target);
+    let (picture, sound) = (clips(&harness, 0), clips(&harness, 1));
+    assert_eq!((picture.len(), sound.len()), (1, 1));
+    assert!(picture[0].0 > 250 && picture[0].0 < 400, "{picture:?}");
+    assert_eq!(sound[0].0, picture[0].0 * 800);
+}
+
+#[test]
+fn the_wheel_zooms_the_timeline_around_the_pointer() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let at = on_timeline(&harness, 300.0, 0);
+    // Where a click at this point seeks to, before and after zooming in.
+    let seek_at = |harness: &mut Harness<'_, App>, pos: egui::Pos2| {
+        let rect = harness.get_by_label("Timeline").rect();
+        pointer(harness, egui::pos2(pos.x, rect.top() + 8.0), egui::PointerButton::Primary);
+        transport(harness)
+            .into_iter()
+            .rev()
+            .find_map(|t| if let sg_ui::Transport::Seek(f) = t { Some(f) } else { None })
+            .unwrap()
+    };
+    let here = seek_at(&mut harness, at);
+    let further = seek_at(&mut harness, at + vec2(200.0, 0.0));
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 240.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+    });
+    harness.run_steps(6);
+    // The frame under the pointer stays; a point 200 to the right is now nearer in time.
+    let (here_after, further_after) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
+    assert!((here_after - here).abs() <= 3, "{here} -> {here_after}");
+    assert!(
+        further_after - here_after < (further - here) * 3 / 4,
+        "{} -> {}",
+        further - here,
+        further_after - here_after
+    );
+}

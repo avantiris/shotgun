@@ -93,6 +93,9 @@ the clipboard. `sg-bench export <project dir> <preset>` exports without the app.
   `docs/perf-log.md` with date, commit and command. Report misses as misses.
 - Unit-test `sg-core` thoroughly (edit ops and their inverses, time maths,
   interval index). Property tests for op/inverse round trips.
+- UI flows are tested headless in `crates/sg-ui/tests/flows.rs`: the whole
+  shell driven by clicks on labelled controls, menus, keys and drags
+  (egui_kittest). A feature with a button, menu or gesture gets a flow there.
 - Rendering is tested by rendering known scenes to images and comparing with
   stored references; export is verified by probing the produced file.
 - When a new technical risk appears, do a small spike under `spikes/` with a

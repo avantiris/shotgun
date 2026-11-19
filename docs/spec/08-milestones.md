@@ -106,6 +106,21 @@ Status:
   input, the clipboard hand-over into a chat or browser, how the files look
   and sound in a player and on a phone.
 
+- **Input without a person (added 2026-11-19).** Several entries above say
+  that mouse and key input could not be verified without a person. Since
+  then `crates/sg-ui/tests/flows.rs` drives the whole UI headless through
+  egui's own input handling (egui_kittest): clicks on labelled controls,
+  right-click menus, key presses, drags and the wheel. Covered there:
+  placing assets from their menu, dragging an asset onto the timeline,
+  selecting, moving and trimming clips by dragging, the cutting keys
+  (S, Q, E, X) and undo, clicking the ruler, wheel zoom, dragging the
+  picture in the viewer, titles, the add popover, creating a project in the
+  library, track buttons and menus, the mixer, scenarios and looks, the
+  song and sync menus, transitions, export. Still only a person can judge:
+  what it looks and sounds like, real drag-and-drop from another program,
+  the system file picker, the clipboard, and anything about timing by hand
+  and ear.
+
 Then the user tests and gives feedback. Feedback is triaged into fixes before
 stage 2 starts.
 
