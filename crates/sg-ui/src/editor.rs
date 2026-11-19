@@ -77,12 +77,20 @@ impl Editor {
             return request;
         };
         let flush = egui::Frame::new().fill(theme::BG);
-        egui::Panel::bottom("timeline")
-            .resizable(true)
-            .default_size(230.0)
-            .min_size(120.0)
-            .frame(flush)
-            .show(ui, |ui| self.timeline.ui(ui, session, view, transport, error));
+        egui::Panel::bottom("timeline").resizable(true).default_size(230.0).min_size(120.0).frame(flush).show(
+            ui,
+            |ui| {
+                self.timeline.ui(ui, session, view, transport, error);
+                // Posters at the heads of clips: the asset panel holds the textures.
+                let painter = ui.painter().with_clip_rect(self.timeline.lanes);
+                let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                for (asset, at) in self.timeline.thumbs.drain(..) {
+                    if let Some(texture) = self.assets.poster_id(asset) {
+                        painter.image(texture, at, whole, egui::Color32::from_white_alpha(235));
+                    }
+                }
+            },
+        );
         egui::Panel::left("assets").default_size(320.0).min_size(170.0).show(ui, |ui| {
             self.assets.ui(ui, &project, asset_requests);
         });

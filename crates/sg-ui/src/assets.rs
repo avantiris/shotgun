@@ -401,6 +401,14 @@ impl AssetsPanel {
             });
     }
 
+    /// The poster texture of an asset, if it is loaded.
+    pub fn poster_id(&self, id: AssetId) -> Option<egui::TextureId> {
+        match self.posters.get(&id) {
+            Some(Poster::Ready(texture)) => Some(texture.id()),
+            _ => None,
+        }
+    }
+
     /// Shown while files are dragged over the window.
     pub fn drop_overlay(&self, ctx: &egui::Context) {
         if !self.drag_hover {

@@ -146,6 +146,10 @@ pub struct Timeline {
     grid_for: Option<(AssetId, i8)>,
     /// The song whose beats should be loaded; taken by the shell.
     pub beat_request: Option<AssetId>,
+    /// Where posters of assets belong at the heads of clips this frame; the
+    /// editor draws them (it has the textures) clipped to `lanes`.
+    pub thumbs: Vec<(AssetId, Rect)>,
+    pub lanes: Rect,
     /// Waveform data per asset, loaded off this thread on first sight.
     waves: HashMap<AssetId, Wave>,
     /// Assets whose peaks should be loaded; drained by the shell.
@@ -182,6 +186,8 @@ impl Default for Timeline {
             menu_clip: None,
             scenario_request: None,
             waves: HashMap::new(),
+            thumbs: Vec::new(),
+            lanes: Rect::NOTHING,
             song_beats: None,
             grid: Arc::default(),
             grid_for: None,
@@ -1029,6 +1035,7 @@ impl Timeline {
         ));
         let mut labels: Vec<(f32, f32, f32, &str)> = Vec::new();
         let has_scenarios = !project.scenarios.is_empty();
+        let mut thumbs: Vec<(AssetId, Rect)> = Vec::new();
         // Assets whose waveform is not loaded yet.
         let mut wanted: Vec<AssetId> = Vec::new();
         let left = self.left;
@@ -1120,6 +1127,20 @@ impl Timeline {
                             0.0,
                         ));
                     }
+                    // The poster of the asset at the head of a clip that has room for it.
+                    let mut thumb_w = 0.0;
+                    let is_title = track.props_of(clip.id).is_some_and(|p| p.title.is_some());
+                    if track.kind == TrackKind::Video && !is_title && row_h >= 28.0 && thumbs.len() < 256 {
+                        let (left, height) = (x0.max(lanes.left()) + 1.0, y1 - y0 - 5.0);
+                        let width = height * 16.0 / 9.0;
+                        if x1 - left >= width * 2.0 {
+                            thumbs.push((
+                                clip.asset,
+                                Rect::from_min_size(pos2(left, y0 + 4.0), egui::vec2(width, height)),
+                            ));
+                            thumb_w = width;
+                        }
+                    }
                     if x1 - x0 >= LABEL_MIN && row_h >= 16.0 && labels.len() < 400 {
                         // A title shows its text, anything else its asset's label.
                         let title = track.props_of(clip.id).and_then(|p| p.title.as_ref()).map(|t| t.text.as_str());
@@ -1127,9 +1148,9 @@ impl Timeline {
                             .or(project.assets.get(&clip.asset).map(|a| a.label.as_str()))
                             .unwrap_or("missing asset");
                         labels.push((
-                            x0.max(lanes.left()) + 5.0,
+                            x0.max(lanes.left()) + 5.0 + thumb_w,
                             (y0 + y1) / 2.0,
-                            x1 - x0.max(lanes.left()) - 8.0,
+                            x1 - x0.max(lanes.left()) - 8.0 - thumb_w,
                             name,
                         ));
                     }
@@ -1154,6 +1175,8 @@ impl Timeline {
         ));
         self.quads = instances.len();
         drop(instances);
+        self.thumbs = thumbs;
+        self.lanes = lanes;
         for id in wanted {
             if self.waves.insert(id, Wave::Requested).is_none() {
                 self.wave_requests.push(id);
