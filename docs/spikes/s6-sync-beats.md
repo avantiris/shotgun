@@ -102,6 +102,25 @@ Beats:
 174 bpm is found at half tempo: every found beat is a true beat, every
 second true beat is missing.
 
+### One check with real music (added after M9)
+
+The soundtrack of a YouTube video (5 min 14 s, imported with "Sound only")
+as the song, and three excerpts of it made into "camera takes" with ffmpeg
+(three echoes, band-limited to 250 Hz to 4.5 kHz, pink noise mixed in,
+limiter, AAC at 96 kbit/s), synced in the app with "Sync all takes":
+
+| Take | Starts at | Noise amplitude | Result |
+|------|-----------|-----------------|--------|
+| 35 s | 47.25 s | 0.12 | placed at frame 2835 = 47.25 s, exact |
+| 50 s | 121.6 s | 0.3 | placed at frame 7296 = 121.6 s, exact |
+| 25 s | 200.0 s | 0.5 (louder than the music) | not placed: no clear match |
+
+Beats of the same music: 123.6 bpm, reported as *not* steady (film-style
+music without a drum track); the grid then follows the tracked beats. No
+truth to compare with.
+
+Still not a recording made by a microphone in a room.
+
 ## What this does not show
 
 - **No real recording was used.** Everything above is synthetic. Real rooms,
