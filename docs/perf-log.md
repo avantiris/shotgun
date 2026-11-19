@@ -384,3 +384,15 @@ file is read at start and the library asks for project pictures.
 | UI frame time, 50 000 clips on 20 tracks | p99 0.66 ms | same | pass |
 | UI frame time, 50 000 clips on 4 tracks, labels | p99 0.39 to 0.66 ms | same | pass |
 | UI frame time, 500 000 clips | p99 1.55 to 1.83 ms | same | pass |
+
+## 2026-11-19, after feedback round 4 (buttons, volume line), commit after 4081eb4
+
+Command: `scripts/bench-m4.sh`. Since the last run the editor draws two
+rows of buttons (about 30) and a volume line on every sound clip.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| UI frame time, 10 clips | p99 0.41 to 0.47 ms | <= 6.9 ms p99 | pass |
+| UI frame time, 50 000 clips on 20 tracks | p99 0.78 to 0.85 ms | same | pass |
+| UI frame time, 50 000 clips on 4 tracks, labels | p99 0.51 to 0.52 ms | same | pass |
+| UI frame time, 500 000 clips | p99 2.25 to 4.89 ms (three runs) | same | pass, slower than the 1.55 to 1.83 ms before; one run of three stood out |

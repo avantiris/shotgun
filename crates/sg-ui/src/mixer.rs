@@ -8,7 +8,7 @@ use crate::session::Session;
 use crate::stage::ViewerState;
 use crate::theme;
 
-const STRIP_W: f32 = 82.0;
+const STRIP_W: f32 = 104.0;
 const FADER_H: f32 = 150.0;
 /// The range of the meters and faders in decibels.
 const FLOOR_DB: f32 = -60.0;
@@ -23,6 +23,143 @@ pub struct Mixer {
     limiting: f32,
     /// Undo group of the drag in progress: one drag of a fader is one step.
     group: Option<u64>,
+}
+
+/// Settings to start from (feedback F4.3): low cut, noise reduction,
+/// equaliser and compressor for a kind of sound. Fader, pan, mute and solo
+/// are not part of a preset. The values are common starting points of
+/// sound engineers, to be adjusted by ear.
+pub struct Preset {
+    pub name: &'static str,
+    pub tip: &'static str,
+    low_cut_hz: f32,
+    denoise: f32,
+    eq_low_db: f32,
+    eq_mid_db: f32,
+    eq_mid_hz: f32,
+    eq_high_db: f32,
+    comp_threshold_db: f32,
+    comp_ratio: f32,
+}
+
+const fn preset(
+    name: &'static str,
+    tip: &'static str,
+    low_cut_hz: f32,
+    denoise: f32,
+    eq: [f32; 4],
+    comp: [f32; 2],
+) -> Preset {
+    Preset {
+        name,
+        tip,
+        low_cut_hz,
+        denoise,
+        eq_low_db: eq[0],
+        eq_mid_db: eq[1],
+        eq_mid_hz: eq[2],
+        eq_high_db: eq[3],
+        comp_threshold_db: comp[0],
+        comp_ratio: comp[1],
+    }
+}
+
+pub const PRESETS: &[Preset] = &[
+    preset("Flat", "Everything off: the track as it was recorded.", 0.0, 0.0, [0.0, 0.0, 1000.0, 0.0], [0.0, 3.0]),
+    preset(
+        "Voice",
+        "Speech recorded decently: rumble off below 80 Hz, a little presence at 3 kHz and air, levelled gently (3:1 above -18 dB).",
+        80.0,
+        0.0,
+        [0.0, 2.0, 3000.0, 2.0],
+        [-18.0, 3.0],
+    ),
+    preset(
+        "Voice, noisy room",
+        "Speech with hiss, hum or room noise behind it: noise reduction at 60 %, low cut at 100 Hz, presence, levelled.",
+        100.0,
+        0.6,
+        [-1.0, 2.5, 3000.0, 1.0],
+        [-20.0, 3.0],
+    ),
+    preset(
+        "Voice-over",
+        "A voice close to the microphone, radio-like: warmth below, the boxy 350 Hz turned down, bright on top, levelled firmly (4:1 above -22 dB).",
+        80.0,
+        0.2,
+        [1.5, -2.5, 350.0, 3.0],
+        [-22.0, 4.0],
+    ),
+    preset(
+        "Camera sound outdoors",
+        "The camera's own microphone outside: wind and handling rumble off below 150 Hz, half the noise reduction, levelled.",
+        150.0,
+        0.5,
+        [-2.0, 1.5, 2500.0, 0.0],
+        [-16.0, 3.0],
+    ),
+    preset(
+        "Music",
+        "A finished song: almost untouched. Only what is below 30 Hz goes, with a light touch of low and high and a soft compressor for peaks.",
+        30.0,
+        0.0,
+        [1.0, 0.0, 1000.0, 1.0],
+        [-10.0, 2.0],
+    ),
+    preset(
+        "Music under a voice",
+        "Music that plays behind speech: a dip at 2.5 kHz leaves room for the voice. Also pull its fader down to about -14 dB.",
+        40.0,
+        0.0,
+        [0.0, -4.0, 2500.0, -1.0],
+        [-18.0, 2.5],
+    ),
+    preset(
+        "Bass and kick",
+        "More weight below, the muddy 300 Hz turned down, held firmly (4:1 above -14 dB).",
+        30.0,
+        0.0,
+        [3.0, -3.0, 300.0, 0.0],
+        [-14.0, 4.0],
+    ),
+    preset(
+        "Bright and clear",
+        "For a dull recording: less of the boxy 400 Hz, more above 8 kHz. No compressor.",
+        60.0,
+        0.0,
+        [0.0, -2.0, 400.0, 4.0],
+        [0.0, 3.0],
+    ),
+    preset(
+        "Telephone",
+        "An effect: only the middle is left, squeezed hard, like a voice through a phone.",
+        400.0,
+        0.0,
+        [-12.0, 6.0, 1800.0, -14.0],
+        [-20.0, 6.0],
+    ),
+];
+
+impl Preset {
+    /// The settings of a track with this preset put on.
+    pub fn on(&self, mix: TrackSettings) -> TrackSettings {
+        TrackSettings {
+            low_cut_hz: self.low_cut_hz,
+            denoise: self.denoise,
+            eq_low_db: self.eq_low_db,
+            eq_mid_db: self.eq_mid_db,
+            eq_mid_hz: self.eq_mid_hz,
+            eq_high_db: self.eq_high_db,
+            comp_threshold_db: self.comp_threshold_db,
+            comp_ratio: self.comp_ratio,
+            ..mix
+        }
+    }
+
+    /// The preset a track is set to exactly, if any.
+    pub fn of(mix: &TrackSettings) -> Option<&'static Preset> {
+        PRESETS.iter().find(|preset| preset.on(*mix) == *mix)
+    }
 }
 
 fn to_db(linear: f32) -> f32 {
@@ -54,7 +191,7 @@ fn meter(ui: &mut egui::Ui, level: f32, height: f32) {
 fn fader(ui: &mut egui::Ui, level: f32, db: f32) -> Option<f32> {
     let mut value = db;
     ui.horizontal(|ui| {
-        ui.add_space(14.0);
+        ui.add_space(25.0);
         meter(ui, level, FADER_H);
         ui.spacing_mut().slider_width = FADER_H;
         let slider = egui::Slider::new(&mut value, FLOOR_DB..=TOP_DB).vertical().show_value(false).step_by(0.1);
@@ -102,11 +239,35 @@ impl Mixer {
                     ui.allocate_ui_with_layout(vec2(STRIP_W, 0.0), egui::Layout::top_down(egui::Align::Center), |ui| {
                         ui.set_width(STRIP_W);
                         ui.label(RichText::new(&track.name).strong().color(theme::AUDIO));
+                        // What the settings below are at, by name: a preset or the user's own.
+                        let current = Preset::of(&mix).map_or("Own", |preset| preset.name);
+                        ui.scope(|ui| {
+                            ui.spacing_mut().button_padding = vec2(5.0, 3.0);
+                            ui.label(RichText::new("Preset").size(10.5).color(theme::DIM));
+                            let text = RichText::new(current).size(10.5);
+                            let button = egui::Button::new(text).truncate().min_size(vec2(STRIP_W - 8.0, 20.0));
+                            let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                                for preset in PRESETS {
+                                    let chosen = ui.selectable_label(preset.name == current, preset.name);
+                                    if chosen.on_hover_text(preset.tip).clicked() {
+                                        mix = preset.on(mix);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Preset: {current}"))
+                            });
+                            response.on_hover_text(
+                                "Starting points for low cut, noise reduction, equaliser and compressor. \
+                                 Fader, pan, mute and solo stay as they are.",
+                            );
+                        });
                         if let Some(db) = fader(ui, self.levels[index], mix.gain_db) {
                             mix.gain_db = db;
                         }
                         ui.horizontal(|ui| {
-                            ui.add_space(11.0);
+                            ui.add_space(22.0);
                             if toggle(ui, mix.mute, "M", theme::ERROR, "Mute") {
                                 mix.mute = !mix.mute;
                             }
@@ -116,7 +277,7 @@ impl Mixer {
                         });
                         let field = |ui: &mut egui::Ui, label: &str, widget: egui::DragValue<'_>, tip: &str| {
                             ui.label(RichText::new(label).size(10.5).color(theme::DIM));
-                            ui.add_sized([70.0, 20.0], widget).on_hover_text(tip);
+                            ui.add_sized([88.0, 20.0], widget).on_hover_text(tip);
                         };
                         field(
                             ui,
@@ -212,7 +373,7 @@ impl Mixer {
 }
 
 /// The mixer settings a script step names: `gain=-6`, `pan=0.3`, `mute=1`,
-/// `solo=1`, `lowcut=100`, `denoise=0.8`.
+/// `solo=1`, `lowcut=100`, `denoise=0.8`, `preset=1`.
 pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
     match name {
         "gain" => mix.gain_db = value,
@@ -228,7 +389,39 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "threshold" => mix.comp_threshold_db = value,
         "ratio" => mix.comp_ratio = value,
         "hidden" => mix.hidden = value != 0.0,
+        // The n-th preset of the list (0 is Flat).
+        "preset" => match PRESETS.get(value as usize) {
+            Some(preset) => *mix = preset.on(*mix),
+            None => return false,
+        },
         _ => return false,
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presets_stay_inside_what_the_strip_can_show_and_leave_the_fader_alone() {
+        let before = TrackSettings { gain_db: -7.0, pan: 0.3, mute: true, solo: true, ..TrackSettings::default() };
+        for preset in PRESETS {
+            let mix = preset.on(before);
+            assert_eq!((mix.gain_db, mix.pan, mix.mute, mix.solo), (-7.0, 0.3, true, true), "{}", preset.name);
+            assert!((0.0..=1000.0).contains(&mix.low_cut_hz), "{}", preset.name);
+            assert!((0.0..=1.0).contains(&mix.denoise), "{}", preset.name);
+            for db in [mix.eq_low_db, mix.eq_mid_db, mix.eq_high_db] {
+                assert!((-18.0..=18.0).contains(&db), "{}", preset.name);
+            }
+            assert!((100.0..=10_000.0).contains(&mix.eq_mid_hz), "{}", preset.name);
+            assert!((-60.0..=0.0).contains(&mix.comp_threshold_db), "{}", preset.name);
+            assert!((1.0..=20.0).contains(&mix.comp_ratio), "{}", preset.name);
+            // Each is told from the others by its values.
+            assert_eq!(Preset::of(&mix).map(|p| p.name), Some(preset.name));
+        }
+        // A fresh track is flat; a track changed by hand is nobody's preset.
+        assert_eq!(Preset::of(&TrackSettings::default()).map(|p| p.name), Some("Flat"));
+        assert!(Preset::of(&TrackSettings { eq_low_db: 0.7, ..TrackSettings::default() }).is_none());
+    }
 }

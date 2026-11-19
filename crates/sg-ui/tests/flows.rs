@@ -544,12 +544,24 @@ fn an_asset_dragged_from_the_panel_lands_on_the_timeline() {
     assert_eq!(sound[0].0, picture[0].0 * 800);
 }
 
+fn wheel(harness: &mut Harness<'_, App>, at: egui::Pos2, delta: egui::Vec2, modifiers: Modifiers) {
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta,
+        modifiers,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+    });
+    harness.run_steps(6);
+}
+
 #[test]
-fn the_wheel_zooms_the_timeline_around_the_pointer() {
+fn the_wheel_moves_along_the_timeline_and_with_ctrl_zooms_around_the_pointer() {
     let mut harness = editor();
     place(&mut harness, "first take");
     let at = on_timeline(&harness, 300.0, 0);
-    // Where a click at this point seeks to, before and after zooming in.
+    // Where a click at this point seeks to.
     let seek_at = |harness: &mut Harness<'_, App>, pos: egui::Pos2| {
         let rect = harness.get_by_label("Timeline").rect();
         pointer(harness, egui::pos2(pos.x, rect.top() + 8.0), egui::PointerButton::Primary);
@@ -561,16 +573,8 @@ fn the_wheel_zooms_the_timeline_around_the_pointer() {
     };
     let here = seek_at(&mut harness, at);
     let further = seek_at(&mut harness, at + vec2(200.0, 0.0));
-    harness.event(egui::Event::PointerMoved(at));
-    harness.event(egui::Event::MouseWheel {
-        unit: egui::MouseWheelUnit::Point,
-        delta: vec2(0.0, 240.0),
-        modifiers: Modifiers::NONE,
-        phase: egui::TouchPhase::Move,
-        source: egui::MouseWheelSource::Wheel,
-    });
-    harness.run_steps(6);
-    // The frame under the pointer stays; a point 200 to the right is now nearer in time.
+    // Ctrl + wheel: the frame under the pointer stays; a point 200 to the right is now nearer in time.
+    wheel(&mut harness, at, vec2(0.0, 240.0), Modifiers::CTRL);
     let (here_after, further_after) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
     assert!((here_after - here).abs() <= 3, "{here} -> {here_after}");
     assert!(
@@ -579,11 +583,154 @@ fn the_wheel_zooms_the_timeline_around_the_pointer() {
         further - here,
         further_after - here_after
     );
-    // H shows the whole sequence again.
+    // The wheel alone moves along the sequence at the same zoom: turned
+    // down, what was to the right comes under the pointer.
+    wheel(&mut harness, at, vec2(0.0, -120.0), Modifiers::NONE);
+    let (here_moved, further_moved) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
+    assert!(here_moved > here_after + 10, "{here_after} -> {here_moved}");
+    assert!(((further_moved - here_moved) - (further_after - here_after)).abs() <= 2);
+    // H shows the whole sequence again; so does its button.
     harness.key_press(Key::H);
     harness.run_steps(3);
     let (here_again, further_again) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
     assert_eq!((here_again, further_again), (here, further));
+    click(&mut harness, "Zoom in");
+    assert!(seek_at(&mut harness, at + vec2(200.0, 0.0)) - seek_at(&mut harness, at) < further - here);
+    click(&mut harness, "Show all");
+    assert_eq!(seek_at(&mut harness, at), here);
+}
+
+#[test]
+fn ctrl_c_x_and_v_copy_cut_and_paste_the_selected_clips() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let on_clip = on_timeline(&harness, 12.0, 0);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::C);
+    harness.run_steps(3);
+    // The application is asked to mark the clipboard.
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::OfferClips)));
+    // Without an answer from the clipboard, Ctrl+V pastes the clips: picture and sound.
+    playhead(&mut harness, 900);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::V);
+    harness.run_steps(3);
+    assert_eq!((clips(&harness, 0), clips(&harness, 1).len()), (vec![(0, 600), (900, 600)], 2));
+    assert!(!harness.state().commands.iter().any(|c| matches!(c, Command::ReadClipboard)));
+    // Ctrl+X takes the pasted clips (still selected) out and leaves the gap.
+    harness.key_press_modifiers(Modifiers::CTRL, Key::X);
+    harness.run_steps(3);
+    assert_eq!((clips(&harness, 0), clips(&harness, 1).len()), (vec![(0, 600)], 1));
+    // With the mark on the clipboard, Ctrl+V asks what the clipboard holds now...
+    harness.state_mut().shell.clips_offered(true);
+    playhead(&mut harness, 2000);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::V);
+    harness.run_steps(3);
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::ReadClipboard)));
+    assert_eq!(clips(&harness, 0), vec![(0, 600)]);
+    // ...the mark: the clips are pasted.
+    let commands = harness.state_mut().shell.incoming(sg_ui::Incoming::Text(sg_ui::CLIPS_ON_CLIPBOARD.to_owned()));
+    assert!(commands.is_empty());
+    harness.run_steps(2);
+    assert_eq!(clips(&harness, 0), vec![(0, 600), (2000, 600)]);
+    // ...a link copied in a browser since: that is imported, and no clip is pasted.
+    let commands = harness.state_mut().shell.incoming(sg_ui::Incoming::Text("https://example.org/clip.mp4".to_owned()));
+    assert!(commands.iter().any(|c| matches!(c, Command::Import { .. })));
+    assert_eq!(clips(&harness, 0).len(), 2);
+    // While a text field has focus, the three keys belong to the text.
+    harness.key_press(Key::F2);
+    harness.run_steps(3);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::X);
+    harness.run_steps(3);
+    assert_eq!(clips(&harness, 0).len(), 2);
+}
+
+#[test]
+fn the_buttons_do_what_the_keys_do_and_show_them() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    // Above the timeline: split at the playhead, then undo and redo.
+    playhead(&mut harness, 300);
+    click(&mut harness, "Split");
+    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300)]);
+    click(&mut harness, "Undo");
+    assert_eq!(clips(&harness, 0), vec![(0, 600)]);
+    click(&mut harness, "Redo");
+    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300)]);
+    // The key is on the button.
+    assert_eq!(
+        (sg_ui::keymap::hint(sg_ui::Action::Cut), sg_ui::keymap::hint(sg_ui::Action::Undo)),
+        ("Ctrl+X".to_owned(), "Y".to_owned())
+    );
+    // Select the second half, copy and paste by button.
+    let second = on_timeline(&harness, 400.0, 0);
+    pointer(&mut harness, second, egui::PointerButton::Primary);
+    click(&mut harness, "Copy");
+    playhead(&mut harness, 1200);
+    click(&mut harness, "Paste");
+    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300), (1200, 300)]);
+    click(&mut harness, "Delete");
+    assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 300)]);
+    // Under the viewer: the playing keys.
+    click(&mut harness, "Play");
+    click(&mut harness, "Frame on");
+    click(&mut harness, "Next cut");
+    let sent = transport(&harness);
+    assert!(sent.contains(&sg_ui::Transport::Toggle) && sent.contains(&sg_ui::Transport::Step(1)));
+    assert!(sent.iter().any(|t| matches!(t, sg_ui::Transport::Seek(_))));
+    // The right-click menu of a clip carries the cutting actions with their keys.
+    playhead(&mut harness, 100);
+    let first = on_timeline(&harness, 12.0, 0);
+    pointer(&mut harness, first, egui::PointerButton::Secondary);
+    click(&mut harness, "Split at the playhead");
+    assert_eq!(clips(&harness, 0), vec![(0, 100), (100, 200), (300, 300)]);
+    // The menu at the top lists everything that has a key.
+    click(&mut harness, "Menu");
+    click(&mut harness, "Cutting");
+    click(&mut harness, "Marker at the playhead (again: remove it)");
+    let project = harness.state().shell.session().unwrap().project().clone();
+    assert_eq!(project.sequences[0].markers.iter().map(|m| m.frame).collect::<Vec<_>>(), [100]);
+}
+
+#[test]
+fn the_line_across_a_sound_clip_sets_its_volume() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let gain = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = &project.sequences[0].tracks[1];
+        track.props_of(track.clips.iter().next().unwrap().id).map_or(0.0, |p| p.gain_db.at(0))
+    };
+    // The line of an untouched clip lies a quarter down the clip (0 dB):
+    // pulled down a few points, the clip gets quieter; the clip itself stays.
+    let rect = harness.get_by_label("Timeline").rect();
+    let line = egui::pos2(rect.left() + 120.0 + 200.0, rect.top() + 22.0 + 40.0 + 12.75);
+    drag(&mut harness, line, line + vec2(0.0, 9.0));
+    let quieter = gain(&harness);
+    assert!((-20.0..=-12.0).contains(&quieter), "{quieter}");
+    assert_eq!(clips(&harness, 1), vec![(0, 480_000)]);
+    // One undo for the whole pull.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(gain(&harness), 0.0);
+    // The clip's menu has the volume too.
+    let on_sound = on_timeline(&harness, 100.0, 1);
+    pointer(&mut harness, on_sound, egui::PointerButton::Secondary);
+    click(&mut harness, "Clip volume");
+    click(&mut harness, "Quieter (-3 dB)");
+    assert_eq!(gain(&harness), -3.0);
+}
+
+#[test]
+fn a_mixer_preset_sets_the_strip_and_leaves_the_fader() {
+    let mut harness = editor();
+    click(&mut harness, "Mixer");
+    assert!(harness.query_by_label("Preset: Flat").is_some());
+    click(&mut harness, "Preset: Flat");
+    click(&mut harness, "Voice, noisy room");
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let mix = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().mix;
+    assert_eq!((mix.low_cut_hz, mix.denoise, mix.comp_threshold_db, mix.gain_db), (100.0, 0.6, -20.0, 0.0));
+    assert!(harness.query_by_label("Preset: Voice, noisy room").is_some());
 }
 
 #[test]

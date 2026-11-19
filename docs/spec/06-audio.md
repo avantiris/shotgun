@@ -132,6 +132,22 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
   loudness (LUFS) metering, a noise reduction suited to music, the
   `Processor` chain being editable by the user.
 
+## Presets and clip volume (feedback round 4, 2026-11-19)
+
+- Each strip of the mixer has a `Preset` button: Flat, Voice, Voice in a
+  noisy room, Voice-over, Camera sound outdoors, Music, Music under a voice,
+  Bass and kick, Bright and clear, Telephone. A preset sets low cut, noise
+  reduction, equaliser and compressor and leaves fader, pan, mute and solo
+  alone; it is one `SetTrackMix` operation, so one undo. The button names
+  the preset the strip is at, or "Own" once a value was changed by hand.
+  The values (`PROPOSED`, in `sg-ui/src/mixer.rs`) are common starting
+  points, not measured on the user's material. The compressor has no
+  make-up gain, so a preset with a low threshold makes the track quieter.
+- The volume of a single clip (`ClipProps::gain_db`, there since M4) is
+  shown as a line across each sound clip in the timeline and changed by
+  pulling it (07-ui-keybinds.md). A clip with volume keyframes moves as a
+  whole: every keyframe by the same amount.
+
 ## Scrub grains (added 2026-11-19)
 
 - A move of the playhead while paused lets a tenth of a second of the mix at

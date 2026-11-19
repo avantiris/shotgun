@@ -5,6 +5,7 @@
 //! on a worker thread, and comes back through [`Shell::set_library`],
 //! [`Shell::opened`], [`Shell::import_event`] and [`Shell::poster_loaded`].
 
+mod actions;
 mod assets;
 mod clip_panel;
 mod colour_panel;
@@ -159,7 +160,15 @@ pub enum Command {
     Transport(Transport),
     /// Read the clipboard; the content comes back through [`Shell::incoming`].
     ReadClipboard,
+    /// Clips were copied in the timeline: put [`CLIPS_ON_CLIPBOARD`] on the
+    /// clipboard, so that a later paste can tell them from something copied
+    /// elsewhere since. Answered with [`Shell::clips_offered`].
+    OfferClips,
 }
+
+/// What the clipboard holds while the last thing copied was clips in the
+/// timeline. (The clips themselves stay in the program.)
+pub const CLIPS_ON_CLIPBOARD: &str = "Shotgun clips (paste them into the Shotgun timeline)";
 
 /// Something that arrived from outside: a drop, a paste, the file picker.
 pub enum Incoming {
@@ -245,6 +254,9 @@ pub struct Shell {
     angle_group: Option<u64>,
     /// The playhead as of the last frame, for key actions.
     playhead: i64,
+    /// The clipboard carries the mark of copied clips (as far as is known):
+    /// Ctrl+V then asks the clipboard what it holds now.
+    clips_offered: bool,
     /// The file the last export wrote and the notice that says so, for
     /// the "Show in folder" button beside that notice.
     exported: Option<(String, String)>,
@@ -366,8 +378,6 @@ impl Shell {
                 self.editor.assets.drop_overlay(&ctx);
                 match request {
                     Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
-                    Some(EditorRequest::Export) => self.act(Action::Export, &mut commands),
-                    Some(EditorRequest::Help) => self.act(Action::Help, &mut commands),
                     Some(EditorRequest::Tempo(tempo)) => self.set_tempo(tempo),
                     Some(EditorRequest::CutsToBeats) => self.programme_action(true),
                     Some(EditorRequest::WhipAll) => self.programme_action(false),
@@ -381,8 +391,6 @@ impl Shell {
                             }
                         }
                     }
-                    Some(EditorRequest::Undo) => self.act(Action::Undo, &mut commands),
-                    Some(EditorRequest::Redo) => self.act(Action::Redo, &mut commands),
                     Some(EditorRequest::RemoveAsset(id)) => self.remove_asset(id),
                     Some(EditorRequest::SetSize(width, height)) => {
                         if let Some(session) = &mut self.session {
@@ -395,6 +403,12 @@ impl Shell {
                         }
                     }
                     None => {}
+                }
+                // Buttons and menu entries run what their keys run.
+                let mut clicked = std::mem::take(&mut self.editor.actions);
+                clicked.append(&mut self.editor.timeline.actions);
+                for action in clicked {
+                    self.act(action, &mut commands);
                 }
             }
             None => {
@@ -549,7 +563,22 @@ impl Shell {
             }
             Action::Paste => {
                 if self.session.is_some() {
-                    commands.push(Command::ReadClipboard);
+                    // Copied clips are pasted, unless something was copied
+                    // elsewhere since: the clipboard knows (F4.4). Without a
+                    // clipboard to ask, the clips win.
+                    if self.editor.timeline.has_copied() && !self.clips_offered {
+                        self.timeline_action(Action::PasteClips, commands);
+                    } else {
+                        commands.push(Command::ReadClipboard);
+                    }
+                }
+            }
+            Action::Copy | Action::Cut => {
+                // (Nothing selected: nothing copied, and the clipboard stays as it is.)
+                if self.editor.timeline.has_selection() {
+                    self.timeline_action(action, commands);
+                    self.clips_offered = false;
+                    commands.push(Command::OfferClips);
                 }
             }
             Action::PlayPause => commands.push(Command::Transport(Transport::Toggle)),
@@ -563,7 +592,6 @@ impl Shell {
             | Action::RippleEnd
             | Action::RippleDelete
             | Action::SelectUnder
-            | Action::Copy
             | Action::PasteClips
             | Action::Marker
             | Action::Nudge(_)
@@ -607,6 +635,11 @@ impl Shell {
             }
             Action::Help => self.help = !self.help,
             Action::FitTimeline => self.editor.timeline.refit(),
+            Action::ZoomIn | Action::ZoomOut => {
+                if let Some(sequence) = self.session.as_ref().and_then(|s| s.project().sequences.first().cloned()) {
+                    self.editor.timeline.zoom_step(action == Action::ZoomIn, &sequence);
+                }
+            }
             Action::Mixer => {
                 self.editor.mixer.open = !self.editor.mixer.open;
                 self.editor.colour.open = false;
@@ -825,9 +858,20 @@ impl Shell {
         }
     }
 
+    /// Whether the mark of copied clips could be put on the clipboard.
+    pub fn clips_offered(&mut self, offered: bool) {
+        self.clips_offered = offered;
+    }
+
     /// Imports what was dropped, pasted or picked into the open project.
     pub fn incoming(&mut self, incoming: Incoming) -> Vec<Command> {
         self.editor.assets.drag_hover = false;
+        // The clipboard still holds the mark of clips copied here: paste those.
+        if matches!(&incoming, Incoming::Text(text) if text.trim() == CLIPS_ON_CLIPBOARD) {
+            let mut commands = Vec::new();
+            self.timeline_action(Action::PasteClips, &mut commands);
+            return commands;
+        }
         let Some(session) = &self.session else {
             self.error = Some("Open a project first, then drop or paste media into it.".to_owned());
             return Vec::new();
@@ -1424,7 +1468,7 @@ fn help_panel(ctx: &egui::Context) {
                     ui.label(RichText::new(format!("Not understood in that file, {problem}")).color(theme::ACCENT));
                 }
             }
-            ui.label(RichText::new("Mouse: wheel zooms the timeline, Shift + wheel scrolls it; drag clips to move (with Ctrl: over what is in the way), their edges to trim, the mark at a selected clip's top corner to fade; right click for menus; drag assets onto the timeline (Shift: only picture or only sound).").color(theme::DIM));
+            ui.label(RichText::new("Mouse: the wheel moves along the timeline, Ctrl + wheel zooms it; pull the line across a sound clip to change its volume; drag clips to move (with Ctrl: over what is in the way), their edges to trim, the mark at a selected clip's top corner to fade; right click for menus; drag assets onto the timeline (Shift: only picture or only sound).").color(theme::DIM));
         });
     });
 }

@@ -114,6 +114,12 @@ enum Drag {
         edge: Edge,
         group: u64,
     },
+    /// Pulling the volume line of a sound clip up or down; the other
+    /// selected sound clips change by as much. One undo step.
+    Gain {
+        sel: Sel,
+        group: u64,
+    },
 }
 
 /// A clip on the internal clipboard, relative to the first copied frame.
@@ -122,6 +128,8 @@ struct Copied {
     clip: Clip,
     /// Offset from the earliest copied clip, in the clip's track units.
     offset: i64,
+    /// What the clip had been given: volume, fades, placement, title.
+    props: Option<Box<ClipProps>>,
 }
 
 pub struct Timeline {
@@ -171,6 +179,12 @@ pub struct Timeline {
     menu_clip: Option<(usize, Clip)>,
     /// The track row the context menu was opened on.
     menu_row: Option<usize>,
+    /// Undo group of the volume field in the clip menu while that menu is open.
+    menu_group: Option<u64>,
+    /// Actions chosen in the menus this frame; the shell runs them like keys.
+    pub actions: Vec<Action>,
+    /// The volume being pulled or pointed at: where to write it, and its decibels.
+    gain_label: Option<(egui::Pos2, f32)>,
     /// Quads drawn in the last frame, for the performance overlay.
     pub quads: usize,
 }
@@ -195,6 +209,9 @@ impl Default for Timeline {
             rect: Rect::NOTHING,
             drop_ghost: None,
             menu_row: None,
+            menu_group: None,
+            actions: Vec::new(),
+            gain_label: None,
             menu_clip: None,
             scenario_request: None,
             waves: HashMap::new(),
@@ -208,6 +225,37 @@ impl Default for Timeline {
             quads: 0,
         }
     }
+}
+
+/// The volume line of a sound clip: its height in the clip says how loud
+/// the clip is. +12 dB at the top, 0 dB a quarter down, -36 dB (and
+/// anything quieter) at the bottom.
+const GAIN_TOP_DB: f32 = 12.0;
+const GAIN_SPAN_DB: f32 = 48.0;
+/// The range a clip's volume can take, as in the inspector.
+const GAIN_RANGE: std::ops::RangeInclusive<f32> = -60.0..=24.0;
+/// Rows and clips smaller than this (points) carry no volume line.
+const GAIN_MIN_ROW: f32 = 24.0;
+const GAIN_MIN_WIDTH: f32 = 36.0;
+
+/// Top and bottom of a clip inside a row that starts at `top`.
+fn clip_span(top: f32, row_h: f32) -> (f32, f32) {
+    // Small rows keep less padding so that the clips stay visible.
+    let pad = if row_h < 20.0 { 1.0 } else { 3.0 };
+    (top + pad, top + row_h - pad - 1.0)
+}
+
+/// Where the volume line of a clip between `y0` and `y1` lies.
+fn gain_y(db: f32, y0: f32, y1: f32) -> f32 {
+    let down = ((GAIN_TOP_DB - db) / GAIN_SPAN_DB).clamp(0.0, 1.0);
+    // (Kept off the very edges, where the selection bar and the fade marks are.)
+    y0 + 3.0 + down * (y1 - y0 - 6.0)
+}
+
+/// The volume a line at height `y` stands for; at the bottom, silence.
+fn gain_at(y: f32, y0: f32, y1: f32) -> f32 {
+    let down = ((y - y0 - 3.0) / (y1 - y0 - 6.0).max(1.0)).clamp(0.0, 1.0);
+    if down >= 1.0 { *GAIN_RANGE.start() } else { GAIN_TOP_DB - down * GAIN_SPAN_DB }
 }
 
 /// Waveform colour: dark on the clip's fill, like ink on the track colour.
@@ -440,7 +488,8 @@ impl Timeline {
         let row_h = ((rect.height() - RULER_H) / sequence.tracks.len().max(1) as f32).clamp(ROW_MIN, ROW_MAX);
         self.row_h = row_h;
         self.lanes_w = lanes.width();
-        let row_at = move |y: f32| ((y - rect.top() - RULER_H) / row_h).floor();
+        // Rows from the top of the lanes, with the fraction: how far down the row.
+        let row_at = move |y: f32| (y - rect.top() - RULER_H) / row_h;
         // Follow the playhead when it leaves the view (playback, jumps).
         if view.frame != self.last_playhead && matches!(self.drag, Drag::None) {
             self.reveal(view.frame, lanes.width());
@@ -453,11 +502,21 @@ impl Timeline {
         let frame_at = move |x: f32| left + (x - lanes.left()) as f64 * fpp;
         let x_of = move |frame: f64| lanes.left() + ((frame - left) / fpp) as f32;
 
+        self.gain_label = None;
         self.pointer(ui, &response, session, &sequence, view, transport, error, rect, lanes, &frame_at, &row_at);
         self.rect = rect;
         self.asset_drop(ui, &response, session, &project, &sequence, view, error);
         self.paint(ui, rect, lanes, &project, &sequence, view, &x_of);
         self.track_controls(ui, &response, session, &sequence, rect, &row_at, error);
+        // The volume under the pointer, in figures, beside it.
+        if let Some((at, db)) = self.gain_label {
+            let text = if db <= *GAIN_RANGE.start() { "silent".to_owned() } else { format!("{db:+.1} dB") };
+            let painter = ui.painter_at(rect);
+            let galley = painter.layout_no_wrap(text, FontId::proportional(11.0), theme::TEXT);
+            let plate = Rect::from_min_size(at + egui::vec2(12.0, -22.0), galley.size() + egui::vec2(10.0, 6.0));
+            painter.rect_filled(plate, 3.0, theme::BG);
+            painter.galley(plate.min + egui::vec2(5.0, 3.0), galley, theme::TEXT);
+        }
     }
 
     /// Where something dropped at `pos` lands: the frame (snapped like a
@@ -622,6 +681,9 @@ impl Timeline {
         }
         let mut remove = None;
         let mut delete: Vec<Sel> = Vec::new();
+        if !response.context_menu_opened() {
+            self.menu_group = None;
+        }
         response.context_menu(|ui| {
             if let Some((track, clip)) = self.menu_clip.and_then(|(row, clip)| Some((sequence.tracks.get(row)?, clip)))
             {
@@ -664,12 +726,61 @@ impl Timeline {
                         }
                     });
                 }
-                if ui.button("Delete clip (Shift+X)").clicked() {
-                    delete = all;
-                    ui.close();
+                // The sound of the take, whichever of its clips was clicked.
+                let sound: Vec<Sel> = all.iter().copied().filter(|s| kind_of(s) == Some(TrackKind::Audio)).collect();
+                if let Some(first) = sound.first() {
+                    ui.menu_button("Clip volume", |ui| {
+                        let now = sequence
+                            .track(first.track)
+                            .and_then(|t| t.props_of(first.id))
+                            .map_or(0.0, |p| p.gain_db.at(0));
+                        let mut db = now;
+                        let group = *self.menu_group.get_or_insert_with(|| session.new_group());
+                        ui.add(
+                            egui::DragValue::new(&mut db).range(GAIN_RANGE).speed(0.1).fixed_decimals(1).suffix(" dB"),
+                        )
+                        .on_hover_text("Drag, or click and type. The line across a sound clip does the same.");
+                        for (label, to) in
+                            [("Quieter (-3 dB)", now - 3.0), ("Louder (+3 dB)", now + 3.0), ("Back to 0 dB", 0.0)]
+                        {
+                            if ui.button(label).clicked() {
+                                db = to;
+                            }
+                        }
+                        if db != now {
+                            Timeline::shift_gain(session, sequence, &sound, db - now, Some(group));
+                        }
+                    });
+                }
+                ui.separator();
+                for (action, label) in [
+                    (Action::Split, "Split at the playhead"),
+                    (Action::RippleStart, "Remove up to the playhead"),
+                    (Action::RippleEnd, "Remove from the playhead on"),
+                    (Action::Copy, "Copy"),
+                    (Action::Cut, "Cut"),
+                    (Action::RippleDelete, "Delete and close the gap"),
+                    (Action::Delete, "Delete, leave the gap"),
+                    (Action::KeyframeSet, "Keyframe at the playhead"),
+                    (Action::Transition, "Whip-pan on the nearest cut"),
+                ] {
+                    if crate::actions::entry(ui, action, label) {
+                        self.actions.push(action);
+                    }
                 }
                 ui.separator();
             }
+            for (action, label) in [
+                (Action::PasteClips, "Paste at the playhead"),
+                (Action::Marker, "Marker at the playhead"),
+                (Action::AddTitle, "Add a title"),
+                (Action::FitTimeline, "Show the whole sequence"),
+            ] {
+                if crate::actions::entry(ui, action, label) {
+                    self.actions.push(action);
+                }
+            }
+            ui.separator();
             if ui.button("Add video track").clicked() {
                 add = Some(TrackKind::Video);
                 ui.close();
@@ -709,19 +820,16 @@ impl Timeline {
     fn wheel_and_pan(&mut self, ui: &egui::Ui, response: &egui::Response, lanes: Rect, sequence: &Sequence) {
         let end = sequence_end(sequence) as f64;
         if response.hovered() {
-            let (scroll, pointer, shift) =
-                ui.input(|i| (i.smooth_scroll_delta, i.pointer.hover_pos(), i.modifiers.shift));
-            // Shift + wheel scrolls; egui already turns that into a horizontal delta.
-            let sideways = if shift { scroll.x + scroll.y } else { scroll.x };
-            if sideways != 0.0 {
-                self.left -= sideways as f64 * self.frames_per_point;
-            } else if scroll.y != 0.0 {
-                // Zoom around the pointer: the frame under it stays put.
+            // The wheel moves along the sequence, whichever way it turns
+            // (feedback F4.5); with Ctrl it zooms, which egui reports as a
+            // zoom factor, the same as a pinch on a touchpad.
+            let (scroll, zoom, pointer) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
+            if zoom != 1.0 {
+                // Around the pointer: the frame under it stays put.
                 let x = pointer.map_or(lanes.center().x, |p| p.x) - lanes.left();
-                let anchor = self.left + x as f64 * self.frames_per_point;
-                let widest = ((end * 2.0).max(600.0) / lanes.width().max(1.0) as f64).max(0.01);
-                self.frames_per_point = (self.frames_per_point * (-scroll.y as f64 * 0.004).exp()).clamp(0.005, widest);
-                self.left = anchor - x as f64 * self.frames_per_point;
+                self.zoom_around(1.0 / zoom as f64, x, lanes.width(), end);
+            } else if scroll != egui::Vec2::ZERO {
+                self.left -= (scroll.x + scroll.y) as f64 * self.frames_per_point;
             }
         }
         if response.dragged_by(PointerButton::Middle) {
@@ -730,6 +838,23 @@ impl Timeline {
         // Keep some of the sequence in view.
         let visible = lanes.width() as f64 * self.frames_per_point;
         self.left = self.left.clamp(-visible * 0.1, (end - visible * 0.2).max(0.0));
+    }
+
+    /// Changes the zoom by `factor` (above 1: further out) keeping the
+    /// frame at `x` points from the left of the lanes where it is.
+    fn zoom_around(&mut self, factor: f64, x: f32, lanes_width: f32, end: f64) {
+        let anchor = self.left + x as f64 * self.frames_per_point;
+        let widest = ((end * 2.0).max(600.0) / lanes_width.max(1.0) as f64).max(0.01);
+        self.frames_per_point = (self.frames_per_point * factor).clamp(0.005, widest);
+        self.left = anchor - x as f64 * self.frames_per_point;
+    }
+
+    /// Zooms in (`true`) or out one step around the playhead, or around
+    /// the middle if the playhead is out of view: the zoom buttons.
+    pub fn zoom_step(&mut self, closer: bool, sequence: &Sequence) {
+        let at = ((self.last_playhead as f64 - self.left) / self.frames_per_point) as f32;
+        let x = if (0.0..=self.lanes_w).contains(&at) { at } else { self.lanes_w / 2.0 };
+        self.zoom_around(if closer { 0.6 } else { 1.0 / 0.6 }, x, self.lanes_w, sequence_end(sequence) as f64);
     }
 
     /// The clip under a point and, if the point is near one of its ends, that end.
@@ -786,6 +911,51 @@ impl Timeline {
             Some((sel, Edge::End))
         } else {
             None
+        }
+    }
+
+    /// The sound clip whose volume line is under the pointer. `row` counts
+    /// rows from the top of the lanes, fraction included.
+    fn gain_hit(&self, sequence: &Sequence, row: f32, frame: f64) -> Option<(Sel, f32)> {
+        if row < 0.0 || self.row_h < GAIN_MIN_ROW {
+            return None;
+        }
+        let track = sequence.tracks.get(row as usize).filter(|t| t.kind == TrackKind::Audio)?;
+        let per = Lane::of(track, sequence).per_frame();
+        let clip = track.clips.at((frame * per) as i64)?;
+        let (start, end) = (clip.start as f64 / per, clip.end() as f64 / per);
+        // The ends belong to trimming.
+        let reach = GRAB as f64 * self.frames_per_point;
+        if (end - start) / self.frames_per_point < GAIN_MIN_WIDTH as f64 || frame - start < reach || end - frame < reach
+        {
+            return None;
+        }
+        let db = track.props_of(clip.id).map_or(0.0, |p| p.gain_db.at(0));
+        let (y0, y1) = clip_span(0.0, self.row_h);
+        let y = row.fract() * self.row_h;
+        ((y - gain_y(db, y0, y1)).abs() <= 3.5).then_some((Sel { track: track.id, start: clip.start, id: clip.id }, db))
+    }
+
+    /// Makes these clips louder or quieter by `delta` decibels, keyframes
+    /// and all. Clips on video tracks are left alone.
+    fn shift_gain(session: &mut Session, sequence: &Sequence, clips: &[Sel], delta: f32, group: Option<u64>) {
+        for sel in clips {
+            let Some(track) = sequence.track(sel.track).filter(|t| t.kind == TrackKind::Audio) else { continue };
+            let Some(clip) = track.clips.get(sel.start) else { continue };
+            let before = track.props_of(clip.id).map(|p| ClipProps::clone(p)).unwrap_or_default();
+            let mut props = before.clone();
+            let moved = |db: f32| ((db + delta).clamp(*GAIN_RANGE.start(), *GAIN_RANGE.end()) * 10.0).round() / 10.0;
+            props.gain_db.value = moved(props.gain_db.value);
+            for key in &mut props.gain_db.keys {
+                key.value = moved(key.value);
+            }
+            if props == before {
+                continue;
+            }
+            let props = (props != ClipProps::default()).then(|| Box::new(props));
+            let op = Op::SetClipProps { seq: sequence.id, track: track.id, clip: clip.id, props };
+            // (A clip that cannot take it is left as it is.)
+            let _ = session.apply(op, group);
         }
     }
 
@@ -853,6 +1023,11 @@ impl Timeline {
             let over_fade = self.fade_hit(sequence, row_at(pos.y), frame_at(pos.x)).is_some();
             if (over_edge || over_fade) && matches!(self.drag, Drag::None) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            } else if let (Drag::None, Some((_, db))) =
+                (&self.drag, self.gain_hit(sequence, row_at(pos.y), frame_at(pos.x)))
+            {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                self.gain_label = Some((pos, db));
             }
         }
 
@@ -860,11 +1035,20 @@ impl Timeline {
             let origin = press.unwrap_or(rect.min);
             let on_ruler = origin.y < rect.top() + RULER_H || origin.x < lanes.left();
             let fade = self.fade_hit(sequence, row_at(origin.y), frame_at(origin.x)).filter(|_| !on_ruler);
+            let gain = self.gain_hit(sequence, row_at(origin.y), frame_at(origin.x)).filter(|_| !on_ruler);
             self.drag = match self.hit(sequence, row_at(origin.y), frame_at(origin.x)).filter(|_| !on_ruler) {
                 _ if fade.is_some() => match fade {
                     Some((sel, edge)) => Drag::Fade { sel, edge, group: session.new_group() },
                     None => Drag::None,
                 },
+                Some((row, clip, None)) if gain.is_some() => {
+                    let sel = Sel { track: sequence.tracks[row].id, start: clip.start, id: clip.id };
+                    // The line of a clip outside the selection moves that clip alone.
+                    if !self.selection.contains(&sel) {
+                        self.selection = vec![sel];
+                    }
+                    Drag::Gain { sel, group: session.new_group() }
+                }
                 Some((row, clip, edge)) => {
                     let track = &sequence.tracks[row];
                     let sel = Sel { track: track.id, start: clip.start, id: clip.id };
@@ -924,6 +1108,22 @@ impl Timeline {
                 Drag::Fade { sel, edge, group } => {
                     let (sel, edge, group) = (*sel, *edge, *group);
                     self.drag_fade(session, sequence, sel, edge, group, frame_at(pos.x));
+                }
+                Drag::Gain { sel, group } => {
+                    let (sel, group) = (*sel, *group);
+                    let row = sequence.tracks.iter().position(|t| t.id == sel.track).unwrap_or(0);
+                    let (y0, y1) = clip_span(rect.top() + RULER_H + row as f32 * self.row_h, self.row_h);
+                    let now =
+                        sequence.track(sel.track).and_then(|t| t.props_of(sel.id)).map_or(0.0, |p| p.gain_db.at(0));
+                    // The line follows the pointer in whole decibels; with
+                    // Shift it creeps, a tenth of a decibel per point.
+                    let wanted = if modifiers.shift {
+                        now - response.drag_delta().y * 0.1
+                    } else {
+                        gain_at(pos.y, y0, y1).round()
+                    };
+                    Timeline::shift_gain(session, sequence, &self.selection.clone(), wanted - now, Some(group));
+                    self.gain_label = Some((pos, wanted.clamp(*GAIN_RANGE.start(), *GAIN_RANGE.end())));
                 }
                 Drag::Pan | Drag::None => {}
             }
@@ -1180,9 +1380,7 @@ impl Timeline {
             // Two physical pixels, in this track's units.
             let min_len = ((2.0 / ppp as f64) * fpp * per).ceil() as i64;
             let (t0, t1) = ((visible.0 * per).floor() as i64, (visible.1 * per).ceil() as i64);
-            // Small rows keep less padding so that the clips stay visible.
-            let pad = if row_h < 20.0 { 1.0 } else { 3.0 };
-            let (y0, y1) = (top + pad, top + row_h - pad - 1.0);
+            let (y0, y1) = clip_span(top, row_h);
             track.clips.visit(t0, t1, min_len, |item| match item {
                 Visible::Clip(clip) => {
                     let (x0, x1) = (
@@ -1323,6 +1521,7 @@ impl Timeline {
                             thumb_w = width;
                         }
                     }
+                    let mut name_w = 0.0;
                     if x1 - x0 >= LABEL_MIN && row_h >= 16.0 && labels.len() < 400 {
                         // A title shows its text, anything else its asset's label.
                         let title = track.props_of(clip.id).and_then(|p| p.title.as_ref()).map(|t| t.text.as_str());
@@ -1335,6 +1534,16 @@ impl Timeline {
                             x1 - x0.max(lanes.left()) - 8.0 - thumb_w,
                             name,
                         ));
+                        // (Roughly the room the name takes, so that the volume line starts after it.)
+                        name_w = (name.chars().count() as f32 * 6.5 + 12.0).min((x1 - x0) * 0.5);
+                    }
+                    // The volume line: pulled up or down to make the clip louder or quieter.
+                    if track.kind == TrackKind::Audio && row_h >= GAIN_MIN_ROW && x1 - x0 >= GAIN_MIN_WIDTH {
+                        let db = track.props_of(clip.id).map_or(0.0, |p| p.gain_db.at(0));
+                        let y = gain_y(db, y0, y1);
+                        let line = if db == 0.0 { theme::TEXT.gamma_multiply(0.45) } else { theme::TEXT };
+                        let from = x0.max(lanes.left()) + 2.0 + name_w;
+                        instances.push(Instance::new(quad(from, y - 0.75, x1 - 2.0, y + 0.75), line, 0.0, 0.0));
                     }
                 }
                 Visible::Run { start, end } => {
@@ -1606,7 +1815,10 @@ impl Timeline {
                 }
                 self.selection.clear();
             }
-            Action::RippleDelete | Action::Delete => {
+            Action::RippleDelete | Action::Delete | Action::Cut => {
+                if action == Action::Cut {
+                    self.copy(&sequence);
+                }
                 // Right to left per track, so that earlier positions stay valid.
                 let mut selected = self.selection.clone();
                 selected.sort_by_key(|s| std::cmp::Reverse(s.start));
@@ -1635,36 +1847,39 @@ impl Timeline {
                     }
                 }
             }
-            Action::Copy => {
-                let picked: Vec<(usize, Clip)> = self
-                    .selection
-                    .iter()
-                    .filter_map(|s| {
-                        let row = sequence.tracks.iter().position(|t| t.id == s.track)?;
-                        Some((row, sequence.tracks[row].clips.get(s.start)?))
-                    })
-                    .collect();
-                let first = picked
-                    .iter()
-                    .map(|(row, c)| Lane::of(&sequence.tracks[*row], &sequence).frame(c.start))
-                    .min()
-                    .unwrap_or(0);
-                self.clipboard = picked
-                    .into_iter()
-                    .map(|(row, clip)| Copied {
-                        row,
-                        clip,
-                        offset: clip.start - Lane::of(&sequence.tracks[row], &sequence).units(first),
-                    })
-                    .collect();
-            }
+            Action::Copy => self.copy(&sequence),
             Action::PasteClips => {
                 self.selection.clear();
+                // Like a move with Ctrl: the copies go down over whatever
+                // is in their place (07-ui-keybinds.md), and stay selected.
+                let mut over: Vec<(TrackId, Clip)> = Vec::new();
                 for copied in &self.clipboard {
                     let Some(track) = sequence.tracks.get(copied.row) else { continue };
                     let start = Lane::of(track, &sequence).units(playhead) + copied.offset;
                     let clip = Clip { id: session.new_clip_id(), start, ..copied.clip };
-                    ops.push(Op::InsertClip { seq, track: track.id, clip });
+                    let mut down = vec![Op::InsertClip { seq, track: track.id, clip }];
+                    // The copy keeps what the original was given: volume, fades, placement.
+                    if let Some(props) = &copied.props {
+                        down.push(Op::SetClipProps { seq, track: track.id, clip: clip.id, props: Some(props.clone()) });
+                    }
+                    ops.extend(down);
+                    over.push((track.id, clip));
+                }
+                if !ops.is_empty() {
+                    // Free room: plain insertions. Otherwise over what is there.
+                    let pasted = match session.apply(Op::Batch(std::mem::take(&mut ops)), None) {
+                        Ok(()) => Ok(()),
+                        Err(_) => self.paste_over(session, seq, &over),
+                    };
+                    match pasted {
+                        Ok(()) => {
+                            self.selection = over
+                                .iter()
+                                .map(|(track, clip)| Sel { track: *track, start: clip.start, id: clip.id })
+                                .collect()
+                        }
+                        Err(_) => *error = Some("No room to paste here.".to_owned()),
+                    }
                 }
             }
             Action::Nudge(frames) => {
@@ -1725,6 +1940,55 @@ impl Timeline {
             });
         }
         seek
+    }
+
+    /// Puts the selected clips on the internal clipboard.
+    fn copy(&mut self, sequence: &Sequence) {
+        let picked: Vec<(usize, Clip)> = self
+            .selection
+            .iter()
+            .filter_map(|s| {
+                let row = sequence.tracks.iter().position(|t| t.id == s.track)?;
+                Some((row, sequence.tracks[row].clips.get(s.start)?))
+            })
+            .collect();
+        if picked.is_empty() {
+            return;
+        }
+        let first =
+            picked.iter().map(|(row, c)| Lane::of(&sequence.tracks[*row], sequence).frame(c.start)).min().unwrap_or(0);
+        self.clipboard = picked
+            .into_iter()
+            .map(|(row, clip)| Copied {
+                row,
+                clip,
+                offset: clip.start - Lane::of(&sequence.tracks[row], sequence).units(first),
+                props: sequence.tracks[row].props_of(clip.id).map(|p| Box::new(ClipProps::clone(p))),
+            })
+            .collect();
+    }
+
+    /// Whether clips have been copied and can be pasted.
+    pub fn has_copied(&self) -> bool {
+        !self.clipboard.is_empty()
+    }
+
+    /// Pastes over what is in the way; the properties follow each copy.
+    fn paste_over(
+        &mut self,
+        session: &mut Session,
+        seq: sg_core::SequenceId,
+        over: &[(TrackId, Clip)],
+    ) -> Result<(), sg_core::OpError> {
+        let group = session.new_group();
+        session.move_over_in(Vec::new(), over.to_vec(), Some(group))?;
+        for ((track, clip), copied) in over.iter().zip(&self.clipboard) {
+            if let Some(props) = &copied.props {
+                let op = Op::SetClipProps { seq, track: *track, clip: clip.id, props: Some(props.clone()) };
+                session.apply(op, Some(group))?;
+            }
+        }
+        Ok(())
     }
 
     /// Scrolls so that `frame` is in view (after a jump).
@@ -2338,10 +2602,33 @@ mod tests {
         let (video, audio) = layout(&session);
         // W picked the lowest track under the playhead: the audio clip.
         assert_eq!((video.len(), audio), (2, vec![(0, 600), (600, 600), (1500, 600)]));
-        // Pasting onto something is refused, with a message.
+        // Pasting onto something covers it, as a move with Ctrl does: the
+        // clip pasted before keeps its first 100 frames. One undo takes it back.
         let mut error = None;
         timeline.act(Action::PasteClips, &mut session, 1600, &mut error);
-        assert_eq!(error.as_deref(), Some("No room to paste here."));
+        assert_eq!(error, None);
+        assert_eq!(layout(&session).1, vec![(0, 600), (600, 600), (1500, 100), (1600, 600)]);
+        session.undo().unwrap();
+        assert_eq!(layout(&session).1, vec![(0, 600), (600, 600), (1500, 600)]);
+        // Cut copies and takes out, leaving the gap; the copy carries what the clip was given.
+        let project = session.project().clone();
+        let seq = &project.sequences[0];
+        let audio = seq.tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap();
+        let clip = audio.clips.at(Lane::of(audio, seq).units(1500)).unwrap();
+        let props = ClipProps { gain_db: sg_core::Param::constant(-6.0), fade_in: 12, ..ClipProps::default() };
+        let op = Op::SetClipProps { seq: seq.id, track: audio.id, clip: clip.id, props: Some(Box::new(props.clone())) };
+        session.apply(op, None).unwrap();
+        let project = session.project().clone();
+        timeline.select(&project.sequences[0], audio, &clip, false, true);
+        act(&mut timeline, &mut session, Action::Cut, 0);
+        assert_eq!(layout(&session).1, vec![(0, 600), (600, 600)]);
+        act(&mut timeline, &mut session, Action::PasteClips, 3000);
+        assert_eq!(layout(&session).1, vec![(0, 600), (600, 600), (3000, 600)]);
+        let project = session.project().clone();
+        let audio = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap();
+        let pasted = audio.clips.at(Lane::of(audio, &project.sequences[0]).units(3000)).unwrap();
+        assert_eq!(audio.props_of(pasted.id).map(|p| ClipProps::clone(p)), Some(props));
+        assert!(timeline.is_selected(audio.id, &pasted));
 
         act(&mut timeline, &mut session, Action::Marker, 300);
         assert_eq!(session.project().sequences[0].markers.len(), 1);

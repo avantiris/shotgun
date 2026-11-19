@@ -36,8 +36,9 @@ Editor layout (single window; panels resize but do not float or re-dock):
 
 | Action | Result |
 |--------|--------|
-| Wheel on timeline | zoom around cursor |
-| Shift + wheel | scroll horizontally |
+| Wheel on timeline | move along the sequence (asked for in feedback F4.5; it zoomed before) |
+| Ctrl + wheel, or a pinch | zoom around the pointer (F4.5). `Zoom in`, `Zoom out`, `Show all` above the timeline do it in steps |
+| Drag the line across a sound clip up or down | that clip's volume (F4.2), from +12 dB at the top to silence at the bottom, 0 dB a quarter down; in whole decibels, with Shift a tenth per point. All selected sound clips change by as much. One undo step per pull. The same is in the clip's menu (`Clip volume`) and the inspector |
 | Middle drag | pan timeline / viewer |
 | Click or drag on the ruler or on empty timeline | set / scrub playhead |
 | Click clip | select it with its partner (picture + sound of one take); Shift adds, Alt selects it alone |
@@ -49,12 +50,32 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Drag an asset from the panel onto the timeline | place it where it is let go: picture on the video track under the pointer, sound on an audio track; snaps like a moved clip (Alt disables). Where the spot is taken, or outside the tracks, it goes to the next free track, and a new track is made if there is none. A ghost shows the result before the button is released |
 | Drop files from another application onto the timeline | import them and place them there, one after the other |
 | `+ Video` / `+ Audio` above the track names | add a track (video on top, audio at the bottom) |
-| Right click on the timeline | add a video or audio track, remove the empty track under the pointer |
-| Right click on a clip | remove its sound and keep the picture, or the reverse; delete it |
+| Right click on the timeline | paste, marker, title, show all; add a video or audio track, remove the empty track under the pointer |
+| Right click on a clip | remove its sound and keep the picture, or the reverse; its scenario; its volume; split, cut off start or end, copy, cut, delete, keyframe, whip-pan (each with its key written beside it) |
 | Shift while dragging an asset onto a track | place only the part that belongs there (the sound on an audio track, the picture on a video track) |
 | Right click on an asset | place it, or only its sound or picture, at the playhead; use it as the song; sync it (or all takes) to the song; lay it as a camera angle to sync by hand; remove it from the project |
 | `shown` / `hidden` next to a video track name | take the track out of the picture: a camera angle to cut from |
 | `M` / `S` next to an audio track name | mute, solo |
+
+## Buttons for what the keys do (feedback F4.1)
+
+Everything that has a key can also be clicked, and the key is written on
+the button or beside the menu entry, so that the keys are learnt by using
+the buttons (`PROPOSED` where and how):
+
+- Under the viewer: start, previous cut, frame back, play / pause, frame
+  on, next cut, end, record movement.
+- Above the timeline: undo, redo; split, cut off start, cut off end,
+  delete and close the gap, delete; copy, cut, paste; marker, title,
+  whip-pan, keyframe; zoom out, zoom in, show all. Buttons that need a
+  selection are grey without one.
+- Top bar: `Menu` (every action of the key map, by group, as the key list
+  shows them), checkpoint, history, export, keys, colour, mixer.
+- Right click on a clip or on the timeline: see the mouse table.
+
+Buttons and menu entries run the same action as the key (`Shell::act`), so
+they cannot drift apart. The key shown is the one in force, the user's key
+file included.
 
 ## Keys (left hand, bound by physical position)
 
@@ -87,8 +108,9 @@ Cutting
 | X | ripple delete selection |
 | Shift + X | delete, leave gap |
 | W | select clip under playhead (repeat: next track up) |
-| C / V | copy selected clips / paste them at the playhead (same tracks; refused if there is no room) |
-| Ctrl + V | paste; if the clipboard holds a link, file or image: **import it** |
+| C / V | copy selected clips / paste them at the playhead, on the same tracks, with what they were given (volume, fades, placement). The copies go down over what is in their place, like a move with Ctrl (`PROPOSED`, 2026-11-19; a paste without room was refused before) and stay selected |
+| Ctrl + C / Ctrl + X | copy / cut (copy and take out, leaving the gap) the selected clips (feedback F4.4) |
+| Ctrl + V | paste: the copied clips, if they were the last thing copied; if a link, file or image was copied anywhere since: **import it**. How it is told apart: copying clips puts a short text on the system clipboard as a mark, and Ctrl + V looks at what the clipboard holds now. In a text field the three keys belong to the text |
 | G | add marker at the playhead (again on the same frame: remove it) |
 | Y | undo (Shift + Y redo); Ctrl + Z / Ctrl + Shift + Z also work |
 

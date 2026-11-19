@@ -74,6 +74,8 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 enum UserEvent {
+    /// Whether the mark of copied clips is on the clipboard now.
+    ClipsOffered(bool),
     /// egui wants a repaint after this delay.
     Repaint(Duration),
     /// A worker changed something visible.
@@ -492,6 +494,12 @@ impl App {
                             Transport::Seek(frame) => player.seek(frame),
                             Transport::Step(frames) => player.step(frames),
                         }
+                    }
+                }
+                Command::OfferClips => {
+                    // Automated runs must never touch the user's clipboard.
+                    if std::env::var_os("SHOTGUN_NO_CLIPBOARD").is_none() {
+                        offer_clips(proxy.clone());
                     }
                 }
                 Command::ReadClipboard => match &self.wl {
@@ -915,6 +923,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.job_done();
             }
             UserEvent::Problem(message) => self.shell.report_error(message),
+            UserEvent::ClipsOffered(offered) => self.shell.clips_offered(offered),
             UserEvent::ProjectPoster { path, rgba } => {
                 self.shell.project_poster_loaded(&self.ctx, path, rgba);
                 self.job_done();
@@ -945,6 +954,11 @@ impl ApplicationHandler<UserEvent> for App {
             _ => {}
         }
         let Some(gfx) = &mut self.gfx else { return };
+        // egui-winit swallows Ctrl+C, X and V and hands egui clipboard
+        // events instead, which only text fields understand. Outside a text
+        // field they must arrive as keys, for the key map (feedback F4.4:
+        // copy, cut and paste of clips did nothing).
+        gfx.egui_state.set_clipboard_shortcuts(self.ctx.text_edit_focused());
         if gfx.egui_state.on_window_event(&gfx.window, &event).repaint {
             gfx.window.request_redraw();
         }
@@ -1279,6 +1293,31 @@ fn run_export(
         }
         Err(sg_export::ExportError::Cancelled) => ExportUpdate::Failed("cancelled".to_owned()),
         Err(e) => ExportUpdate::Failed(e.to_string()),
+    }
+}
+
+/// Puts the mark of copied timeline clips on the clipboard and tells the
+/// shell whether that worked. The selection is served by a thread of this
+/// process until something else is copied.
+fn offer_clips(proxy: winit::event_loop::EventLoopProxy<UserEvent>) {
+    use wl_clipboard_rs::copy::{MimeType, Options, Source};
+    let spawned = std::thread::Builder::new().name("sg-clipboard".into()).spawn(move || {
+        let source = Source::Bytes(sg_ui::CLIPS_ON_CLIPBOARD.as_bytes().into());
+        match Options::new().prepare_copy(source, MimeType::Text) {
+            Ok(prepared) => {
+                let _ = proxy.send_event(UserEvent::ClipsOffered(true));
+                if let Err(e) = prepared.serve() {
+                    log::warn!("clipboard: {e}");
+                }
+            }
+            Err(e) => {
+                log::warn!("clipboard: {e}");
+                let _ = proxy.send_event(UserEvent::ClipsOffered(false));
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("clipboard: {e}");
     }
 }
 

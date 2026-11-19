@@ -6,8 +6,10 @@ use std::sync::atomic::Ordering;
 use egui::{Align, FontId, Layout, RichText, Sense, vec2};
 use sg_core::{Asset, AssetId, Op, Rate, Sequence};
 
+use crate::actions;
 use crate::assets::{AssetRequest, AssetsPanel, summary};
 use crate::clip_panel::{ClipPanel, Target};
+use crate::keymap::{self, Action};
 use crate::session::Session;
 use crate::stage::{self, Transport, ViewerState};
 use crate::theme;
@@ -15,20 +17,16 @@ use crate::timeline::Timeline;
 
 pub enum EditorRequest {
     Close,
-    Undo,
-    Redo,
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
     SetSize(u32, u32),
     CutsToBeats,
     WhipAll,
-    Help,
     /// Cut to this camera angle (0 is the first) at the playhead.
     Angle(usize),
     Tempo(i8),
     SyncAll,
     ClearSong,
-    Export,
 }
 
 #[derive(Default)]
@@ -46,6 +44,9 @@ pub struct Editor {
     was_playing: bool,
     /// The label being typed for the selected asset.
     asset_label: Option<(AssetId, String)>,
+    /// Actions whose buttons or menu entries were clicked this frame; the
+    /// shell runs them the way it runs their keys.
+    pub actions: Vec<Action>,
 }
 
 impl Editor {
@@ -80,9 +81,10 @@ impl Editor {
             return request;
         };
         let flush = egui::Frame::new().fill(theme::BG);
-        egui::Panel::bottom("timeline").resizable(true).default_size(230.0).min_size(120.0).frame(flush).show(
+        egui::Panel::bottom("timeline").resizable(true).default_size(270.0).min_size(150.0).frame(flush).show(
             ui,
             |ui| {
+                self.tools(ui, session);
                 self.timeline.ui(ui, session, view, transport, error);
                 // Posters at the heads of clips: the asset panel holds the textures.
                 let painter = ui.painter().with_clip_rect(self.timeline.lanes);
@@ -117,6 +119,9 @@ impl Editor {
             });
         });
         let recording = self.clip_panel.recording;
+        // Under the viewer: the buttons of the playing keys.
+        let strip = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(12, 4));
+        egui::Panel::bottom("transport").frame(strip).show(ui, |ui| self.transport(ui, view));
         // The angle the programme shows at the playhead, to mark it in the monitor.
         let live = crate::session::program_row(sequence)
             .and_then(|row| sequence.tracks[row].clips.at(view.frame))
@@ -228,12 +233,103 @@ impl Editor {
                 self.colour.open = !self.colour.open;
                 self.mixer.open = false;
             }
-            if ui.button("Keys").on_hover_text("What every key does (F1)").clicked() {
-                *request = Some(EditorRequest::Help);
+            for (action, label) in [
+                (Action::Help, "Keys"),
+                (Action::Export, "Export"),
+                (Action::History, "History"),
+                (Action::Checkpoint, "Checkpoint"),
+            ] {
+                if actions::button(ui, action, label) {
+                    self.actions.push(action);
+                }
             }
-            if ui.button("Export").on_hover_text("Ctrl+E").clicked() {
-                *request = Some(EditorRequest::Export);
+            // Everything that has a key, to click: the key reference as a menu.
+            ui.menu_button("Menu", |ui| {
+                for (group, lines) in keymap::menu() {
+                    ui.menu_button(group, |ui| {
+                        for (action, what) in lines {
+                            if actions::entry(ui, action, &actions::sentence(what)) {
+                                self.actions.push(action);
+                            }
+                        }
+                    });
+                }
+            })
+            .response
+            .on_hover_text("Everything that has a key, by what it is for");
+        });
+    }
+
+    /// The buttons under the viewer: what the playing keys do.
+    fn transport(&mut self, ui: &mut egui::Ui, view: &ViewerState) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().button_padding = vec2(8.0, 3.0);
+            ui.spacing_mut().item_spacing.x = 5.0;
+            for (action, label) in [
+                (Action::ToStart, "Start"),
+                (Action::PrevCut, "Previous cut"),
+                (Action::StepBack, "Frame back"),
+                (Action::PlayPause, if view.playing { "Pause" } else { "Play" }),
+                (Action::StepForward, "Frame on"),
+                (Action::NextCut, "Next cut"),
+                (Action::ToEnd, "End"),
+                (Action::LiveRecord, "Record movement"),
+            ] {
+                if actions::button(ui, action, label) {
+                    self.actions.push(action);
+                }
             }
+        });
+    }
+
+    /// The buttons above the timeline: what the cutting keys do, on what
+    /// is selected or under the playhead.
+    fn tools(&mut self, ui: &mut egui::Ui, session: &Session) {
+        let history = session.document().history();
+        let (can_undo, can_redo) = (history.can_undo(), history.can_redo());
+        let (selected, copied) = (self.timeline.has_selection(), self.timeline.has_copied());
+        egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().button_padding = vec2(8.0, 3.0);
+                ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
+                // (enabled, action, label); `None`: a gap between groups.
+                let groups: [&[(bool, Action, &str)]; 5] = [
+                    &[(can_undo, Action::Undo, "Undo"), (can_redo, Action::Redo, "Redo")],
+                    &[
+                        (true, Action::Split, "Split"),
+                        (true, Action::RippleStart, "Cut off start"),
+                        (true, Action::RippleEnd, "Cut off end"),
+                        (selected, Action::RippleDelete, "Delete, close gap"),
+                        (selected, Action::Delete, "Delete"),
+                    ],
+                    &[
+                        (selected, Action::Copy, "Copy"),
+                        (selected, Action::Cut, "Cut"),
+                        (copied, Action::PasteClips, "Paste"),
+                    ],
+                    &[
+                        (true, Action::Marker, "Marker"),
+                        (true, Action::AddTitle, "Title"),
+                        (true, Action::Transition, "Whip-pan"),
+                        (selected, Action::KeyframeSet, "Keyframe"),
+                    ],
+                    &[
+                        (true, Action::ZoomOut, "Zoom out"),
+                        (true, Action::ZoomIn, "Zoom in"),
+                        (true, Action::FitTimeline, "Show all"),
+                    ],
+                ];
+                for (index, group) in groups.iter().enumerate() {
+                    if index > 0 {
+                        ui.add_space(10.0);
+                    }
+                    for (enabled, action, label) in group.iter().copied() {
+                        if actions::enabled_button(ui, enabled, action, label) {
+                            self.actions.push(action);
+                        }
+                    }
+                }
+            });
         });
     }
 
@@ -259,7 +355,7 @@ impl Editor {
         section(ui, "PROJECT");
         row(ui, "Name", &project.name);
         row(ui, "Folder", &session.root.display().to_string());
-        if ui.button("Rename (F2)").clicked() {
+        if actions::button(ui, Action::Rename, "Rename") {
             self.begin_rename(session);
         }
         ui.add_space(10.0);
@@ -331,14 +427,6 @@ impl Editor {
         let history = session.document().history();
         row(ui, "Undo steps", &history.undo_len().to_string());
         row(ui, "Redo steps", &history.redo_len().to_string());
-        ui.horizontal(|ui| {
-            if ui.add_enabled(history.can_undo(), egui::Button::new("Undo (Y)")).clicked() {
-                *request = Some(EditorRequest::Undo);
-            }
-            if ui.add_enabled(history.can_redo(), egui::Button::new("Redo (Shift+Y)")).clicked() {
-                *request = Some(EditorRequest::Redo);
-            }
-        });
     }
 }
 

@@ -29,6 +29,8 @@ pub enum Action {
     /// Select the clip under the playhead; again for the next track up.
     SelectUnder,
     Copy,
+    /// Copy the selected clips and take them out, leaving the gap.
+    Cut,
     PasteClips,
     Marker,
     PrevCut,
@@ -48,6 +50,10 @@ pub enum Action {
     Nudge(i8),
     /// Show the whole sequence in the timeline.
     FitTimeline,
+    /// Show less (or more) of the sequence, larger (or smaller). No keys
+    /// of their own: Ctrl + wheel, or the buttons.
+    ZoomIn,
+    ZoomOut,
     /// Show or hide the colour panel.
     Colour,
     /// A/B: switch the look chain, or the match, of the shown scenario on and off.
@@ -124,6 +130,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::W, Action::SelectUnder),
     bind(Scope::Editor, false, false, Key::C, Action::Copy),
     bind(Scope::Editor, true, false, Key::C, Action::Copy),
+    bind(Scope::Editor, true, false, Key::X, Action::Cut),
     bind(Scope::Editor, false, false, Key::V, Action::PasteClips),
     bind(Scope::Editor, false, false, Key::G, Action::Marker),
     bind(Scope::Editor, false, true, Key::A, Action::PrevCut),
@@ -325,8 +332,8 @@ pub fn lookup(screen: Scope, typing: bool, key: Key, mods: Modifiers) -> Option<
             (b.scope == Scope::Any || b.scope == screen) && b.key == key && b.ctrl == mods.ctrl && b.shift == mods.shift
         })
         .map(|b| b.action)
-        // In a text field Ctrl+V pastes text into the field, as everywhere.
-        .filter(|action| !(typing && *action == Action::Paste))
+        // In a text field Ctrl+C, X and V belong to the text, as everywhere.
+        .filter(|action| !(typing && matches!(action, Action::Paste | Action::Copy | Action::Cut)))
 }
 
 /// Removes bound key presses from this frame's input and returns their
@@ -367,6 +374,7 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::Delete => ("Cutting", "delete, leave the gap (or remove the selected asset)"),
         Action::SelectUnder => ("Cutting", "select the clip under the playhead (again: next track)"),
         Action::Copy => ("Cutting", "copy the selected clips"),
+        Action::Cut => ("Cutting", "cut the selected clips: copy them and take them out"),
         Action::PasteClips => ("Cutting", "paste them at the playhead"),
         Action::Marker => ("Cutting", "marker at the playhead (again: remove it)"),
         Action::Nudge(1) => ("Cutting", "selected clips one frame later (left: earlier; Shift: ten frames)"),
@@ -382,7 +390,7 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::Angle(1) => ("Making", "cut to camera angle 1 (2 to 9 likewise)"),
         Action::Angle(_) => return None,
         Action::AddAsset => ("Project", "add an asset: link or files"),
-        Action::Paste => ("Project", "paste: a link, file or image is imported"),
+        Action::Paste => ("Project", "paste: copied clips at the playhead; a link, file or image is imported"),
         Action::Mixer => ("Panels", "mixer"),
         Action::Colour => ("Panels", "colour: scenarios, match and look"),
         Action::ToggleLook => ("Panels", "look of the shown scenario off / on"),
@@ -390,6 +398,8 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::History => ("Panels", "saved states and checkpoints"),
         Action::Help => ("Panels", "this list"),
         Action::FitTimeline => ("Playing", "show the whole sequence in the timeline"),
+        Action::ZoomIn => ("Playing", "zoom into the timeline"),
+        Action::ZoomOut => ("Playing", "zoom out of the timeline"),
         Action::TogglePerf => ("Panels", "performance numbers"),
         Action::Export => ("Output", "export panel"),
         Action::ExportAgain => ("Output", "the last export again"),
@@ -418,6 +428,31 @@ pub fn cap(binding: &Binding) -> String {
         other => other.name().to_owned(),
     };
     format!("{}{}{key}", if binding.ctrl { "Ctrl+" } else { "" }, if binding.shift { "Shift+" } else { "" })
+}
+
+/// The first key of an action in the map in force, as its cap reads: the
+/// hint on buttons and menu entries. Empty if the action has no key.
+pub fn hint(action: Action) -> String {
+    active().iter().find(|b| b.action == action).map(cap).unwrap_or_default()
+}
+
+/// Every action a menu can offer, once, by group: the key reference as
+/// things to click. (`Angle` and `Nudge` stand for their whole family.)
+pub fn menu() -> Vec<(&'static str, Vec<(Action, &'static str)>)> {
+    let mut groups: Vec<(&'static str, Vec<(Action, &'static str)>)> = Vec::new();
+    for order in ["Playing", "Cutting", "Making", "Panels", "Output", "Project"] {
+        let mut lines: Vec<(Action, &'static str)> = Vec::new();
+        for binding in KEYMAP {
+            if let Some((group, what)) = describe(binding.action)
+                && group == order
+                && !lines.iter().any(|(action, _)| *action == binding.action)
+            {
+                lines.push((binding.action, what));
+            }
+        }
+        groups.push((order, lines));
+    }
+    groups
 }
 
 /// The key reference: every listed action once, with all its keys, by group.
