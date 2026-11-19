@@ -322,6 +322,12 @@ impl Inner {
                 let fetched = fetch::fetch(&url, sound_only, staging, cancel, &mut |f| {
                     self.progress(job, label, "downloading", f)
                 })?;
+                let mut fetched = fetched;
+                if sound_only {
+                    for item in &mut fetched {
+                        item.path = fetch::keep_sound_only(std::mem::take(&mut item.path), cancel)?;
+                    }
+                }
                 Ok(fetched
                     .into_iter()
                     .map(|Fetched { path, label, uploader }| Staged {

@@ -324,6 +324,39 @@ pub fn fetch(
     }
 }
 
+/// Leaves only the sound of a downloaded file: a link asked for as sound
+/// can still arrive with a picture (a plain file link, or a site without a
+/// separate sound stream). The sound is copied as it is into a file beside
+/// the download, which is then removed. A file without a picture, or one
+/// whose sound cannot be copied out, is returned unchanged.
+pub fn keep_sound_only(path: PathBuf, cancel: &Cancel) -> Result<PathBuf, ToolError> {
+    let mut probe = Command::new("ffprobe");
+    probe.args(["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0"]).arg(&path);
+    let streams = sg_media::tool::run_output(probe, cancel)?;
+    let has = |kind: &str| streams.lines().any(|line| line.trim().trim_end_matches(',') == kind);
+    if !has("video") || !has("audio") {
+        return Ok(path);
+    }
+    // Matroska takes any sound codec without re-encoding.
+    let sound = path.with_extension("mka");
+    let mut copy = Command::new("ffmpeg");
+    copy.args(["-v", "error", "-nostdin", "-y", "-i"])
+        .arg(&path)
+        .args(["-vn", "-sn", "-dn", "-c:a", "copy"])
+        .arg(&sound);
+    match run_lines(copy, cancel, |_| {}) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&path);
+            Ok(sound)
+        }
+        Err(ToolError::Cancelled) => Err(ToolError::Cancelled),
+        Err(_) => {
+            let _ = std::fs::remove_file(&sound);
+            Ok(path)
+        }
+    }
+}
+
 /// True for text that should be imported as a link.
 pub fn looks_like_url(text: &str) -> bool {
     let t = text.trim();

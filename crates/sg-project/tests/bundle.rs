@@ -209,3 +209,20 @@ fn opening_a_non_project_fails_clearly() {
     let err = open(dir.path(), || {}).err().unwrap().to_string();
     assert!(err.contains("is not a project"), "{err}");
 }
+
+#[test]
+fn an_older_state_is_restored_in_a_project_without_scenarios_or_assets() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sg_project::create(dir.path(), "Back").unwrap().path;
+    // A change to a tracked file, committed on top of the first state.
+    let sequence = root.join("sequences/main.sg");
+    let original = std::fs::read_to_string(&sequence).unwrap();
+    std::fs::write(&sequence, original.replace("name \"Main\"", "name \"Changed\"")).unwrap();
+    git(&root, &["add", "-A"]);
+    git(&root, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "change"]);
+    let first = git(&root, &["rev-list", "--max-parents=0", "HEAD"]);
+    // No scenario and no asset was ever tracked here: git knows neither path.
+    sg_project::restore(&root, first.trim(), "the beginning").unwrap();
+    assert_eq!(std::fs::read_to_string(&sequence).unwrap(), original);
+    assert!(git(&root, &["log", "--oneline"]).lines().next().unwrap().contains("Restore: the beginning"));
+}

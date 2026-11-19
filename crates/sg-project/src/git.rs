@@ -107,10 +107,24 @@ pub fn restore(root: &Path, commit: &str, description: &str) -> Result<(), Proje
         return Err(ProjectError::Git { command: "restore".into(), stderr: format!("not a commit id: {commit}") });
     }
     let source = format!("--source={commit}");
-    run(
-        root,
-        &["restore", &source, "--staged", "--worktree", "--", "project.toml", "sequences", "assets/index", "scenarios"],
-        false,
-    )?;
+    // git refuses the whole command if one of the paths is known neither to
+    // that commit nor to the index (a project that never had a scenario, or
+    // no asset yet): name only those it knows.
+    let known = |path: &str| {
+        let listed = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
+        };
+        listed(&["ls-tree", "--name-only", commit, "--", path]) || listed(&["ls-files", "--", path])
+    };
+    let mut args = vec!["restore", source.as_str(), "--staged", "--worktree", "--"];
+    args.extend(["project.toml", "sequences", "assets/index", "scenarios"].into_iter().filter(|path| known(path)));
+    if args.len() > 5 {
+        run(root, &args, false)?;
+    }
     commit_if_changed(root, &format!("Restore: {description}")).map(|_| ())
 }

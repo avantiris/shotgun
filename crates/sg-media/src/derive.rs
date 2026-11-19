@@ -245,6 +245,10 @@ pub fn stabilise(
             // The first pass is the first half of the work.
             progress((us / 1e6 / total_secs).clamp(0.0, 1.0) as f32 * 0.5);
         }
+    })
+    .inspect_err(|_| {
+        // A cancelled or failed first pass leaves half a motion file behind.
+        let _ = std::fs::remove_file(motion);
     })?;
     let filter =
         format!("fps={rate},vidstabtransform=input={name}:smoothing=20:optzoom=1:interpol=bicubic,format=yuv420p");

@@ -217,17 +217,61 @@ impl Op {
     pub fn overwrite(sequence: &Sequence, track: TrackId, clip: Clip, spare: ClipId) -> Option<Op> {
         let (seq, from, to) = (sequence.id, clip.start, clip.end());
         let mut ops = Vec::new();
-        for old in sequence.track(track)?.clips.range(from, to) {
-            // What is left of `old` after `to`, at its unchanged source position.
-            let tail = Clip { start: to, len: old.end() - to, src_in: old.src_in + (to - old.start), ..old };
+        let lane = sequence.track(track)?;
+        for old in lane.clips.range(from, to) {
+            let props = lane.props_of(old.id);
+            // How far into `old` its tail begins: in track units, and in
+            // sequence frames (the unit of keyframes).
+            let cut = to - old.start;
+            let cut_frames = match lane.kind {
+                crate::model::TrackKind::Video => cut,
+                crate::model::TrackKind::Audio => sequence.rate.samples_to_frames(cut, crate::time::SAMPLE_RATE),
+            };
+            // The source goes on where the covered part would have stopped: speed and ramp counted.
+            let consumed = match (props, lane.kind) {
+                (Some(p), crate::model::TrackKind::Video) => p.source_offset(cut),
+                (Some(p), crate::model::TrackKind::Audio) if p.speed_valid() => {
+                    (cut as i128 * p.speed.0 as i128 / p.speed.1 as i128) as i64
+                }
+                _ => cut,
+            };
+            let tail = Clip { start: to, len: old.end() - to, src_in: old.src_in + consumed, ..old };
             let head = Clip { len: from - old.start, ..old };
+            // The tail keeps its keyframes in place and the fade-out; the
+            // head keeps the fade-in and the transition into the clip.
+            let tail_props = |id: ClipId| {
+                props.map(|p| {
+                    let mut p = ClipProps::clone(p);
+                    for param in p.picture_params() {
+                        param.shift_keys(-cut_frames);
+                    }
+                    p.gain_db.shift_keys(-cut_frames);
+                    (p.fade_in, p.transition) = (0, None);
+                    Op::SetClipProps { seq, track, clip: id, props: Some(Box::new(p)) }
+                })
+            };
+            let head_props = || {
+                props.filter(|p| p.fade_out != 0).map(|p| {
+                    let p = ClipProps { fade_out: 0, ..ClipProps::clone(p) };
+                    let props = (p != ClipProps::default()).then(|| Box::new(p));
+                    Op::SetClipProps { seq, track, clip: old.id, props }
+                })
+            };
             match (old.start < from, old.end() > to) {
                 (false, false) => ops.push(Op::RemoveClip { seq, track, start: old.start }),
-                (true, false) => ops.push(Op::SetClip { seq, track, start: old.start, clip: head }),
-                (false, true) => ops.push(Op::SetClip { seq, track, start: old.start, clip: tail }),
+                (true, false) => {
+                    ops.push(Op::SetClip { seq, track, start: old.start, clip: head });
+                    ops.extend(head_props());
+                }
+                (false, true) => {
+                    ops.push(Op::SetClip { seq, track, start: old.start, clip: tail });
+                    ops.extend(tail_props(old.id));
+                }
                 (true, true) => {
                     ops.push(Op::SetClip { seq, track, start: old.start, clip: head });
+                    ops.extend(head_props());
                     ops.push(Op::InsertClip { seq, track, clip: Clip { id: spare, ..tail } });
+                    ops.extend(tail_props(spare));
                 }
             }
         }
@@ -535,7 +579,7 @@ pub(crate) mod tests {
 
     /// Applies `op`, checks that the inverse restores the input exactly and
     /// that the inverse of the inverse redoes the op.
-    fn round_trip(p: &Arc<Project>, op: &Op) -> Arc<Project> {
+    pub(crate) fn round_trip(p: &Arc<Project>, op: &Op) -> Arc<Project> {
         let (after, inverse) = apply(p, op).unwrap();
         let (back, redo) = apply(&after, &inverse).unwrap();
         assert_eq!(&back, p, "inverse of {op:?}");
@@ -958,7 +1002,7 @@ mod mix_tests {
 
 #[cfg(test)]
 mod song_tests {
-    use super::tests::{SEQ, V1, base, clip};
+    use super::tests::{SEQ, V1, base, clip, round_trip};
     use super::*;
     use crate::ids::AssetId;
 
@@ -973,6 +1017,34 @@ mod song_tests {
         let (p2, undo) = apply(&p, &Op::SetSong { id: SEQ, song: Some(song) }).unwrap();
         assert_eq!(p2.sequences[0].song, Some(song));
         assert_eq!(apply(&p2, &undo).unwrap().0, p);
+    }
+
+    #[test]
+    fn overwrite_leaves_the_pieces_their_properties() {
+        use crate::props::{Key, Param};
+        let mut p = base();
+        p = round_trip(&p, &Op::InsertClip { seq: SEQ, track: V1, clip: clip(1, 0, 100) });
+        // Twice the speed, moving across the frame, fading in and out.
+        let props = ClipProps {
+            speed: (2, 1),
+            x: Param { value: 0.0, keys: vec![Key::new(0, 0.0), Key::new(100, 1.0)] },
+            fade_in: 5,
+            fade_out: 7,
+            ..ClipProps::default()
+        };
+        p = round_trip(&p, &Op::SetClipProps { seq: SEQ, track: V1, clip: ClipId(1), props: Some(Box::new(props)) });
+        // Something else lands on frames 40 to 60.
+        let op = Op::overwrite(&p.sequences[0], V1, clip(9, 40, 20), ClipId(99)).unwrap();
+        let p = round_trip(&p, &op);
+        let track = &p.sequences[0].tracks[0];
+        let (head, tail) = (track.clips.get(0).unwrap(), track.clips.get(60).unwrap());
+        let (hp, tp) = (track.props_of(head.id).unwrap(), track.props_of(tail.id).unwrap());
+        // The tail goes on at source frame 120 (60 frames at twice the speed), where it would have been.
+        assert_eq!((tail.id, tail.len, tail.src_in), (ClipId(99), 40, 120));
+        assert_eq!((tp.speed, tp.fade_in, tp.fade_out), ((2, 1), 0, 7));
+        assert!((tp.x.at(0) - 0.6).abs() < 1e-6 && (tp.x.at(40) - 1.0).abs() < 1e-6);
+        assert_eq!((head.len, hp.fade_in, hp.fade_out), (40, 5, 0));
+        assert!((hp.x.at(20) - 0.2).abs() < 1e-6);
     }
 
     #[test]

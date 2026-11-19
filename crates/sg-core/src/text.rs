@@ -297,7 +297,10 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                     tempo: tempo.parse::<i8>().map_err(|_| err(n, "bad song tempo"))?.clamp(-2, 2),
                 });
             }
-            "master" => master_db = rest.parse::<f32>().map_err(|_| err(n, "bad master level"))?.clamp(-60.0, 12.0),
+            "master" => {
+                let level = rest.parse::<f32>().ok().filter(|db| db.is_finite());
+                master_db = level.ok_or_else(|| err(n, "bad master level"))?.clamp(-60.0, 12.0);
+            }
             "id" => id = Some(rest.parse().map_err(|_| err(n, "bad sequence id"))?),
             "name" => name = Some(unquote(rest).ok_or_else(|| err(n, "bad name"))?),
             "rate" => rate = Some(rest.parse().map_err(|_| err(n, "bad rate"))?),
