@@ -754,8 +754,9 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                         len: c.len,
                         src_in: c.src_in,
                         wav: cache::audio(root, c.asset),
-                        // Decibels to linear; the value at the clip start (volume keyframes: later).
-                        gain: 10f32.powf(props.gain_db.at(0) / 20.0),
+                        // Decibels to linear. With keyframes the level moves along the clip.
+                        gain: if props.gain_db.is_animated() { 1.0 } else { 10f32.powf(props.gain_db.value / 20.0) },
+                        gain_keys: props.gain_db.keys.iter().map(|k| (samples(k.frame), k.value)).collect(),
                         fade_in: samples(props.fade_in),
                         fade_out: samples(props.fade_out),
                         speed: if props.speed_valid() { props.speed } else { (1, 1) },

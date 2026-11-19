@@ -73,6 +73,7 @@ fn clips_land_on_their_timeline_samples() {
             fade_in: 0,
             fade_out: 0,
             speed: (1, 1),
+            gain_keys: Vec::new(),
         }])],
     });
     assert_eq!(engine.position(), 0);
@@ -112,6 +113,7 @@ fn mono_gain_pan_mute_and_mixing() {
         fade_in: 0,
         fade_out: 0,
         speed: (1, 1),
+        gain_keys: Vec::new(),
     };
     let engine = Engine::start(Backend::Manual).unwrap();
     let mix = |pan: f32, mute: bool| Mix {
@@ -158,6 +160,7 @@ fn pause_seek_and_resume_are_sample_accurate() {
             fade_in: 0,
             fade_out: 0,
             speed: (1, 1),
+            gain_keys: Vec::new(),
         }])],
     });
     engine.play(0);
@@ -204,6 +207,7 @@ fn a_missing_file_is_silence_until_it_appears() {
             fade_in: 0,
             fade_out: 0,
             speed: (1, 1),
+            gain_keys: Vec::new(),
         }])],
     };
     engine.set_mix(mix.clone());
@@ -246,8 +250,17 @@ fn fades_and_speed() {
     let engine = Engine::start(Backend::Manual).unwrap();
 
     // A 1000-sample clip of constant 1.0 with 100-sample fades.
-    let faded =
-        ClipSpan { start: 0, len: 1000, src_in: 0, wav: flat, gain: 1.0, fade_in: 100, fade_out: 100, speed: (1, 1) };
+    let faded = ClipSpan {
+        start: 0,
+        len: 1000,
+        src_in: 0,
+        wav: flat,
+        gain: 1.0,
+        fade_in: 100,
+        fade_out: 100,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+    };
     engine.set_mix(Mix { tracks: vec![track(vec![faded])], master_gain: 1.0 });
     engine.play(0);
     engine.settle();
@@ -273,6 +286,7 @@ fn fades_and_speed() {
             fade_in: 0,
             fade_out: 0,
             speed,
+            gain_keys: Vec::new(),
         };
         engine.set_mix(Mix { tracks: vec![track(vec![clip])], master_gain: 1.0 });
         engine.play(0);
@@ -313,8 +327,17 @@ fn noise_reduction_keeps_the_track_in_time() {
         })
         .collect();
     let path = wav(dir.path(), "burst.wav", 1, samples.len(), |i, _| samples[i]);
-    let span =
-        ClipSpan { start: 0, len: 48_000, src_in: 0, wav: path, gain: 1.0, fade_in: 0, fade_out: 0, speed: (1, 1) };
+    let span = ClipSpan {
+        start: 0,
+        len: 48_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+    };
     let plain = rendered(Mix { tracks: vec![track(vec![span.clone()])], master_gain: 1.0 }, 48_000);
     // Blended half and half, the treated sound must line up with the plain
     // one: if it were late, the two halves would cancel in places.
@@ -331,8 +354,17 @@ fn noise_reduction_keeps_the_track_in_time() {
 fn faders_move_without_a_new_graph_and_meters_follow() {
     let dir = tempfile::tempdir().unwrap();
     let path = wav(dir.path(), "dc.wav", 1, 48_000, |_, _| 0.5);
-    let span =
-        ClipSpan { start: 0, len: 48_000, src_in: 0, wav: path, gain: 1.0, fade_in: 0, fade_out: 0, speed: (1, 1) };
+    let span = ClipSpan {
+        start: 0,
+        len: 48_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+    };
     let mix = |gain: f32, master: f32| Mix {
         tracks: vec![TrackMix { gain, ..track(vec![span.clone()]) }],
         master_gain: master,
@@ -363,8 +395,17 @@ fn the_master_never_leaves_full_scale() {
     let dir = tempfile::tempdir().unwrap();
     // A tone at 0.8 on two tracks: 1.6 when summed.
     let path = wav(dir.path(), "loud.wav", 1, 48_000, |i, _| 0.8 * (i as f32 * 0.05).sin());
-    let span =
-        ClipSpan { start: 0, len: 48_000, src_in: 0, wav: path, gain: 1.0, fade_in: 0, fade_out: 0, speed: (1, 1) };
+    let span = ClipSpan {
+        start: 0,
+        len: 48_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+    };
     let engine = Engine::start(Backend::Manual).unwrap();
     engine.set_mix(Mix { tracks: vec![track(vec![span.clone()]), track(vec![span])], master_gain: 1.0 });
     engine.play(0);
@@ -379,4 +420,28 @@ fn the_master_never_leaves_full_scale() {
     let taken = engine.meters().take_limiting();
     assert!((taken - 4.1).abs() < 0.3, "{taken} dB");
     assert_eq!(engine.meters().take_limiting(), 0.0);
+}
+
+#[test]
+fn volume_keyframes_move_the_level_along_the_clip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = wav(dir.path(), "dc.wav", 1, 48_000, |_, _| 0.5);
+    // Unity until a quarter second, down 20 dB by half a second, held after.
+    let span = ClipSpan {
+        start: 0,
+        len: 48_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: vec![(12_000, 0.0), (24_000, -20.0)],
+    };
+    let out = rendered(Mix { tracks: vec![track(vec![span])], master_gain: 1.0 }, 36_000);
+    let at = |sample: usize| out[sample * 2];
+    assert!((at(6_000) - 0.5).abs() < 1e-4);
+    // Half way down the slope: -10 dB.
+    assert!((at(18_000) - 0.5 * 10f32.powf(-0.5)).abs() < 1e-3, "{}", at(18_000));
+    assert!((at(30_000) - 0.05).abs() < 1e-4, "{}", at(30_000));
 }

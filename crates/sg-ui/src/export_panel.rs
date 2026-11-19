@@ -36,6 +36,8 @@ pub struct ExportPanel {
     preset: ExportPreset,
     megabytes: u32,
     to_clipboard: bool,
+    /// Export the selection or marked stretch instead of everything.
+    only_range: bool,
     running: Option<(&'static str, f32)>,
     result: Option<Result<String, String>>,
     last: Option<ExportRequest>,
@@ -48,6 +50,7 @@ impl Default for ExportPanel {
             preset: ExportPreset::Master,
             megabytes: 10,
             to_clipboard: true,
+            only_range: false,
             running: None,
             result: None,
             last: None,
@@ -156,6 +159,18 @@ impl ExportPanel {
                             }
                             _ => {}
                         });
+                        if self.preset != ExportPreset::Gif {
+                            // The same stretch the GIF key takes.
+                            let what = match gif_range {
+                                Some(_) => {
+                                    "Only the selected clips, or the stretch between the markers around the playhead"
+                                }
+                                None => {
+                                    "Only a stretch: select clips, or set markers (G) before and after the playhead"
+                                }
+                            };
+                            ui.add_enabled(gif_range.is_some(), egui::Checkbox::new(&mut self.only_range, what));
+                        }
                         ui.add_space(4.0);
                         match self.running {
                             Some((stage, fraction)) => {
@@ -168,7 +183,11 @@ impl ExportPanel {
                                 if ui.button("Export").clicked() {
                                     let clipboard = matches!(self.preset, ExportPreset::Share | ExportPreset::Gif)
                                         && self.to_clipboard;
-                                    let range = if self.preset == ExportPreset::Gif { gif_range } else { None };
+                                    let range = if self.preset == ExportPreset::Gif || self.only_range {
+                                        gif_range
+                                    } else {
+                                        None
+                                    };
                                     action = Some(ExportAction::Start(ExportRequest {
                                         preset: self.preset,
                                         megabytes: self.megabytes,

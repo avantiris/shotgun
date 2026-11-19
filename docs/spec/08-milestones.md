@@ -80,7 +80,8 @@ Status:
   [added 2026-11-19: the fade fields now fade the picture too, and a split
   gives both halves their share of the properties]
   scale and rotation are inspector fields), picture fades (the fade fields
-  act on sound only), keyframes for volume (the value at the clip start is
+  act on sound only), keyframes for volume [added 2026-11-19: `F` on a
+  sound clip keys its volume] (the value at the clip start was
   used), time-stretch (a speed change resamples, so pitch follows speed),
   title fonts other than the built-in one, a keyframe lane in the timeline.
   A clip's length does not change when its speed does. Splitting a clip
@@ -96,7 +97,8 @@ Status:
   under a size, GIF; export panel, repeat-last, GIF key; the sequence frame
   can be set to 1080p, 4K, 9:16 or 1:1. Not built: reframing per clip for
   the vertical export beyond the clip's own position and scale (the export
-  crops the centre), choosing a range for master and share copy (they export
+  crops the centre), choosing a range for master and share copy [added
+  2026-11-19: a checkbox in the export panel] (they exported
   the whole sequence; only the GIF takes the selection or marker range),
   export of 10-bit pictures as real 10 bits (the file is 10-bit, the
   pipeline in front of the encoder is 8-bit until M10), a queue of several

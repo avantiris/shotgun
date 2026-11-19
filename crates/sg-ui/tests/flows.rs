@@ -83,6 +83,14 @@ fn tracks(harness: &Harness<'_, App>) -> Vec<(TrackKind, String, usize)> {
     project.sequences[0].tracks.iter().map(|t| (t.kind, t.name.clone(), t.clips.len())).collect()
 }
 
+/// Puts the playhead at `frame`: the player reports it to the shell each
+/// frame, and here the test stands in for the player.
+fn playhead(harness: &mut Harness<'_, App>, frame: i64) {
+    harness.state_mut().view.frame = frame;
+    harness.state_mut().shell.set_playhead(frame);
+    harness.run_steps(1);
+}
+
 fn click(harness: &mut Harness<'_, App>, label: &str) {
     harness.get_by_label(label).click();
     harness.run_steps(3);
@@ -265,7 +273,7 @@ fn b_puts_a_whip_on_the_cut_and_the_inspector_changes_its_kind() {
         click(&mut harness, "Place at the playhead (Enter)");
     }
     // Two clips back to back on V1; the playhead is at the start of the second.
-    harness.state_mut().shell.set_playhead(600);
+    playhead(&mut harness, 600);
     harness.key_press(Key::B);
     harness.run_steps(3);
     let transition = |harness: &Harness<'_, App>| {
@@ -340,7 +348,7 @@ fn keys_cut_and_ripple_at_the_playhead() {
     place(&mut harness, "first take");
     assert_eq!((clips(&harness, 0), clips(&harness, 1)), (vec![(0, 600)], vec![(0, 480_000)]));
     // S splits picture and sound at the playhead.
-    harness.state_mut().shell.set_playhead(300);
+    playhead(&mut harness, 300);
     harness.key_press(Key::S);
     harness.run_steps(3);
     assert_eq!(
@@ -348,12 +356,12 @@ fn keys_cut_and_ripple_at_the_playhead() {
         (vec![(0, 300), (300, 300)], vec![(0, 240_000), (240_000, 240_000)])
     );
     // Q removes from the start of the clip under the playhead up to it, and closes the gap.
-    harness.state_mut().shell.set_playhead(400);
+    playhead(&mut harness, 400);
     harness.key_press(Key::Q);
     harness.run_steps(3);
     assert_eq!(clips(&harness, 0), vec![(0, 300), (300, 200)]);
     // E removes from the playhead to the end of the clip.
-    harness.state_mut().shell.set_playhead(100);
+    playhead(&mut harness, 100);
     harness.key_press(Key::E);
     harness.run_steps(3);
     assert_eq!(clips(&harness, 0), vec![(0, 100), (100, 200)]);
@@ -558,4 +566,51 @@ fn f1_shows_every_key_and_esc_closes_it() {
     harness.key_press(Key::Escape);
     harness.run_steps(3);
     assert!(harness.query_by_label("KEYS").is_none());
+}
+
+#[test]
+fn f_on_a_sound_clip_keys_its_volume() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    // Click the sound clip (row 1): it is the one the keys act on.
+    let on_sound = on_timeline(&harness, 100.0, 1);
+    pointer(&mut harness, on_sound, egui::PointerButton::Primary);
+    for frame in [60, 240] {
+        playhead(&mut harness, frame);
+        harness.run_steps(1);
+        harness.key_press(Key::F);
+        harness.run_steps(3);
+    }
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = &project.sequences[0].tracks[1];
+    let props = track.props_of(track.clips.iter().next().unwrap().id).expect("keys were set");
+    assert_eq!(props.gain_db.keys.iter().map(|k| k.frame).collect::<Vec<_>>(), [60, 240]);
+    // The picture clip got none of it.
+    let picture = &project.sequences[0].tracks[0];
+    assert!(picture.props_of(picture.clips.iter().next().unwrap().id).is_none());
+}
+
+#[test]
+fn a_marked_stretch_can_be_exported_alone() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    for frame in [120, 360] {
+        playhead(&mut harness, frame);
+        harness.run_steps(1);
+        harness.key_press(Key::G);
+        harness.run_steps(2);
+    }
+    playhead(&mut harness, 200);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::E);
+    harness.run_steps(3);
+    click(&mut harness, "Only the selected clips, or the stretch between the markers around the playhead");
+    let buttons: Vec<_> = harness.get_all_by_label("Export").collect();
+    buttons.last().unwrap().click();
+    harness.run_steps(3);
+    let range = harness
+        .state()
+        .commands
+        .iter()
+        .find_map(|c| if let Command::Export { request, .. } = c { Some(request.range) } else { None });
+    assert_eq!(range, Some(Some((120, 360))));
 }

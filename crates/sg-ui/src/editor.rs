@@ -419,17 +419,23 @@ impl Editor {
         let mut transport = Vec::new();
         match action {
             Action::KeyframeSet | Action::KeyframeRemove => {
-                let Some(target) = target.filter(|t| t.track.kind == sg_core::TrackKind::Video) else {
-                    return transport;
-                };
+                let Some(target) = target else { return transport };
+                let video = target.track.kind == sg_core::TrackKind::Video;
                 let mut props = target.props.clone();
-                for param in props.picture_params() {
+                let at = target.at;
+                let key = |param: &mut sg_core::Param| {
                     if action == Action::KeyframeSet {
-                        let now = param.at(target.at);
-                        param.set_key(target.at, now);
+                        let now = param.at(at);
+                        param.set_key(at, now);
                     } else {
-                        param.remove_key(target.at);
+                        param.remove_key(at);
                     }
+                };
+                // A picture clip keys its placement, a sound clip its volume.
+                if video {
+                    props.picture_params().into_iter().for_each(key);
+                } else {
+                    key(&mut props.gain_db);
                 }
                 let props = (props != sg_core::ClipProps::default()).then(|| Box::new(props));
                 let op = Op::SetClipProps { seq: sequence.id, track: target.track.id, clip: target.clip.id, props };

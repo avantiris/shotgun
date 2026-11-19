@@ -389,6 +389,16 @@ fn realtime_policy() -> Option<i64> {
     None
 }
 
+/// The level in decibels that volume keyframes give at `at` samples into the clip.
+fn key_level(keys: &[(i64, f32)], at: i64) -> f32 {
+    let after = keys.partition_point(|k| k.0 <= at);
+    match (after.checked_sub(1).map(|i| keys[i]), keys.get(after)) {
+        (None, None) => 0.0,
+        (Some(k), None) | (None, Some(&k)) => k.1,
+        (Some(a), Some(b)) => a.1 + (b.1 - a.1) * ((at - a.0) as f32 / (b.0 - a.0) as f32),
+    }
+}
+
 /// Adds the part of `clip` that starts at timeline sample `from` to `out`
 /// (interleaved stereo), with the clip's speed, gain and fades applied.
 fn render_clip(wav: &Wav, clip: &ClipSpan, from: i64, out: &mut [f32], raw: &mut Vec<u8>, segment: &mut Vec<f32>) {
@@ -418,6 +428,9 @@ fn render_clip(wav: &Wav, clip: &ClipSpan, from: i64, out: &mut [f32], raw: &mut
     let faded = clip.fade_in > 0 || clip.fade_out > 0;
     for (i, (o, s)) in out.as_chunks_mut::<2>().0.iter_mut().zip(segment.as_chunks::<2>().0).enumerate() {
         let mut gain = clip.gain;
+        if !clip.gain_keys.is_empty() {
+            gain *= 10f32.powf(key_level(&clip.gain_keys, elapsed + i as i64) / 20.0);
+        }
         if faded {
             let at = elapsed + i as i64;
             if at < clip.fade_in {

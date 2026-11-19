@@ -60,6 +60,10 @@ pub struct ClipSpan {
     /// Playback speed as a fraction. Other than 1/1 the sound is resampled,
     /// so its pitch changes with the speed.
     pub speed: (u32, u32),
+    /// Volume keyframes: (samples of timeline time since the clip's start,
+    /// decibels), ascending. Empty: `gain` alone. Between two the level moves
+    /// evenly in decibels; before the first and after the last it holds.
+    pub gain_keys: Vec<(i64, f32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
