@@ -156,6 +156,31 @@ impl ClipPanel {
             changed |= value_row(ui, "Position X", &mut props.x, at, -2.0..=2.0, 0.002, "");
             changed |= value_row(ui, "Position Y", &mut props.y, at, -2.0..=2.0, 0.002, "");
             changed |= value_row(ui, "Scale", &mut props.scale, at, 0.01..=10.0, 0.005, "");
+            // A picture of another shape than the frame: fitted with bars
+            // (scale 1) or enlarged until it covers the frame.
+            let cover = session.project().assets.get(&target.clip.asset).and_then(|a| a.video.as_ref()).map(|v| {
+                let (w, h) = if v.rotation % 180 == 90 { (v.height, v.width) } else { (v.width, v.height) };
+                let (across, down) =
+                    (sequence.width as f32 / w.max(1) as f32, sequence.height as f32 / h.max(1) as f32);
+                across.max(down) / across.min(down)
+            });
+            if let Some(cover) = cover.filter(|c| *c > 1.01 && props.title.is_none()) {
+                ui.horizontal(|ui| {
+                    ui.add_space(92.0);
+                    for (label, scale, tip) in [
+                        ("Fit", 1.0, "The whole picture, with bars where its shape differs from the frame"),
+                        ("Fill", cover, "Enlarged until the frame is covered; the picture loses its edges"),
+                    ] {
+                        let now = (props.scale.at(at) - scale).abs() < 0.001;
+                        if ui.selectable_label(now, label).on_hover_text(tip).clicked() && !now {
+                            props.scale.set(at, scale);
+                            props.x.set(at, 0.0);
+                            props.y.set(at, 0.0);
+                            changed = true;
+                        }
+                    }
+                });
+            }
             changed |= value_row(ui, "Rotation", &mut props.rotation, at, -360.0..=360.0, 0.5, " deg");
             changed |= value_row(ui, "Opacity", &mut props.opacity, at, 0.0..=1.0, 0.005, "");
             ui.horizontal(|ui| {

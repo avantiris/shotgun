@@ -728,3 +728,60 @@ fn a_title_gets_a_font_from_the_project_folder() {
         harness.state_mut().shell.incoming(sg_ui::Incoming::Paths(vec!["/somewhere/Poster Bold.TTF".into()]));
     assert!(matches!(commands.as_slice(), [Command::ImportFont { .. }]));
 }
+
+#[test]
+fn a_picture_of_another_shape_can_fill_the_frame() {
+    let mut harness = editor();
+    // A 4:3 take arrives.
+    let root = harness.state().root.clone();
+    let mut old_tv = take(3, "old tv");
+    if let Some(video) = &mut old_tv.video {
+        (video.width, video.height) = (480, 360);
+    }
+    harness.state_mut().shell.import_event(ImportEvent::Usable { job: 3, root, asset: Box::new(old_tv) });
+    harness.run_steps(2);
+    place(&mut harness, "old tv");
+    let on_clip = on_timeline(&harness, 100.0, 0);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    let scale = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = &project.sequences[0].tracks[0];
+        track.props_of(track.clips.at(0).unwrap().id).map(|p| p.scale.at(0))
+    };
+    click(&mut harness, "Fill");
+    // 16:9 over 4:3: a third larger.
+    assert!((scale(&harness).unwrap() - 4.0 / 3.0).abs() < 1e-4);
+    click(&mut harness, "Fit");
+    assert_eq!(scale(&harness), None);
+}
+
+#[test]
+fn the_mark_at_a_clips_top_corner_pulls_its_fade() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let on_clip = on_timeline(&harness, 100.0, 0);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    let fades = |harness: &Harness<'_, App>| -> Vec<(i64, i64)> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0]
+            .tracks
+            .iter()
+            .map(|t| {
+                t.clips.iter().next().and_then(|c| t.props_of(c.id).map(|p| (p.fade_in, p.fade_out))).unwrap_or((0, 0))
+            })
+            .collect()
+    };
+    // The mark sits just inside the clip's top left corner.
+    let mark = on_timeline(&harness, 12.0, 0) - vec2(0.0, 14.0);
+    drag(&mut harness, mark, mark + vec2(60.0, 0.0));
+    let after = fades(&harness);
+    // Picture and sound of the take fade in together, by the same time.
+    assert!(after[0].0 > 0 && after[0] == after[1] && after[0].1 == 0, "{after:?}");
+    // One pull, one undo step.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(fades(&harness), [(0, 0), (0, 0)]);
+    // In the middle of the clip the same gesture moves it instead.
+    drag(&mut harness, on_clip, on_clip + vec2(60.0, 0.0));
+    assert_eq!(fades(&harness), [(0, 0), (0, 0)]);
+}

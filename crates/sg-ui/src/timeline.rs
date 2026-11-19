@@ -106,6 +106,14 @@ enum Drag {
         edge: Edge,
         ripple: bool,
     },
+    /// Pulling the fade mark at a top corner of a selected clip: the fade
+    /// in (start) or out (end) of every selected clip follows, as one
+    /// undo step.
+    Fade {
+        sel: Sel,
+        edge: Edge,
+        group: u64,
+    },
 }
 
 /// A clip on the internal clipboard, relative to the first copied frame.
@@ -751,6 +759,67 @@ impl Timeline {
         (edge.is_some() || (clip.start <= at && at < clip.end())).then_some((index, clip, edge))
     }
 
+    /// The fade mark under the pointer: selected clips wide enough to aim
+    /// at carry one near each top corner, just inside where the fade ends.
+    fn fade_hit(&self, sequence: &Sequence, row: f32, frame: f64) -> Option<(Sel, Edge)> {
+        if row < 0.0 || row.fract() * self.row_h > 11.0 || self.row_h < 24.0 {
+            return None;
+        }
+        let track = sequence.tracks.get(row as usize)?;
+        let per = Lane::of(track, sequence).per_frame();
+        let clip = track.clips.at((frame * per) as i64)?;
+        if !self.is_selected(track.id, &clip) {
+            return None;
+        }
+        let (start, end) = (clip.start as f64 / per, clip.end() as f64 / per);
+        let reach = GRAB as f64 * self.frames_per_point;
+        if end - start < reach * 10.0 {
+            return None;
+        }
+        let (fade_in, fade_out) = track.props_of(clip.id).map_or((0, 0), |p| (p.fade_in, p.fade_out));
+        let sel = Sel { track: track.id, start: clip.start, id: clip.id };
+        let after_in = frame - (start + fade_in as f64);
+        let before_out = (end - fade_out as f64) - frame;
+        if (reach..reach * 3.0).contains(&after_in) {
+            Some((sel, Edge::Start))
+        } else if (reach..reach * 3.0).contains(&before_out) {
+            Some((sel, Edge::End))
+        } else {
+            None
+        }
+    }
+
+    /// Sets the fade of every selected clip so that the grabbed one's ends
+    /// (or begins) at `frame`.
+    fn drag_fade(&mut self, session: &mut Session, sequence: &Sequence, sel: Sel, edge: Edge, group: u64, frame: f64) {
+        let Some(track) = sequence.track(sel.track) else { return };
+        let Some(clip) = track.clips.get(sel.start) else { return };
+        let per = Lane::of(track, sequence).per_frame();
+        let wanted = match edge {
+            Edge::Start => frame - clip.start as f64 / per,
+            Edge::End => clip.end() as f64 / per - frame,
+        }
+        .round() as i64;
+        for target in self.selection.clone() {
+            let Some(track) = sequence.track(target.track) else { continue };
+            let Some(clip) = track.clips.get(target.start) else { continue };
+            let frames = (clip.len as f64 / Lane::of(track, sequence).per_frame()) as i64;
+            let mut props = track.props_of(clip.id).map(|p| ClipProps::clone(p)).unwrap_or_default();
+            // The two fades of a clip do not cross.
+            match edge {
+                Edge::Start => props.fade_in = wanted.clamp(0, (frames - props.fade_out).max(0)),
+                Edge::End => props.fade_out = wanted.clamp(0, (frames - props.fade_in).max(0)),
+            }
+            if track.props_of(clip.id).map(|p| &**p) == Some(&props) {
+                continue;
+            }
+            let props = (props != ClipProps::default()).then(|| Box::new(props));
+            let op = Op::SetClipProps { seq: sequence.id, track: track.id, clip: clip.id, props };
+            // (A clip that cannot take it is left as it is.)
+            let _ = session.apply(op, Some(group));
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn pointer(
         &mut self,
@@ -779,7 +848,8 @@ impl Timeline {
         if let Some(pos) = pointer.filter(|p| response.hovered() && lanes.contains(*p)) {
             let over_edge =
                 self.hit(sequence, row_at(pos.y), frame_at(pos.x)).is_some_and(|(_, _, edge)| edge.is_some());
-            if over_edge && matches!(self.drag, Drag::None) {
+            let over_fade = self.fade_hit(sequence, row_at(pos.y), frame_at(pos.x)).is_some();
+            if (over_edge || over_fade) && matches!(self.drag, Drag::None) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             }
         }
@@ -787,7 +857,12 @@ impl Timeline {
         if response.drag_started_by(PointerButton::Primary) {
             let origin = press.unwrap_or(rect.min);
             let on_ruler = origin.y < rect.top() + RULER_H || origin.x < lanes.left();
+            let fade = self.fade_hit(sequence, row_at(origin.y), frame_at(origin.x)).filter(|_| !on_ruler);
             self.drag = match self.hit(sequence, row_at(origin.y), frame_at(origin.x)).filter(|_| !on_ruler) {
+                _ if fade.is_some() => match fade {
+                    Some((sel, edge)) => Drag::Fade { sel, edge, group: session.new_group() },
+                    None => Drag::None,
+                },
                 Some((row, clip, edge)) => {
                     let track = &sequence.tracks[row];
                     let sel = Sel { track: track.id, start: clip.start, id: clip.id };
@@ -843,6 +918,10 @@ impl Timeline {
                 Drag::Trim { sel, edge, ripple } => {
                     let (sel, edge, ripple) = (*sel, *edge, *ripple);
                     self.plan_trim(session, sequence, view, frame_at(pos.x), sel, edge, ripple, !modifiers.alt);
+                }
+                Drag::Fade { sel, edge, group } => {
+                    let (sel, edge, group) = (*sel, *edge, *group);
+                    self.drag_fade(session, sequence, sel, edge, group, frame_at(pos.x));
                 }
                 Drag::Pan | Drag::None => {}
             }
@@ -1164,6 +1243,50 @@ impl Timeline {
                             px(3.0),
                             0.0,
                         ));
+                    }
+                    // Fades: the clip darkens towards its end in steps (the
+                    // lanes are drawn with rectangles only), and a selected
+                    // clip carries a mark to pull at each top corner.
+                    let (fade_in, fade_out) = track.props_of(clip.id).map_or((0, 0), |p| (p.fade_in, p.fade_out));
+                    let (start_x, end_x) = (x_of(clip.start as f64 / per), x_of(clip.end() as f64 / per));
+                    let (in_x, out_x) = (
+                        x_of(clip.start as f64 / per + fade_in as f64),
+                        x_of(clip.end() as f64 / per - fade_out as f64),
+                    );
+                    const STEPS: usize = 8;
+                    for (from, to) in [(start_x, in_x), (end_x, out_x)] {
+                        if (to - from).abs() < 3.0 {
+                            continue;
+                        }
+                        for step in 0..STEPS {
+                            // Full height at the clip's end, nothing where the fade is over.
+                            let (a, b) = (
+                                from + (to - from) * step as f32 / STEPS as f32,
+                                from + (to - from) * (step + 1) as f32 / STEPS as f32,
+                            );
+                            let depth = (y1 - y0) * (1.0 - (step as f32 + 0.5) / STEPS as f32);
+                            let (left, right) = (a.min(b).max(x0), a.max(b).min(x1));
+                            if right > left {
+                                instances.push(Instance::new(
+                                    quad(left, y0, right, y0 + depth),
+                                    egui::Color32::from_black_alpha(110),
+                                    0.0,
+                                    0.0,
+                                ));
+                            }
+                        }
+                    }
+                    if selected && row_h >= 24.0 && end_x - start_x >= GRAB * 10.0 {
+                        for x in [in_x + GRAB, out_x - GRAB * 3.0] {
+                            if x > x0 && x + GRAB * 2.0 < x1 {
+                                instances.push(Instance::new(
+                                    quad(x, y0 + 2.0, x + GRAB * 2.0, y0 + 8.0),
+                                    theme::TEXT,
+                                    px(2.0),
+                                    0.0,
+                                ));
+                            }
+                        }
                     }
                     // Keyframes: a small mark on the clip's lower edge at each.
                     if x1 - x0 >= 12.0
