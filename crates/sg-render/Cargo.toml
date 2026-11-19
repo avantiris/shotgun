@@ -8,6 +8,7 @@ publish.workspace = true
 sg-core.workspace = true
 ab_glyph = "0.2"
 bytemuck.workspace = true
+log.workspace = true
 # The font titles are set in until fonts can be imported (same one the UI uses).
 epaint_default_fonts = "0.37"
 # Same version as egui-wgpu uses (spike S2), so the UI and the compositor share one device.

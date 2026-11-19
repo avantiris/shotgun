@@ -3415,6 +3415,7 @@ dependencies = [
  "ab_glyph",
  "bytemuck",
  "epaint_default_fonts",
+ "log",
  "pollster 1.0.2",
  "sg-core",
  "wgpu",

@@ -25,6 +25,8 @@ struct Layer {
 @group(0) @binding(0) var<uniform> layer: Layer;
 @group(0) @binding(1) var picture: texture_2d<f32>;
 @group(0) @binding(2) var picture_sampler: sampler;
+// The look-up table of the layer's grade (a neutral one if it has none).
+@group(0) @binding(3) var table: texture_3d<f32>;
 
 struct V {
     @builtin(position) pos: vec4<f32>,
@@ -166,6 +168,14 @@ fn grade(colour: vec3<f32>, q: vec2<f32>, pixel: vec2<f32>, uv: vec2<f32>) -> ve
                 }
                 let tint = vec3<f32>(1.0 + 0.6 * k.w, 1.0 - 0.15 * abs(k.w), 1.0 - 0.6 * k.w);
                 o = c + light / 24.0 * k.z * tint;
+            }
+            // Film look: the scenario's look-up table. Such tables are made for
+            // pictures as displayed, so the colour is encoded, looked up and
+            // decoded again.
+            case 9u: {
+                let steps = f32(textureDimensions(table).x);
+                let shown = to_display(c);
+                o = to_linear(textureSampleLevel(table, picture_sampler, shown * ((steps - 1.0) / steps) + 0.5 / steps, 0.0).rgb);
             }
             default: {}
         }

@@ -17,7 +17,7 @@ pub mod time;
 
 pub use asset::{Asset, AssetKind, AudioInfo, Source, VideoInfo};
 pub use clips::{Clip, ClipError, ClipStore, Visible};
-pub use colour::{ColourStats, Correction, Grade, Member, Module, ModuleKind, Scenario};
+pub use colour::{ColourStats, Correction, Grade, Lut, Member, Module, ModuleKind, Scenario};
 pub use history::{Document, History, HistoryError, Record};
 pub use ids::ScenarioId;
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};

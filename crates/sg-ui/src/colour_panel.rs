@@ -42,6 +42,10 @@ pub struct ColourPanel {
     preset_name: String,
     /// Presets read from `looks/`, once asked for.
     pub presets: Option<Vec<(String, Vec<Module>)>>,
+    /// The look-up tables in `assets/lut/`, read along with the presets.
+    pub luts: Vec<String>,
+    /// Whether the folder was read since the panel was opened.
+    asked: bool,
 }
 
 impl ColourPanel {
@@ -148,6 +152,25 @@ impl ColourPanel {
         ui.add_space(8.0);
         ui.checkbox(&mut edited.look_on, RichText::new("LOOK").size(11.0).strong())
             .on_hover_text("The chain below, applied to every take of the scenario after the match (J)");
+        // The folder of tables and saved looks is read when the panel first shows a scenario.
+        if !std::mem::replace(&mut self.asked, true) {
+            requests.push(ColourRequest::LoadLooks);
+        }
+        if edited.look.iter().any(|m| m.kind == ModuleKind::Lut) {
+            ui.horizontal(|ui| {
+                label(ui, "Film look");
+                let shown = if edited.lut.is_empty() { "choose a table".to_owned() } else { edited.lut.clone() };
+                egui::ComboBox::from_id_salt("lut").selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut edited.lut, String::new(), "none");
+                    for name in &self.luts {
+                        ui.selectable_value(&mut edited.lut, name.clone(), name);
+                    }
+                });
+            });
+            if self.luts.is_empty() {
+                ui.label(RichText::new("No tables yet: drop a .cube file onto the window.").color(theme::DIM));
+            }
+        }
         let mut moved: Option<(usize, isize)> = None;
         let mut dropped = None;
         let count = edited.look.len();

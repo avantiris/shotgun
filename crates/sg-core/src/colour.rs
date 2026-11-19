@@ -166,6 +166,7 @@ pub enum ModuleKind {
     Grain = 6,
     Sharpen = 7,
     Glow = 8,
+    Lut = 9,
 }
 
 /// A knob of a module: its name, range and resting value.
@@ -182,7 +183,7 @@ const fn knob(name: &'static str, min: f32, max: f32, rest: f32, hint: &'static 
 }
 
 impl ModuleKind {
-    pub const ALL: [ModuleKind; 8] = [
+    pub const ALL: [ModuleKind; 9] = [
         ModuleKind::Balance,
         ModuleKind::Tone,
         ModuleKind::Colour,
@@ -191,6 +192,7 @@ impl ModuleKind {
         ModuleKind::Grain,
         ModuleKind::Sharpen,
         ModuleKind::Glow,
+        ModuleKind::Lut,
     ];
 
     pub fn name(self) -> &'static str {
@@ -203,6 +205,7 @@ impl ModuleKind {
             ModuleKind::Grain => "Grain",
             ModuleKind::Sharpen => "Sharpen / soften",
             ModuleKind::Glow => "Glow",
+            ModuleKind::Lut => "Film look (LUT)",
         }
     }
 
@@ -294,6 +297,9 @@ impl ModuleKind {
                     ]
                 }
             }
+            // The file is chosen for the scenario; the module says where in
+            // the chain it acts, and its mix how much.
+            ModuleKind::Lut => &[],
         }
     }
 }
@@ -356,6 +362,11 @@ pub struct Scenario {
     /// A/B switches: with one off, that stage is skipped (in export too).
     pub match_on: bool,
     pub look_on: bool,
+    /// File name of the look-up table in `assets/lut/` that the "Film look"
+    /// module applies; empty for none. (Declared before the tables below:
+    /// TOML wants plain values first.)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lut: String,
     /// The look chain, in the order it is applied.
     #[serde(default)]
     pub look: Vec<Module>,
@@ -376,6 +387,7 @@ impl Scenario {
             look_on: true,
             look: Vec::new(),
             members: BTreeMap::new(),
+            lut: String::new(),
         }
     }
 
@@ -400,7 +412,10 @@ impl Scenario {
         } else {
             Vec::new()
         };
-        Grade { correction, look }
+        // Named only when a module in the chain will use it.
+        let lut =
+            (!self.lut.is_empty() && look.iter().any(|m: &Module| m.kind == ModuleKind::Lut)).then(|| self.lut.clone());
+        Grade { correction, look, lut }
     }
 
     /// Values from a file brought into range.
@@ -416,6 +431,8 @@ impl Scenario {
 pub struct Grade {
     pub correction: Correction,
     pub look: Vec<Module>,
+    /// File name of the look-up table for a "Film look" module in the chain.
+    pub lut: Option<String>,
 }
 
 impl Grade {
@@ -513,5 +530,109 @@ mod tests {
             assert_eq!(wild.mix, 1.0);
         }
         assert_eq!(ColourStats::measure([[0.0; 3]; 100].into_iter()), None);
+    }
+}
+
+/// A 3D look-up table as read from a `.cube` file: `size` steps per
+/// channel, red changing fastest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lut {
+    pub size: usize,
+    pub data: Vec<[f32; 3]>,
+}
+
+impl Lut {
+    /// Reads the text of a `.cube` file (the common 3D form, input from 0 to 1).
+    pub fn parse(text: &str) -> Result<Lut, String> {
+        let mut size = 0usize;
+        let mut data = Vec::new();
+        for (number, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut words = line.split_ascii_whitespace();
+            let first = words.next().unwrap_or("");
+            match first {
+                "LUT_3D_SIZE" => {
+                    size = words
+                        .next()
+                        .and_then(|w| w.parse().ok())
+                        .filter(|n| (2..=129).contains(n))
+                        .ok_or("bad LUT_3D_SIZE")?;
+                    data.reserve(size * size * size);
+                }
+                "LUT_1D_SIZE" => return Err("one-dimensional tables are not supported".to_owned()),
+                "DOMAIN_MIN" | "DOMAIN_MAX" => {
+                    let expected = if first == "DOMAIN_MIN" { 0.0 } else { 1.0 };
+                    if words.any(|w| w.parse::<f32>().ok() != Some(expected)) {
+                        return Err("only tables for input from 0 to 1 are supported".to_owned());
+                    }
+                }
+                // TITLE and other keywords carry nothing the picture needs.
+                word if word.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) => {}
+                _ => {
+                    let value = |word: Option<&str>| word.and_then(|w| w.parse::<f32>().ok()).filter(|v| v.is_finite());
+                    match (value(Some(first)), value(words.next()), value(words.next())) {
+                        (Some(r), Some(g), Some(b)) => data.push([r, g, b]),
+                        _ => return Err(format!("line {}: three numbers expected", number + 1)),
+                    }
+                }
+            }
+        }
+        if size == 0 {
+            return Err("no LUT_3D_SIZE line".to_owned());
+        }
+        if data.len() != size * size * size {
+            return Err(format!(
+                "{} entries for a table of {size} steps ({} expected)",
+                data.len(),
+                size * size * size
+            ));
+        }
+        Ok(Lut { size, data })
+    }
+
+    /// The table that changes nothing, `size` steps per channel.
+    pub fn identity(size: usize) -> Lut {
+        let step = |i: usize| i as f32 / (size - 1).max(1) as f32;
+        let data =
+            (0..size * size * size).map(|i| [step(i % size), step(i / size % size), step(i / (size * size))]).collect();
+        Lut { size, data }
+    }
+}
+
+#[cfg(test)]
+mod lut_tests {
+    use super::*;
+
+    #[test]
+    fn cube_files_are_read_and_bad_ones_refused() {
+        let text = "TITLE \"test\"\n# comment\nLUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n\
+                    0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+        let lut = Lut::parse(text).unwrap();
+        assert_eq!(lut, Lut::identity(2));
+        // Red changes fastest.
+        assert_eq!((lut.data[1], lut.data[2], lut.data[4]), ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]));
+        assert!(Lut::parse("LUT_3D_SIZE 2\n0 0 0\n").unwrap_err().contains("8 expected"));
+        assert!(Lut::parse("0 0 0\n").is_err());
+        assert!(Lut::parse("LUT_1D_SIZE 16\n").is_err());
+        assert!(Lut::parse("LUT_3D_SIZE 2\nDOMAIN_MAX 2 2 2\n").is_err());
+        assert!(Lut::parse("LUT_3D_SIZE 2\n0 0 x\n").unwrap_err().contains("line 2"));
+    }
+
+    #[test]
+    fn a_scenario_names_its_table_only_when_a_module_uses_it() {
+        let mut scenario = Scenario::new(ScenarioId(1), "s", 0);
+        scenario.members.insert(AssetId(1), Member::default());
+        scenario.lut = "film.cube".to_owned();
+        assert_eq!(scenario.grade(AssetId(1)).lut, None);
+        scenario.look.push(Module::new(ModuleKind::Lut));
+        assert_eq!(scenario.grade(AssetId(1)).lut.as_deref(), Some("film.cube"));
+        scenario.look_on = false;
+        assert_eq!(scenario.grade(AssetId(1)).lut, None);
+        // It survives the scenario file.
+        let text = toml::to_string(&scenario).unwrap();
+        assert_eq!(toml::from_str::<Scenario>(&text).unwrap(), scenario);
     }
 }

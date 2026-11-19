@@ -66,6 +66,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         // look:<module>:<k0>,<k1>,<k2>,<k3> adds a module to the shown scenario.
         "look" => Step::Dev(DevStep::Look(need()?)),
         "hero" => Step::Dev(DevStep::Hero),
+        "lut" => Step::Dev(DevStep::Lut(need()?)),
         "transition" => Step::Dev(DevStep::Act(Action::Transition)),
         "song" => Step::Dev(DevStep::Song),
         "cutstobeats" => Step::Dev(DevStep::Programme(true)),

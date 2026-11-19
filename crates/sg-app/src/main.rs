@@ -108,11 +108,16 @@ enum UserEvent {
     Looks {
         root: PathBuf,
         looks: Vec<(String, Vec<sg_core::Module>)>,
+        luts: Vec<String>,
     },
     Stabilised {
         id: AssetId,
         label: String,
         result: Result<(), String>,
+    },
+    LutImported {
+        root: PathBuf,
+        result: Result<String, String>,
     },
     Peaks {
         root: PathBuf,
@@ -333,11 +338,19 @@ impl App {
                         let _ = proxy.send_event(UserEvent::LookSaved { root, result });
                     });
                 }
+                Command::ImportLut { root, path } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let result = sg_project::analysis::import_lut(&root, &path).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::LutImported { root, result });
+                    });
+                }
                 Command::LoadLooks { root } => {
                     self.pending_jobs += 1;
                     self.reads.run(move || {
-                        let looks = sg_project::analysis::load_looks(&root);
-                        let _ = proxy.send_event(UserEvent::Looks { root, looks });
+                        let (looks, luts) =
+                            (sg_project::analysis::load_looks(&root), sg_project::analysis::list_luts(&root));
+                        let _ = proxy.send_event(UserEvent::Looks { root, looks, luts });
                     });
                 }
                 Command::Stabilise { root, asset } => {
@@ -783,8 +796,13 @@ impl ApplicationHandler<UserEvent> for App {
                 self.shell.look_saved(&root, result);
                 self.job_done();
             }
-            UserEvent::Looks { root, looks } => {
-                self.shell.looks_loaded(&root, looks);
+            UserEvent::LutImported { root, result } => {
+                let commands = self.shell.lut_imported(&root, result);
+                self.job_done();
+                self.run_commands(commands);
+            }
+            UserEvent::Looks { root, looks, luts } => {
+                self.shell.looks_loaded(&root, looks, luts);
                 self.job_done();
             }
             UserEvent::Stabilised { id, label, result } => {

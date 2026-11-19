@@ -265,7 +265,7 @@ fn the_shader_matches_and_grades_as_the_model_says() {
         pixel(&comp.read_output().unwrap(), 64, at.0, at.1)
     };
     let expect = |c: [f32; 3]| [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2]), 255];
-    let plain = Grade { correction: Correction::NONE, look: vec![] };
+    let plain = Grade { correction: Correction::NONE, look: vec![], lut: None };
     assert!(near(shot(&plain, 0.0, (32, 18)), source));
 
     // The match stage: the same numbers as the model's own arithmetic.
@@ -274,7 +274,7 @@ fn the_shader_matches_and_grades_as_the_model_says() {
         Correction { gain: [1.0; 3], contrast: 1.4, pivot: 0.25, saturation: 0.6 },
         Correction { gain: [0.7, 0.9, 1.3], contrast: 0.75, pivot: 0.12, saturation: 1.5 },
     ] {
-        let got = shot(&Grade { correction, look: vec![] }, 0.0, (32, 18));
+        let got = shot(&Grade { correction, look: vec![], lut: None }, 0.0, (32, 18));
         assert!(
             near(got, expect(correction.apply(linear))),
             "{correction:?}: {got:?} instead of {:?}",
@@ -282,7 +282,7 @@ fn the_shader_matches_and_grades_as_the_model_says() {
         );
     }
 
-    let with = |module: Module| Grade { correction: Correction::NONE, look: vec![module] };
+    let with = |module: Module| Grade { correction: Correction::NONE, look: vec![module], lut: None };
     let knobs = |kind: ModuleKind, values: [f32; 4]| Module { knobs: values, ..Module::new(kind) };
     // Exposure: one stop less halves the light.
     let got = shot(&with(knobs(ModuleKind::Balance, [0.0, 0.0, -1.0, 0.0])), 0.0, (32, 18));
@@ -318,8 +318,9 @@ fn the_shader_matches_and_grades_as_the_model_says() {
     let first = Grade {
         correction: Correction::NONE,
         look: vec![knobs(ModuleKind::Balance, [0.0, 0.0, 1.0, 0.0]), knobs(ModuleKind::Tone, [0.8, 0.0, 0.0, 0.18])],
+        lut: None,
     };
-    let second = Grade { correction: Correction::NONE, look: first.look.iter().rev().copied().collect() };
+    let second = Grade { correction: Correction::NONE, look: first.look.iter().rev().copied().collect(), lut: None };
     assert!(!near(shot(&first, 0.0, (32, 18)), shot(&second, 0.0, (32, 18))));
 }
 
@@ -374,7 +375,7 @@ fn sharpen_and_glow_look_at_the_surroundings() {
     let pixels = solid(64, 36, |x, _| if x < 32 { [60, 60, 60, 255] } else { [150, 150, 150, 255] });
     let view = Compositor::upload(&device, &queue, 64, 36, &pixels).create_view(&Default::default());
     let mut shot = |module: Option<Module>| {
-        let grade = Grade { correction: Correction::NONE, look: module.into_iter().collect() };
+        let grade = Grade { correction: Correction::NONE, look: module.into_iter().collect(), lut: None };
         comp.render(&[LayerDraw { grade: Some(&grade), ..LayerDraw::fitted(&view, (64, 36), 0) }]);
         comp.read_output().unwrap()
     };
@@ -398,4 +399,42 @@ fn sharpen_and_glow_look_at_the_surroundings() {
     let (near_edge, far) = (pixel(&glow, 64, 30, 18), pixel(&glow, 64, 4, 18));
     assert!(near_edge[0] > pixel(&plain, 64, 30, 18)[0] + 4 && near_edge[0] > near_edge[2], "{near_edge:?}");
     assert!(near(far, pixel(&plain, 64, 4, 18)), "{far:?}");
+}
+
+#[test]
+fn a_look_up_table_is_applied_where_its_module_sits() {
+    use sg_core::{Correction, Grade, Lut, Module, ModuleKind};
+    let Some((device, queue)) = device() else { return };
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 16, 16);
+    let source = [200u8, 120, 60, 255];
+    let view = Compositor::upload(&device, &queue, 2, 2, &solid(2, 2, |_, _| source)).create_view(&Default::default());
+    let grade = |lut: Option<&str>| Grade {
+        correction: Correction::NONE,
+        look: vec![Module::new(ModuleKind::Lut)],
+        lut: lut.map(str::to_owned),
+    };
+    let shot = |comp: &mut Compositor, grade: &Grade| {
+        comp.render(&[LayerDraw { grade: Some(grade), ..LayerDraw::fitted(&view, (16, 16), 0) }]);
+        pixel(&comp.read_output().unwrap(), 16, 8, 8)
+    };
+    // No table, or one that was never handed over: the picture as it is.
+    assert!(near(shot(&mut comp, &grade(None)), source));
+    assert!(near(shot(&mut comp, &grade(Some("missing.cube"))), source));
+    // The neutral table of any size changes nothing.
+    comp.set_lut("neutral.cube", &Lut::identity(17));
+    assert!(
+        near(shot(&mut comp, &grade(Some("neutral.cube"))), source),
+        "{:?}",
+        shot(&mut comp, &grade(Some("neutral.cube")))
+    );
+    // A table that swaps red and blue and halves green (in display values).
+    let mut swap = Lut::identity(17);
+    swap.data.iter_mut().for_each(|c| *c = [c[2], c[1] / 2.0, c[0]]);
+    comp.set_lut("swap.cube", &swap);
+    let got = shot(&mut comp, &grade(Some("swap.cube")));
+    assert!(near(got, [60, 60, 200, 255]), "{got:?}");
+    // At half mix: half the way, in linear light.
+    let half = Grade { look: vec![Module { mix: 0.5, ..Module::new(ModuleKind::Lut) }], ..grade(Some("swap.cube")) };
+    let mixed = shot(&mut comp, &half);
+    assert!(mixed[0] < 200 && mixed[0] > 60 && mixed[2] > 60 && mixed[2] < 200, "{mixed:?}");
 }

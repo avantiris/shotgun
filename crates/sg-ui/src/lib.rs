@@ -92,6 +92,11 @@ pub enum Command {
         name: String,
         modules: Vec<sg_core::Module>,
     },
+    /// Copy a `.cube` file into `assets/lut/`; answered with [`Shell::lut_imported`].
+    ImportLut {
+        root: PathBuf,
+        path: PathBuf,
+    },
     /// Read the looks saved in the project; answered with [`Shell::looks_loaded`].
     LoadLooks {
         root: PathBuf,
@@ -181,6 +186,8 @@ pub enum DevStep {
     Scenario(String),
     /// Add a look module to the shown scenario: `<kind>:<k0>,<k1>,<k2>,<k3>`.
     Look(String),
+    /// Choose the look-up table file of the first scenario.
+    Lut(String),
     /// Make the selected asset the hero of its scenario.
     Hero,
     /// Set the sequence frame size.
@@ -657,6 +664,19 @@ impl Shell {
                 }
             }
             DevStep::Look(what) => self.script_look(&what),
+            DevStep::Lut(name) => {
+                // The table of the first scenario.
+                if let Some(session) = &mut self.session
+                    && let Some(scenario) = session.project().scenarios.values().next().cloned()
+                {
+                    let edited = sg_core::Scenario { lut: name, ..sg_core::Scenario::clone(&scenario) };
+                    if let Err(e) =
+                        session.apply(Op::SetScenario { id: edited.id, scenario: Some(Box::new(edited)) }, None)
+                    {
+                        self.error = Some(e.to_string());
+                    }
+                }
+            }
             DevStep::Hero => {
                 // The selected asset becomes what its scenario is matched to.
                 if let (Some(session), Some(asset)) = (&mut self.session, self.editor.assets.selected)
@@ -769,7 +789,17 @@ impl Shell {
             }
         };
         let (root, known) = (session.root.clone(), session.project().assets.clone());
-        sources.into_iter().map(|source| Command::Import { root: root.clone(), known: known.clone(), source }).collect()
+        // Look-up tables are not media: they go to their own folder.
+        let is_table = |source: &ImportSource| matches!(source, ImportSource::Path(p) if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")));
+        sources
+            .into_iter()
+            .map(|source| match source {
+                ImportSource::Path(path) if is_table(&ImportSource::Path(path.clone())) => {
+                    Command::ImportLut { root: root.clone(), path }
+                }
+                source => Command::Import { root: root.clone(), known: known.clone(), source },
+            })
+            .collect()
     }
 
     /// A drag from another application entered or left the window.
@@ -1199,9 +1229,15 @@ impl Shell {
         }
     }
 
-    pub fn looks_loaded(&mut self, root: &std::path::Path, looks: Vec<(String, Vec<sg_core::Module>)>) {
+    pub fn looks_loaded(
+        &mut self,
+        root: &std::path::Path,
+        looks: Vec<(String, Vec<sg_core::Module>)>,
+        luts: Vec<String>,
+    ) {
         if self.session.as_ref().is_some_and(|s| s.root == root) {
             self.editor.colour.presets = Some(looks);
+            self.editor.colour.luts = luts;
         }
     }
 
@@ -1291,5 +1327,25 @@ impl Shell {
         };
         let what = if to_beats { "cut(s) moved onto a beat" } else { "whip-pan(s) added" };
         session.notice = Some(format!("{count} {what}."));
+    }
+}
+
+impl Shell {
+    /// A look-up table was copied into the project (or could not be).
+    pub fn lut_imported(&mut self, root: &std::path::Path, result: Result<String, String>) -> Vec<Command> {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return Vec::new() };
+        match result {
+            Ok(name) => {
+                session.notice = Some(format!(
+                    "{name} is in the project: add a Film look module to a scenario (Colour) and choose it there."
+                ));
+                // Read the folder again so that the panel lists it.
+                vec![Command::LoadLooks { root: root.to_owned() }]
+            }
+            Err(e) => {
+                self.error = Some(format!("The look-up table was not taken: {e}."));
+                Vec::new()
+            }
+        }
     }
 }

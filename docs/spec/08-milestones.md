@@ -190,7 +190,10 @@ Status:
   soften and Glow modules (they sample the picture around each pixel as it
   is after the match, not after the modules before them in the chain; the
   glow is 24 samples per pixel, not a multi-pass blur) and a per-clip trim
-  (exposure, warmth) in the clip inspector. **Not built**: Film look / LUT,
+  (exposure, warmth) in the clip inspector; and the Film look module: a
+  `.cube` look-up table (dropped onto the window, kept in `assets/lut/`)
+  chosen per scenario and applied where the module sits in the chain.
+  **Not built**: built-in film looks to choose from (only tables you bring),
   the hue-shift knob and skin protection of the Colour module (vibrance
   protects what is already saturated, not skin as such), membership per
   clip (it is per asset), analysis

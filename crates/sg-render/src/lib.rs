@@ -11,5 +11,5 @@ pub mod text;
 mod yuv;
 
 pub use compositor::{Compositor, LayerDraw, Motion};
-pub use plan::{PlanLayer, Source, plan, plan_track, sequence_frames};
+pub use plan::{PlanLayer, Source, load_luts, plan, plan_track, sequence_frames};
 pub use yuv::{YuvImporter, YuvPlanes};

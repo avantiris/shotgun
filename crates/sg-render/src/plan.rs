@@ -67,6 +67,35 @@ impl PlanLayer {
     }
 }
 
+/// Reads the look-up tables the layers name and the compositor does not
+/// have yet, from `assets/lut/` of the bundle at `root`. A table that cannot
+/// be read is replaced by one that changes nothing (and reported once), so
+/// that the frame is drawn either way. Reads files: for the preview and
+/// export threads, never the UI thread.
+pub fn load_luts(compositor: &mut crate::Compositor, root: &std::path::Path, layers: &[PlanLayer]) {
+    for name in layers.iter().filter_map(|l| l.grade.as_ref()?.lut.as_deref()) {
+        if compositor.has_lut(name) {
+            continue;
+        }
+        // A plain file name: nothing that could lead out of the folder.
+        let plain = !name.is_empty() && !name.contains(['/', '\\']) && name != "..";
+        let read = if plain {
+            std::fs::read_to_string(root.join("assets/lut").join(name))
+                .map_err(|e| e.to_string())
+                .and_then(|t| sg_core::Lut::parse(&t))
+        } else {
+            Err("not a file name".to_owned())
+        };
+        match read {
+            Ok(lut) => compositor.set_lut(name, &lut),
+            Err(e) => {
+                log::warn!("look-up table {name}: {e}; the picture is shown without it");
+                compositor.set_lut(name, &sg_core::Lut::identity(2));
+            }
+        }
+    }
+}
+
 /// The layers visible at `frame` of `sequence`, bottom first. Costs a few
 /// O(log n) lookups per video track.
 pub fn plan(project: &Project, sequence: &Sequence, frame: i64) -> Vec<PlanLayer> {
@@ -126,7 +155,7 @@ fn layer(
     // The scenario's match and look, then the clip's own trim on top of the match.
     let mut grade = project.grade_of(clip.asset);
     if let Some(trim) = props.as_ref().and_then(|p| p.trim_gain()) {
-        let graded = grade.get_or_insert(Grade { correction: sg_core::Correction::NONE, look: Vec::new() });
+        let graded = grade.get_or_insert(Grade { correction: sg_core::Correction::NONE, look: Vec::new(), lut: None });
         for (gain, by) in graded.correction.gain.iter_mut().zip(trim) {
             *gain *= by;
         }

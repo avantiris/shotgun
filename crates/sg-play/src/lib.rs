@@ -533,6 +533,7 @@ impl State {
                 .iter()
                 .map(|(view, size, rotation, index, title)| layers[*index].draw(view, *size, *rotation, *title))
                 .collect();
+            sg_render::load_luts(&mut self.compositor, &root, &layers);
             self.compositor.render(&draws);
             self.rendered = Some((self.frame, keys.clone()));
             let now = Instant::now();

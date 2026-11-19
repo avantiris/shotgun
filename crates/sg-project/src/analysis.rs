@@ -143,3 +143,30 @@ pub fn stabilise(
     })?;
     sg_media::derive::proxy(&out, &proxy, seconds, cancel, &mut |f| progress(0.85 + f * 0.15))
 }
+
+/// The look-up tables in `assets/lut/`, by file name.
+pub fn list_luts(root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root.join("assets/lut")) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| name.to_lowercase().ends_with(".cube"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Copies a `.cube` file into `assets/lut/` after checking that it reads.
+/// Returns the file name it has there.
+pub fn import_lut(root: &Path, source: &Path) -> Result<String, ToolError> {
+    let text = std::fs::read_to_string(source)?;
+    sg_core::Lut::parse(&text).map_err(|e| ToolError::other(format!("it is not a usable look-up table ({e})")))?;
+    let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = format!("{}.cube", sg_core::text::slug(&stem));
+    let dir = root.join("assets/lut");
+    std::fs::create_dir_all(&dir)?;
+    let temporary = dir.join(format!("{name}.tmp"));
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(&temporary, dir.join(&name))?;
+    Ok(name)
+}

@@ -1,6 +1,6 @@
 //! GPU compositing on wgpu.
 
-use sg_core::{Grade, Shift};
+use sg_core::{Grade, Lut, Shift};
 use wgpu::util::DeviceExt;
 
 /// One picture to draw: fitted into the frame, turned and faded.
@@ -119,6 +119,9 @@ pub struct Compositor {
     chroma10_pipeline: wgpu::RenderPipeline,
     /// Targets of the NV12 conversion, made on first use.
     delivery: Option<Delivery>,
+    /// Look-up tables by file name, and the one that changes nothing.
+    neutral_lut: wgpu::TextureView,
+    luts: std::collections::HashMap<String, wgpu::TextureView>,
 }
 
 fn make_targets(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::Texture) {
@@ -174,6 +177,16 @@ impl Compositor {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -254,6 +267,7 @@ impl Compositor {
             None,
             wgpu::PrimitiveTopology::TriangleList,
         );
+        let neutral_lut = upload_lut(&device, &queue, &Lut::identity(2));
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("composite"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -287,6 +301,8 @@ impl Compositor {
             luma10_pipeline,
             chroma10_pipeline,
             delivery: None,
+            neutral_lut,
+            luts: std::collections::HashMap::new(),
         }
     }
 
@@ -318,7 +334,10 @@ impl Compositor {
         &self.output_view
     }
 
-    fn bind(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+    /// The bind group of one layer: its picture and the look-up table its
+    /// grade names (the neutral one if it names none, or one not loaded).
+    fn bind(&self, view: &wgpu::TextureView, lut: Option<&str>) -> wgpu::BindGroup {
+        let table = lut.and_then(|name| self.luts.get(name)).unwrap_or(&self.neutral_lut);
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout,
@@ -333,6 +352,7 @@ impl Compositor {
                 },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(table) },
             ],
         })
     }
@@ -416,8 +436,9 @@ impl Compositor {
             };
             self.queue.write_buffer(&self.uniforms, i as u64 * UNIFORM_STRIDE, bytemuck::bytes_of(&uniform));
         }
-        let groups: Vec<wgpu::BindGroup> = layers.iter().map(|l| self.bind(l.view)).collect();
-        let output_group = self.bind(&self.linear_view);
+        let groups: Vec<wgpu::BindGroup> =
+            layers.iter().map(|l| self.bind(l.view, l.grade.and_then(|g| g.lut.as_deref()))).collect();
+        let output_group = self.bind(&self.linear_view, None);
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let attachment = |view| wgpu::RenderPassColorAttachment {
             view,
@@ -548,7 +569,7 @@ impl Compositor {
                 buffer,
             });
         }
-        let group = self.bind(&self.linear_view);
+        let group = self.bind(&self.linear_view, None);
         let Some(delivery) = &self.delivery else { return Ok(Vec::new()) };
         let (luma_row, chroma_row) = (
             (width * luma_bytes).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
@@ -609,6 +630,16 @@ impl Compositor {
         Ok(out)
     }
 
+    /// Whether the table of this name has been handed over.
+    pub fn has_lut(&self, name: &str) -> bool {
+        self.luts.contains_key(name)
+    }
+
+    /// Hands over a look-up table for layers whose grade names it.
+    pub fn set_lut(&mut self, name: &str, lut: &Lut) {
+        self.luts.insert(name.to_owned(), upload_lut(&self.device, &self.queue, lut));
+    }
+
     /// Uploads RGBA pixels as a texture layers can sample.
     pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, rgba: &[u8]) -> wgpu::Texture {
         device.create_texture_with_data(
@@ -637,4 +668,42 @@ struct Delivery {
     chroma: wgpu::Texture,
     chroma_view: wgpu::TextureView,
     buffer: wgpu::Buffer,
+}
+
+/// IEEE half-precision bits of `value` (tables are stored as 16-bit floats:
+/// the widest format every GPU can interpolate).
+fn half(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let mantissa = bits & 0x007f_ffff;
+    if exponent <= 0 {
+        // Too small for a normal half: zero is near enough for a colour.
+        sign
+    } else if exponent >= 31 {
+        sign | 0x7bff
+    } else {
+        sign | ((exponent as u16) << 10) | (mantissa >> 13) as u16
+    }
+}
+
+fn upload_lut(device: &wgpu::Device, queue: &wgpu::Queue, lut: &Lut) -> wgpu::TextureView {
+    let size = lut.size as u32;
+    let texels: Vec<u16> = lut.data.iter().flat_map(|c| [half(c[0]), half(c[1]), half(c[2]), half(1.0)]).collect();
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("look-up table"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: size },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        bytemuck::cast_slice(&texels),
+    );
+    texture.create_view(&Default::default())
 }

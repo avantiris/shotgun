@@ -451,6 +451,7 @@ fn render(
                     })
                     .collect();
                 let mark = Instant::now();
+                sg_render::load_luts(&mut compositor, &job.root, &layers);
                 compositor.render(&draws);
                 let read = if deep { compositor.read_output_p010() } else { compositor.read_output_nv12() };
                 let pixels = read.map_err(|e| ExportError::Tool(format!("GPU readback failed: {e:?}")))?;
