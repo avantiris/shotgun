@@ -57,6 +57,10 @@ pub enum Command {
         /// The asset whose poster becomes the project's picture in the library.
         poster: Option<AssetId>,
     },
+    /// Show the folder of this file in the desktop's file manager.
+    Reveal {
+        path: PathBuf,
+    },
     /// Read a project's picture for the library; answered with [`Shell::project_poster_loaded`].
     LoadProjectPoster {
         path: PathBuf,
@@ -241,6 +245,11 @@ pub struct Shell {
     angle_group: Option<u64>,
     /// The playhead as of the last frame, for key actions.
     playhead: i64,
+    /// The file the last export wrote and the notice that says so, for
+    /// the "Show in folder" button beside that notice.
+    exported: Option<(String, String)>,
+    /// A file to show in the file manager; taken with the frame's commands.
+    reveal: Option<PathBuf>,
 }
 
 impl Shell {
@@ -309,6 +318,9 @@ impl Shell {
             self.act(action, &mut commands);
         }
         self.banner(ui);
+        if let Some(path) = self.reveal.take() {
+            commands.push(Command::Reveal { path });
+        }
         let mut asset_requests = Vec::new();
         let mut transport = Vec::new();
         let mut scenario_choice = None;
@@ -460,7 +472,14 @@ impl Shell {
         let frame = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(12, 6));
         egui::Panel::bottom("banner").frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
+                // Beside the news of an export: the way to the file.
+                let file = self.exported.as_ref().filter(|(_, notice)| *notice == text).map(|(path, _)| path.clone());
                 ui.label(egui::RichText::new(text).color(colour));
+                if let Some(file) = file
+                    && ui.button("Show in folder").on_hover_text("Opens the file manager where the file is").clicked()
+                {
+                    self.reveal = Some(PathBuf::from(file));
+                }
                 ui.label(egui::RichText::new("Esc to dismiss").color(theme::DIM));
             });
         });
@@ -1016,7 +1035,9 @@ impl Shell {
             self.error = Some(format!("Export failed: {error}"));
         }
         if let (ExportUpdate::Done { path, .. }, Some(session)) = (&update, &mut self.session) {
-            session.notice = Some(format!("Exported {path}"));
+            let notice = format!("Exported {path}");
+            self.exported = Some((path.clone(), notice.clone()));
+            session.notice = Some(notice);
         }
         self.export.update(update);
     }

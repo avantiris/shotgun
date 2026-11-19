@@ -785,3 +785,20 @@ fn the_mark_at_a_clips_top_corner_pulls_its_fade() {
     drag(&mut harness, on_clip, on_clip + vec2(60.0, 0.0));
     assert_eq!(fades(&harness), [(0, 0), (0, 0)]);
 }
+
+#[test]
+fn a_finished_export_offers_the_way_to_its_file() {
+    let mut harness = editor();
+    assert!(harness.query_by_label("Show in folder").is_none());
+    harness.state_mut().shell.export_update(sg_ui::ExportUpdate::Done {
+        path: "/library/flows/exports/flows-master-1.mp4".to_owned(),
+        bytes: 1,
+        seconds: 1.0,
+        on_clipboard: false,
+    });
+    harness.run_steps(2);
+    click(&mut harness, "Show in folder");
+    assert!(harness.state().commands.iter().any(
+        |c| matches!(c, Command::Reveal { path } if path.to_str() == Some("/library/flows/exports/flows-master-1.mp4"))
+    ));
+}

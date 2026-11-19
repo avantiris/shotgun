@@ -141,6 +141,8 @@ enum UserEvent {
         path: PathBuf,
         rgba: Option<Vec<u8>>,
     },
+    /// Something went wrong off the UI thread: say so in the banner.
+    Problem(String),
     /// Drag-and-drop or clipboard data from the Wayland data device.
     Data(DataEvent),
     /// Files chosen in the file picker.
@@ -424,6 +426,33 @@ impl App {
                         let peaks = sg_media::peaks::Peaks::read(&sg_project::cache::peaks(&root, id)).ok();
                         let _ = proxy.send_event(UserEvent::Peaks { root, id, peaks });
                     });
+                }
+                Command::Reveal { path } => {
+                    // The desktop's opener, on a thread of its own: it may take
+                    // its time, and what it says when it fails goes to the banner.
+                    let spawned = std::thread::Builder::new().name("sg-reveal".into()).spawn(move || {
+                        let folder = path.parent().map(Path::to_owned).unwrap_or(path);
+                        let result = std::process::Command::new("xdg-open")
+                            .arg(&folder)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped())
+                            .output();
+                        let problem = match result {
+                            Ok(output) if output.status.success() => return,
+                            Ok(output) => {
+                                String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("").to_owned()
+                            }
+                            Err(e) => e.to_string(),
+                        };
+                        let _ = proxy.send_event(UserEvent::Problem(format!(
+                            "The file manager could not be opened ({problem}). The file is in {}",
+                            folder.display()
+                        )));
+                    });
+                    if let Err(e) = spawned {
+                        self.shell.report_error(format!("Cannot start the file manager: {e}"));
+                    }
                 }
                 Command::LoadProjectPoster { path } => {
                     self.pending_jobs += 1;
@@ -876,6 +905,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.shell.peaks_loaded(&root, id, peaks);
                 self.job_done();
             }
+            UserEvent::Problem(message) => self.shell.report_error(message),
             UserEvent::ProjectPoster { path, rgba } => {
                 self.shell.project_poster_loaded(&self.ctx, path, rgba);
                 self.job_done();
