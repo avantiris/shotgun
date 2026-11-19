@@ -614,3 +614,36 @@ fn a_marked_stretch_can_be_exported_alone() {
         .find_map(|c| if let Command::Export { request, .. } = c { Some(request.range) } else { None });
     assert_eq!(range, Some(Some((120, 360))));
 }
+
+#[test]
+fn handles_in_the_viewer_size_and_turn_the_selected_picture() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    assert!(harness.query_by_label("Turn handle").is_none());
+    let on_clip = on_timeline(&harness, 100.0, 0);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    let props = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = &project.sequences[0].tracks[0];
+        track.props_of(track.clips.at(0).unwrap().id).map(|p| (p.scale.at(0), p.rotation.at(0), p.x.at(0)))
+    };
+    // A corner pulled towards the middle of the picture: smaller.
+    let corners: Vec<egui::Rect> = harness.get_all_by_label("Size handle").map(|n| n.rect()).collect();
+    assert_eq!(corners.len(), 4);
+    let middle = corners.iter().fold(egui::Vec2::ZERO, |sum, r| sum + r.center().to_vec2()) / 4.0;
+    let corner = corners[0].center();
+    drag(&mut harness, corner, corner + (middle.to_pos2() - corner) * 0.5);
+    let (scale, rotation, x) = props(&harness).expect("the handle changed the clip");
+    assert!((scale - 0.5).abs() < 0.08 && rotation == 0.0 && x == 0.0, "{scale} {rotation} {x}");
+    // The turning handle pulled to the right: clockwise.
+    let knob = harness.get_by_label("Turn handle").rect().center();
+    drag(&mut harness, knob, knob + vec2(60.0, 0.0));
+    let (scale_after, rotation, _) = props(&harness).unwrap();
+    assert!(rotation > 10.0 && rotation < 60.0 && (scale_after - scale).abs() < 1e-4, "{rotation}");
+    // Two gestures, two undo steps.
+    harness.key_press(Key::Z);
+    harness.run_steps(2);
+    harness.key_press(Key::Z);
+    harness.run_steps(2);
+    assert_eq!(props(&harness), None);
+}

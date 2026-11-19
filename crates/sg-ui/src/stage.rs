@@ -63,11 +63,26 @@ pub struct AnglesView {
     pub rows: u32,
 }
 
+/// Where the selected clip's picture lies in the frame, for its handles.
+#[derive(Clone, Copy)]
+pub struct Outline {
+    /// Centre in frame widths and heights from the middle of the frame (y down).
+    pub centre: egui::Vec2,
+    /// Half its width and height, in frame widths and heights.
+    pub half: egui::Vec2,
+    /// Degrees clockwise.
+    pub turn: f32,
+}
+
 /// What happened in the viewer this frame.
 #[derive(Default)]
 pub struct ViewerEvents {
     /// The picture was dragged by this much, in fractions of the frame.
     pub dragged: Option<egui::Vec2>,
+    /// A corner handle was dragged: the picture's size times this.
+    pub scaled: Option<f32>,
+    /// The turning handle was dragged: degrees clockwise.
+    pub turned: Option<f32>,
     /// A camera angle was clicked (0 is the first).
     pub angle: Option<usize>,
 }
@@ -81,6 +96,7 @@ pub fn viewer(
     view: &ViewerState,
     recording: bool,
     live: Option<usize>,
+    frame_of_selection: Option<Outline>,
 ) -> ViewerEvents {
     const BAR_H: f32 = 22.0;
     let mut events = ViewerEvents::default();
@@ -122,6 +138,51 @@ pub fn viewer(
             theme::ERROR,
         );
     }
+    // The selected picture's outline with a handle on each corner (size)
+    // and one above it (turning).
+    if let Some(outline) = frame_of_selection {
+        let centre = rect.center() + vec2(outline.centre.x * size.x, outline.centre.y * size.y);
+        let (sin, cos) = outline.turn.to_radians().sin_cos();
+        let turned = |v: egui::Vec2| vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+        let half = vec2(outline.half.x * size.x, outline.half.y * size.y);
+        let corners = [vec2(-half.x, -half.y), vec2(half.x, -half.y), vec2(half.x, half.y), vec2(-half.x, half.y)]
+            .map(|c| centre + turned(c));
+        let stroke = Stroke::new(1.0, theme::ACCENT);
+        let clipped = painter.with_clip_rect(picture_area);
+        for i in 0..4 {
+            clipped.line_segment([corners[i], corners[(i + 1) % 4]], stroke);
+        }
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        for (n, corner) in corners.iter().enumerate() {
+            let knob = Rect::from_center_size(*corner, vec2(11.0, 11.0));
+            let handle = ui.interact(knob, ui.scope_id().with(("size", n)), Sense::drag());
+            handle.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Size handle"));
+            clipped.rect_filled(
+                knob,
+                2.0,
+                if handle.hovered() || handle.dragged() { theme::TEXT } else { theme::ACCENT },
+            );
+            if let (true, Some(now)) = (handle.dragged(), pointer) {
+                // How much further from the centre the pointer is than a moment ago.
+                let before = (now - handle.drag_delta() - centre).length();
+                if before > 4.0 {
+                    events.scaled = Some(((now - centre).length() / before).clamp(0.5, 2.0));
+                }
+            }
+        }
+        let top = centre + turned(vec2(0.0, -half.y - 26.0));
+        clipped.line_segment([centre + turned(vec2(0.0, -half.y)), top], stroke);
+        let knob = Rect::from_center_size(top, vec2(13.0, 13.0));
+        let handle = ui.interact(knob, ui.scope_id().with("turn"), Sense::drag());
+        handle.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Turn handle"));
+        clipped.circle_filled(top, 6.0, if handle.hovered() || handle.dragged() { theme::TEXT } else { theme::ACCENT });
+        if let (true, Some(now)) = (handle.dragged(), pointer) {
+            let (to, from) = (now - centre, now - handle.drag_delta() - centre);
+            let degrees = (to.y.atan2(to.x) - from.y.atan2(from.x)).to_degrees();
+            // Across the seam of the angle, take the short way round.
+            events.turned = Some((degrees + 540.0).rem_euclid(360.0) - 180.0);
+        }
+    }
     if let Some(angles) = view.angles {
         let area = Rect::from_min_max(pos2(available.min.x, available.max.y - strip + 8.0), available.max);
         let grid_aspect = aspect * angles.cols as f32 / angles.rows as f32;
@@ -153,8 +214,13 @@ pub fn viewer(
     }
     let delta = response.drag_delta();
     let inside = response.interact_pointer_pos().is_some_and(|p| p.y < picture_area.bottom());
-    events.dragged = (response.dragged() && inside && delta != egui::Vec2::ZERO)
-        .then(|| vec2(delta.x / size.x.max(1.0), delta.y / size.y.max(1.0)));
+    // (The handles lie over the picture and take their own drags.)
+    events.dragged = (response.dragged()
+        && inside
+        && delta != egui::Vec2::ZERO
+        && events.scaled.is_none()
+        && events.turned.is_none())
+    .then(|| vec2(delta.x / size.x.max(1.0), delta.y / size.y.max(1.0)));
     events
 }
 

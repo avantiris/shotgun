@@ -128,12 +128,37 @@ impl Editor {
                         .is_some_and(|c| c.asset == on_air.asset && c.src_in - c.start == on_air.src_in - on_air.start)
                 })
             });
+        // Where the selected picture lies, for the handles in the viewer.
+        // (Titles are drawn at their own size; they are moved, not sized.)
+        let outline = target
+            .as_ref()
+            .filter(|t| t.track.kind == sg_core::TrackKind::Video && !t.track.mix.hidden && t.props.title.is_none())
+            .and_then(|t| {
+                let video = project.assets.get(&t.clip.asset)?.video.as_ref()?;
+                let (w, h) =
+                    if video.rotation % 180 == 90 { (video.height, video.width) } else { (video.width, video.height) };
+                // Fitted into the frame at scale 1.
+                let fit = (sequence.width as f32 / w.max(1) as f32).min(sequence.height as f32 / h.max(1) as f32)
+                    * t.props.scale.at(t.at);
+                Some(stage::Outline {
+                    centre: egui::vec2(t.props.x.at(t.at), t.props.y.at(t.at)),
+                    half: egui::vec2(
+                        w as f32 * fit / sequence.width as f32 / 2.0,
+                        h as f32 * fit / sequence.height as f32 / 2.0,
+                    ),
+                    turn: t.props.rotation.at(t.at),
+                })
+            });
         let events = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(12.0))
-            .show(ui, |ui| stage::viewer(ui, sequence, view, recording, live))
+            .show(ui, |ui| stage::viewer(ui, sequence, view, recording, live, outline))
             .inner;
         if let Some(angle) = events.angle {
             request = Some(EditorRequest::Angle(angle));
+        }
+        if let (true, Some(target)) = (events.scaled.is_some() || events.turned.is_some(), &target) {
+            let (factor, degrees) = (events.scaled.unwrap_or(1.0), events.turned.unwrap_or(0.0));
+            self.clip_panel.viewer_handles(session, sequence, target, factor, degrees, error);
         }
         if let (Some(delta), Some(target)) = (events.dragged, &target) {
             self.clip_panel.viewer_drag(session, sequence, target, delta, view.playing, error);

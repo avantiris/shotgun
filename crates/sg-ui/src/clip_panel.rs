@@ -161,18 +161,26 @@ impl ClipPanel {
                 }
             });
         }
-        ui.horizontal(|ui| {
-            if video && props.title.is_none() {
-                // A factor on the speed that keyframes can change along the clip.
-                // The sound of the take is not ramped with it.
-                changed |= value_row(ui, "Speed ramp", &mut props.ramp, at, 0.05..=8.0, 0.005, " x");
+        if video && props.title.is_none() {
+            // A factor on the speed that keyframes can change along the clip.
+            // The sound of the take is not ramped with it.
+            changed |= value_row(ui, "Speed ramp", &mut props.ramp, at, 0.05..=8.0, 0.005, " x");
             for (name, value, range, tip) in [
-                ("Exposure", &mut props.exposure, -4.0..=4.0, "Brightness of this clip alone, in stops, on top of its scenario's match"),
+                (
+                    "Exposure",
+                    &mut props.exposure,
+                    -4.0..=4.0,
+                    "Brightness of this clip alone, in stops, on top of its scenario's match",
+                ),
                 ("Warmth", &mut props.warmth, -1.0..=1.0, "Cooler or warmer, this clip alone"),
             ] {
                 ui.horizontal(|ui| {
-                    ui.add_sized([84.0, 16.0], egui::Label::new(RichText::new(name).color(theme::DIM)).halign(egui::Align::LEFT));
-                    let response = ui.add(egui::DragValue::new(value).range(range).speed(0.01).max_decimals(2)).on_hover_text(tip);
+                    ui.add_sized(
+                        [84.0, 16.0],
+                        egui::Label::new(RichText::new(name).color(theme::DIM)).halign(egui::Align::LEFT),
+                    );
+                    let response =
+                        ui.add(egui::DragValue::new(value).range(range).speed(0.01).max_decimals(2)).on_hover_text(tip);
                     changed |= response.changed();
                     if response.double_clicked() {
                         *value = 0.0;
@@ -191,7 +199,8 @@ impl ClipPanel {
                     self.stabilise_request = Some(target.clip.asset);
                 }
             }
-            }
+        }
+        ui.horizontal(|ui| {
             ui.add_sized(
                 [84.0, 16.0],
                 egui::Label::new(RichText::new("Fade in / out").color(theme::DIM)).halign(egui::Align::LEFT),
@@ -245,6 +254,24 @@ impl ClipPanel {
             props.x.set(target.at, x);
             props.y.set(target.at, y);
         }
+        let group = self.group_for(true, session);
+        commit(session, sequence, target, props, group, error);
+    }
+
+    /// A handle in the viewer was dragged: the picture grows by `factor`
+    /// and turns by `degrees`.
+    pub fn viewer_handles(
+        &mut self,
+        session: &mut Session,
+        sequence: &Sequence,
+        target: &Target,
+        factor: f32,
+        degrees: f32,
+        error: &mut Option<String>,
+    ) {
+        let mut props = target.props.clone();
+        props.scale.set(target.at, (props.scale.at(target.at) * factor).clamp(0.01, 10.0));
+        props.rotation.set(target.at, props.rotation.at(target.at) + degrees);
         let group = self.group_for(true, session);
         commit(session, sequence, target, props, group, error);
     }

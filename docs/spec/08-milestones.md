@@ -76,7 +76,7 @@ Status:
   is met at proxy quality only (`docs/perf-log.md`). Built: position,
   scale, rotation, opacity (all keyframeable, linear interpolation), crop,
   speed, titles, clip volume, audio fades, live record of motion. Not built:
-  easing curves, scale and rotate handles in the viewer (dragging moves;
+  easing curves (scale and rotate handles in the viewer were added 2026-11-19: corners size, the knob above turns; dragging moves;
   [added 2026-11-19: the fade fields now fade the picture too, and a split
   gives both halves their share of the properties]
   scale and rotation are inspector fields), picture fades (the fade fields
