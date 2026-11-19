@@ -2951,6 +2951,12 @@ mod tests {
         assert_eq!(*session.project(), unchanged);
         assert!(!session.switch_angle(5, 400, group).unwrap());
         assert!(!session.switch_angle(1, 2000, group).unwrap());
+        // A cut made before later ones reaches to the next cut and leaves the rest.
+        assert!(session.switch_angle(1, 100, group).unwrap());
+        assert_eq!(
+            programme(&session),
+            vec![(1, 0, 100, 0), (2, 100, 100, 40), (2, 200, 100, 140), (1, 300, 300, 300), (2, 600, 60, 540)]
+        );
         // One pass of switching is one undo step.
         assert!(session.undo().unwrap());
         assert_eq!(programme(&session), vec![(1, 0, 600, 0)]);

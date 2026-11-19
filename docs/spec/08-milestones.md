@@ -242,7 +242,7 @@ Status:
   depth.
 
 
-- **Known problem, not found (2026-11-19).** One automated run out of
+- **GPU error at start: found and fixed (2026-11-19, after round 4).** One automated run out of
   about sixty that night ended with a GPU error from wgpu (the program
   stopped; nothing was lost, the journal had every edit). The run opened a
   project, selected clips, took an off-screen picture and started a master
@@ -251,14 +251,22 @@ Status:
   goes on (`sg_render::report_gpu_errors`); an export during which one is
   reported fails rather than keeping a file with a wrong frame. If it
   shows again the log has the cause.
+  It showed again and the log had it: "Failed to wait for GPU to come idle
+  before reconfiguring the Surface". wgpu wants the queue empty when a
+  surface is configured and gives up if another thread submits work during
+  its wait; here the compositor resizes the new window while the player
+  thread makes its first pictures. The window layer now catches that
+  refusal and tries again (`gfx.rs`, `configure`). Thirty repeats of a run
+  that had failed one time in four: the race was met twice, retried, and
+  no error reached the log.
 
 - **Reviewed 2026-11-19.** Three independent reads of the night's code
   found the defects fixed in commits `2cd9e73`, `0395eae` and the one after.
   Left as they are, known:
-  - Cutting to a camera angle replaces the programme up to the end of that
-    angle's take, later cuts included (as designed in M7; worth changing to
-    "up to the next cut"), and the cut does not carry a speed or stabilise
-    setting of the angle's clip.
+  - A cut to a camera angle does not carry a speed or stabilise setting of
+    the angle's clip. (Changed after round 4: the cut now reaches to the
+    next cut of the programme, not to the end of the take, so later cuts
+    stay.)
   - A share copy aims at its size limit rather than staying under a
     sensible bitrate: a short clip is made as large as the limit allows.
   - Real 10-bit frames are used when a scenario grades, not for per-clip

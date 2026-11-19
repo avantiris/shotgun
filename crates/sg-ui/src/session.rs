@@ -593,7 +593,9 @@ impl Session {
     }
 
     /// Cuts the programme to camera angle `angle` (0 is the first) from
-    /// `frame` to the end of that angle's take. `Ok(false)` if there is no
+    /// `frame` to the next cut of the programme, or to the end of that
+    /// angle's take if that comes first or no cut follows: cuts made
+    /// later in the programme stay. `Ok(false)` if there is no
     /// such angle or it has no picture at this time. Switches made with
     /// the same `group` undo together.
     pub fn switch_angle(&mut self, angle: usize, frame: i64, group: Option<u64>) -> Result<bool, OpError> {
@@ -602,15 +604,17 @@ impl Session {
         let Some(source) = angle_rows(sequence).get(angle).and_then(|row| sequence.tracks[*row].clips.at(frame)) else {
             return Ok(false);
         };
+        let program = program_row(sequence).map(|row| &sequence.tracks[row]);
+        let next_cut = program.and_then(|p| p.clips.first_at_or_after(frame + 1)).map_or(i64::MAX, |c| c.start);
         let clip = Clip {
             id: self.ids.clip(),
             asset: source.asset,
             start: frame,
-            len: source.end() - frame,
+            len: source.end().min(next_cut) - frame,
             src_in: source.src_in + (frame - source.start),
         };
         let mut ops = Vec::new();
-        match program_row(sequence).map(|row| &sequence.tracks[row]) {
+        match program {
             Some(program) => {
                 // Already showing this angle from here on: nothing to cut.
                 let showing = program.clips.at(frame).is_some_and(|c| {

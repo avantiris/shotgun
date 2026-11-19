@@ -22,6 +22,31 @@ pub struct Gfx {
     pub egui_state: egui_winit::State,
     /// Target of `bench_frame`.
     offscreen: Option<(wgpu::TextureView, (u32, u32))>,
+    /// The surface could not be given its current size yet; tried again
+    /// before the next frame.
+    unconfigured: bool,
+}
+
+/// Gives the surface its configuration. `false` if wgpu refused.
+///
+/// wgpu waits for the queue to run empty first and gives up when another
+/// thread (the player, a poster render) submits work during that wait:
+/// "Failed to wait for GPU to come idle before reconfiguring the Surface".
+/// Left to the device's error handler this was the GPU error that ended
+/// one automated run in sixty at start, when the compositor resizes the new
+/// window while the first pictures are being made. Caught here and tried
+/// again instead.
+fn configure(surface: &wgpu::Surface<'_>, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> bool {
+    for _ in 0..4 {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        surface.configure(device, config);
+        // (Resolves at once on a native device: nothing is waited for.)
+        match pollster::block_on(scope.pop()) {
+            None => return true,
+            Some(e) => log::debug!("surface not configured, trying again: {e}"),
+        }
+    }
+    false
 }
 
 pub enum Frame {
@@ -78,7 +103,7 @@ impl Gfx {
         if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
             config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
         }
-        surface.configure(&device, &config);
+        let unconfigured = !configure(&surface, &device, &config);
 
         let mut renderer = egui_wgpu::Renderer::new(
             &device,
@@ -109,13 +134,13 @@ impl Gfx {
             ms(t_adapter, t_device),
             ms(t_device, Instant::now()),
         );
-        Ok(Gfx { window, surface, device, queue, config, renderer, egui_state, offscreen: None })
+        Ok(Gfx { window, surface, device, queue, config, renderer, egui_state, offscreen: None, unconfigured })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        self.unconfigured = !configure(&self.surface, &self.device, &self.config);
     }
 
     /// Runs the UI once and uploads what it changed in egui's textures.
@@ -174,10 +199,17 @@ impl Gfx {
         let start = Instant::now();
         let built = self.build(ctx, &mut ui);
         let built_at = Instant::now();
+        if self.unconfigured {
+            self.unconfigured = !configure(&self.surface, &self.device, &self.config);
+            if self.unconfigured {
+                self.window.request_redraw();
+                return Frame::Skipped;
+            }
+        }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
+                self.unconfigured = !configure(&self.surface, &self.device, &self.config);
                 self.window.request_redraw();
                 return Frame::Skipped;
             }
