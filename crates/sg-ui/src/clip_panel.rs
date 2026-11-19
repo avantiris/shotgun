@@ -39,6 +39,11 @@ pub struct ClipPanel {
     pub recording: bool,
     /// An asset whose stabilised copy should be made; taken by the shell.
     pub stabilise_request: Option<sg_core::AssetId>,
+    /// The fonts in the project's folder, once they have been listed.
+    pub fonts: Option<Vec<String>>,
+    /// The list of fonts is wanted; taken by the shell.
+    pub fonts_request: bool,
+    fonts_asked: bool,
 }
 
 /// Writes changed properties back as an op.
@@ -106,6 +111,33 @@ impl ClipPanel {
                     title.color = colour.to_srgba_unmultiplied();
                     changed = true;
                 }
+            });
+            // The folder is listed the first time a title is shown.
+            if !self.fonts_asked {
+                (self.fonts_asked, self.fonts_request) = (true, true);
+            }
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [84.0, 16.0],
+                    egui::Label::new(RichText::new("Font").color(theme::DIM)).halign(egui::Align::LEFT),
+                );
+                let shown = if title.font.is_empty() { "Built-in" } else { title.font.as_str() };
+                egui::ComboBox::from_id_salt("title font")
+                    .selected_text(shown.to_owned())
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(title.font.is_empty(), "Built-in").clicked() && !title.font.is_empty() {
+                            title.font.clear();
+                            changed = true;
+                        }
+                        for name in self.fonts.iter().flatten() {
+                            if ui.selectable_label(title.font == *name, name).clicked() && title.font != *name {
+                                title.font = name.clone();
+                                changed = true;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Drop a .ttf or .otf file onto the window to add a font to the project");
             });
         }
         if video {

@@ -15,7 +15,7 @@ into a grid of these, sorted by last opened, with a poster frame each.
     video/                originals, never modified after import
     audio/
     image/                stills and GIFs
-    font/
+    font/                 fonts for titles (.ttf, .otf); tracked by git, like lut/
     lut/
     index/<asset-id>.toml one small metadata file per asset (see below)
   sequences/<slug>.sg     one file per timeline

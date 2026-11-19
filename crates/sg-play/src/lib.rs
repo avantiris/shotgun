@@ -49,6 +49,8 @@ enum Command {
     Step(i64),
     /// A derived file of this asset appeared: reopen and re-mix.
     AssetChanged(AssetId),
+    /// A font file was added or replaced: read fonts again.
+    ForgetFonts,
     Quit,
 }
 
@@ -135,6 +137,7 @@ impl Player {
             monitor_grid: (0, 1, 1),
             monitor_rendered: None,
             titles: HashMap::new(),
+            fonts: sg_render::text::Fonts::default(),
             seek_started: None,
             last_grain: None,
             full_started: None,
@@ -184,6 +187,11 @@ impl Player {
 
     pub fn asset_changed(&self, asset: AssetId) {
         self.send(Command::AssetChanged(asset));
+    }
+
+    /// A font file of the project was added or replaced.
+    pub fn forget_fonts(&self) {
+        self.send(Command::ForgetFonts);
     }
 
     /// The playhead, in sequence frames.
@@ -279,6 +287,8 @@ struct State {
     monitor_rendered: Option<(i64, Vec<Option<FrameKey>>)>,
     /// Rasterised titles.
     titles: HashMap<TitleKey, (wgpu::TextureView, (u32, u32))>,
+    /// Font files of the project, as far as titles have asked for them.
+    fonts: sg_render::text::Fonts,
     seek_started: Option<Instant>,
     /// When the last scrub grain was asked for.
     last_grain: Option<Instant>,
@@ -376,6 +386,8 @@ impl State {
                 if !same_place {
                     self.stop_playing();
                     self.cache = TextureCache::new(TEXTURE_BUDGET);
+                    self.fonts.clear();
+                    self.titles.clear();
                     self.frame = 0;
                 }
                 let size = project.sequences.first().map_or((1920, 1080), |s| (s.width, s.height));
@@ -417,6 +429,11 @@ impl State {
             Command::AssetChanged(asset) => {
                 self.cache.forget_asset(asset);
                 self.audio.set_mix(self.mix());
+                self.rendered = None;
+            }
+            Command::ForgetFonts => {
+                self.fonts.clear();
+                self.titles.clear();
                 self.rendered = None;
             }
             Command::Quit => return false,
@@ -467,9 +484,16 @@ impl State {
                         text: title.text.clone(),
                         px: (title.size * frame_height).round().max(4.0) as u32,
                         color: title.color,
+                        font: title.font.clone(),
                     };
                     if !self.titles.contains_key(&key) {
-                        let image = sg_render::text::rasterize(&key.text, key.px as f32, key.color);
+                        let font = self.fonts.get(&root, &key.font);
+                        let image = sg_render::text::rasterize(
+                            &key.text,
+                            key.px as f32,
+                            key.color,
+                            font.as_ref().map(|bytes| bytes.as_slice()),
+                        );
                         let texture =
                             Compositor::upload(&self.device, &self.queue, image.width, image.height, &image.rgba);
                         // Titles are few and small; a simple cap keeps the map bounded.
@@ -729,6 +753,7 @@ struct TitleKey {
     text: String,
     px: u32,
     color: [u8; 4],
+    font: String,
 }
 
 /// What a layer of the rendered frame was drawn from.

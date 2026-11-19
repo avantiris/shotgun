@@ -119,6 +119,14 @@ enum UserEvent {
         root: PathBuf,
         result: Result<String, String>,
     },
+    FontImported {
+        root: PathBuf,
+        result: Result<String, String>,
+    },
+    Fonts {
+        root: PathBuf,
+        fonts: Vec<String>,
+    },
     Peaks {
         root: PathBuf,
         id: AssetId,
@@ -343,6 +351,20 @@ impl App {
                     self.reads.run(move || {
                         let result = sg_project::analysis::import_lut(&root, &path).map_err(|e| e.to_string());
                         let _ = proxy.send_event(UserEvent::LutImported { root, result });
+                    });
+                }
+                Command::ImportFont { root, path } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let result = sg_project::analysis::import_font(&root, &path).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::FontImported { root, result });
+                    });
+                }
+                Command::LoadFonts { root } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let fonts = sg_project::analysis::list_fonts(&root);
+                        let _ = proxy.send_event(UserEvent::Fonts { root, fonts });
                     });
                 }
                 Command::LoadLooks { root } => {
@@ -800,6 +822,19 @@ impl ApplicationHandler<UserEvent> for App {
                 let commands = self.shell.lut_imported(&root, result);
                 self.job_done();
                 self.run_commands(commands);
+            }
+            UserEvent::FontImported { root, result } => {
+                let commands = self.shell.font_imported(&root, result);
+                // A font of the same name may have been replaced.
+                if let Some(player) = &self.player {
+                    player.forget_fonts();
+                }
+                self.job_done();
+                self.run_commands(commands);
+            }
+            UserEvent::Fonts { root, fonts } => {
+                self.shell.fonts_loaded(&root, fonts);
+                self.job_done();
             }
             UserEvent::Looks { root, looks, luts } => {
                 self.shell.looks_loaded(&root, looks, luts);

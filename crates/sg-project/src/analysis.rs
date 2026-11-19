@@ -165,3 +165,40 @@ pub fn import_lut(root: &Path, source: &Path) -> Result<String, ToolError> {
     std::fs::rename(&temporary, dir.join(&name))?;
     Ok(name)
 }
+
+/// The fonts in `assets/font/`, by file name.
+pub fn list_fonts(root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root.join("assets/font")) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| is_font(Path::new(name)))
+        .collect();
+    names.sort();
+    names
+}
+
+/// True for the file names fonts are taken from: TrueType and OpenType.
+pub fn is_font(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
+}
+
+/// Copies a font file into `assets/font/` after a look at its first bytes.
+/// Returns the file name it has there.
+pub fn import_font(root: &Path, source: &Path) -> Result<String, ToolError> {
+    let bytes = std::fs::read(source)?;
+    // TrueType, OpenType with PostScript outlines, and Apple's TrueType.
+    let known = [&[0u8, 1, 0, 0][..], b"OTTO", b"true"].iter().any(|magic| bytes.starts_with(magic));
+    if !known {
+        return Err(ToolError::other("it is not a TrueType or OpenType font"));
+    }
+    let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let extension = source.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "ttf".into());
+    let name = format!("{}.{extension}", sg_core::text::slug(&stem));
+    let dir = root.join("assets/font");
+    std::fs::create_dir_all(&dir)?;
+    let temporary = dir.join(format!("{name}.tmp"));
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(&temporary, dir.join(&name))?;
+    Ok(name)
+}

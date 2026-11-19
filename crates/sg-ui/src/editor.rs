@@ -583,6 +583,11 @@ impl Editor {
                     title.text = value.replace("\\n", "\n");
                 }
             }
+            "font" => {
+                if let Some(title) = &mut props.title {
+                    title.font = value.to_owned();
+                }
+            }
             _ => {
                 *error = Some(format!("Unknown clip property {name}"));
                 return;

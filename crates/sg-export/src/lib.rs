@@ -370,7 +370,8 @@ fn render(
     let importer = YuvImporter::new(device.clone(), queue.clone());
     // The picture each asset shows at the moment.
     let mut pictures: HashMap<(AssetId, bool), (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
-    let mut titles: HashMap<(String, u32, [u8; 4]), (wgpu::TextureView, (u32, u32))> = HashMap::new();
+    let mut titles: HashMap<(String, u32, [u8; 4], String), (wgpu::TextureView, (u32, u32))> = HashMap::new();
+    let mut fonts = sg_render::text::Fonts::default();
     let started = Instant::now();
     let total = (range.1 - range.0).max(1);
     let (mut uploading, mut compositing) = (0.0f64, 0.0f64);
@@ -398,10 +399,20 @@ fn render(
                     match &layer.source {
                         Source::Title => {
                             let Some(title) = layer.props.as_ref().and_then(|p| p.title.as_ref()) else { continue };
-                            let key =
-                                (title.text.clone(), (title.size * size.1 as f32).round().max(4.0) as u32, title.color);
+                            let key = (
+                                title.text.clone(),
+                                (title.size * size.1 as f32).round().max(4.0) as u32,
+                                title.color,
+                                title.font.clone(),
+                            );
                             let entry = titles.entry(key.clone()).or_insert_with(|| {
-                                let image = sg_render::text::rasterize(&key.0, key.1 as f32, key.2);
+                                let font = fonts.get(&job.root, &key.3);
+                                let image = sg_render::text::rasterize(
+                                    &key.0,
+                                    key.1 as f32,
+                                    key.2,
+                                    font.as_ref().map(|bytes| bytes.as_slice()),
+                                );
                                 let texture = Compositor::upload(device, queue, image.width, image.height, &image.rgba);
                                 (texture.create_view(&Default::default()), (image.width, image.height))
                             });

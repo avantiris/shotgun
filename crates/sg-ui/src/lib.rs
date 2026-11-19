@@ -97,6 +97,15 @@ pub enum Command {
         root: PathBuf,
         path: PathBuf,
     },
+    /// Copy a font file into `assets/font/`; answered with [`Shell::font_imported`].
+    ImportFont {
+        root: PathBuf,
+        path: PathBuf,
+    },
+    /// List the fonts in the project; answered with [`Shell::fonts_loaded`].
+    LoadFonts {
+        root: PathBuf,
+    },
     /// Read the looks saved in the project; answered with [`Shell::looks_loaded`].
     LoadLooks {
         root: PathBuf,
@@ -309,6 +318,9 @@ impl Shell {
                     .and_then(|id| session.project().assets.get(&id).cloned())
                 {
                     commands.push(Command::Stabilise { root: root.clone(), asset });
+                }
+                if std::mem::take(&mut self.editor.clip_panel.fonts_request) {
+                    commands.push(Command::LoadFonts { root: root.clone() });
                 }
                 if let Some(id) = self.editor.timeline.beat_request.take() {
                     commands.push(Command::LoadBeats { root: root.clone(), id });
@@ -796,6 +808,14 @@ impl Shell {
             .map(|source| match source {
                 ImportSource::Path(path) if is_table(&ImportSource::Path(path.clone())) => {
                     Command::ImportLut { root: root.clone(), path }
+                }
+                // Nor are fonts.
+                ImportSource::Path(path)
+                    if path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf")) =>
+                {
+                    Command::ImportFont { root: root.clone(), path }
                 }
                 source => Command::Import { root: root.clone(), known: known.clone(), source },
             })
@@ -1337,6 +1357,28 @@ impl Shell {
 }
 
 impl Shell {
+    /// The fonts in the project's folder were listed.
+    pub fn fonts_loaded(&mut self, root: &std::path::Path, fonts: Vec<String>) {
+        if self.session.as_ref().is_some_and(|s| s.root == root) {
+            self.editor.clip_panel.fonts = Some(fonts);
+        }
+    }
+
+    /// A font was copied into the project (or could not be).
+    pub fn font_imported(&mut self, root: &std::path::Path, result: Result<String, String>) -> Vec<Command> {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return Vec::new() };
+        match result {
+            Ok(name) => {
+                session.notice = Some(format!("{name} is in the project: choose it under Font in a title's settings."));
+                vec![Command::LoadFonts { root: root.to_owned() }]
+            }
+            Err(e) => {
+                self.error = Some(format!("The font was not taken: {e}."));
+                Vec::new()
+            }
+        }
+    }
+
     /// A look-up table was copied into the project (or could not be).
     pub fn lut_imported(&mut self, root: &std::path::Path, result: Result<String, String>) -> Vec<Command> {
         let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return Vec::new() };

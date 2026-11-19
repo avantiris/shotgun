@@ -95,7 +95,7 @@ impl Mixer {
         }
         let mut ops: Vec<Op> = Vec::new();
         ui.label(RichText::new("MIXER").size(11.0).strong().color(theme::DIM));
-        egui::ScrollArea::horizontal().auto_shrink(false).show(ui, |ui| {
+        egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 for (index, track) in tracks.iter().enumerate() {
                     let mut mix = track.mix;

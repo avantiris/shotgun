@@ -678,3 +678,27 @@ fn the_way_between_two_keyframes_can_be_made_smooth() {
     playhead(&mut harness, 50);
     assert!(harness.query_by_label("Smooth").is_none());
 }
+
+#[test]
+fn a_title_gets_a_font_from_the_project_folder() {
+    let mut harness = editor();
+    harness.key_press(Key::T);
+    harness.run_steps(3);
+    // The folder is asked for once a title is shown, and what it holds can be chosen.
+    let root = harness.state().shell.session().unwrap().root.clone();
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::LoadFonts { .. })));
+    harness.state_mut().shell.fonts_loaded(&root, vec!["poster-bold.ttf".to_owned()]);
+    harness.run_steps(2);
+    // (A combo box is known by what it shows, not by a label.)
+    harness.get_by_value("Built-in").click();
+    harness.run_steps(3);
+    click(&mut harness, "poster-bold.ttf");
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = &project.sequences[0].tracks[0];
+    let title = track.props_of(track.clips.at(0).unwrap().id).and_then(|p| p.title.clone()).unwrap();
+    assert_eq!(title.font, "poster-bold.ttf");
+    // A dropped font file goes to the fonts folder, not to the media.
+    let commands =
+        harness.state_mut().shell.incoming(sg_ui::Incoming::Paths(vec!["/somewhere/Poster Bold.TTF".into()]));
+    assert!(matches!(commands.as_slice(), [Command::ImportFont { .. }]));
+}

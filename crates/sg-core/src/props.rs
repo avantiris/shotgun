@@ -195,11 +195,14 @@ pub struct Title {
     pub size: f32,
     /// Straight RGBA.
     pub color: [u8; 4],
+    /// File name of the font in `assets/font/`; empty for the built-in one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub font: String,
 }
 
 impl Default for Title {
     fn default() -> Title {
-        Title { text: "Title".to_owned(), size: 0.12, color: [255, 255, 255, 255] }
+        Title { text: "Title".to_owned(), size: 0.12, color: [255, 255, 255, 255], font: String::new() }
     }
 }
 

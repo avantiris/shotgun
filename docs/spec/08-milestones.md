@@ -84,7 +84,9 @@ Status:
   act on sound only), keyframes for volume [added 2026-11-19: `F` on a
   sound clip keys its volume] (the value at the clip start was
   used), time-stretch (a speed change resamples, so pitch follows speed),
-  title fonts other than the built-in one, a keyframe lane in the timeline
+  (title fonts were added 2026-11-19: a .ttf or .otf file dropped onto the
+  window goes to `assets/font/` and is chosen under Font in the title's
+  settings; preview and export read the same file), a keyframe lane in the timeline
   (since 2026-11-19 a clip shows a mark at each of its keyframes; they
   cannot be dragged there).
   A clip's length does not change when its speed does. Splitting a clip
