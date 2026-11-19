@@ -173,6 +173,12 @@ Status:
   verified: the match on real multi-camera footage (`docs/perf-log.md` has
   what was tried instead).
 
+- **M10 in progress.** Done: 10-bit masters with real 10-bit values where
+  the picture is graded (the compositor's floating-point result leaves the
+  GPU as P010). Sources are still decoded to 8 bits, so a 10-bit *source*
+  is not yet carried through at full depth. Open: speed ramps,
+  stabilisation, background render cache.
+
 ## Stage 3: DAW
 
 Recording, MIDI/piano roll, plugin hosting (CLAP/VST3/LV2), mixing/mastering.

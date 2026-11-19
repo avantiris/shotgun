@@ -178,6 +178,8 @@ impl Encoder {
         audio: Option<&Path>,
         hardware: bool,
         ten_bit: bool,
+        // The frames themselves are 10-bit (P010), not 8-bit to be widened.
+        deep: bool,
         out: &Path,
     ) -> Result<Encoder, ExportError> {
         let mut cmd = Command::new("ffmpeg");
@@ -185,12 +187,15 @@ impl Encoder {
         if hardware {
             cmd.args(["-vaapi_device", VAAPI_DEVICE]);
         }
-        // Frames arrive as NV12, already limited-range BT.709 (converted on the GPU).
+        // Frames arrive as NV12 or, for 10-bit masters, P010: already
+        // limited-range BT.709, converted on the GPU from the floating-point
+        // composite.
+        let input = if deep { "p010le" } else { "nv12" };
         cmd.args([
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "nv12",
+            input,
             "-s",
             &format!("{}x{}", size.0, size.1),
             "-r",
@@ -201,9 +206,11 @@ impl Encoder {
             cmd.arg("-i").arg(audio);
         }
         if hardware {
-            // Widening to 10 bits happens on the GPU: on the CPU it alone holds
-            // a 4K export to 44 frames per second (perf log, M6).
-            let filter = if ten_bit { "format=nv12,hwupload,scale_vaapi=format=p010" } else { "format=nv12,hwupload" };
+            let filter = match (ten_bit, deep) {
+                (true, true) => "format=p010,hwupload",
+                (true, false) => "format=nv12,hwupload,scale_vaapi=format=p010",
+                (false, _) => "format=nv12,hwupload",
+            };
             cmd.args(["-vf", filter, "-c:v", "hevc_vaapi"]);
             if ten_bit {
                 cmd.args(["-profile:v", "main10"]);
@@ -342,6 +349,7 @@ fn render(
     range: (i64, i64),
     size: (u32, u32),
     cover: bool,
+    deep: bool,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut Encoder,
@@ -433,9 +441,8 @@ fn render(
                     .collect();
                 let mark = Instant::now();
                 compositor.render(&draws);
-                let pixels = compositor
-                    .read_output_nv12()
-                    .map_err(|e| ExportError::Tool(format!("GPU readback failed: {e:?}")))?;
+                let read = if deep { compositor.read_output_p010() } else { compositor.read_output_nv12() };
+                let pixels = read.map_err(|e| ExportError::Tool(format!("GPU readback failed: {e:?}")))?;
                 compositing += mark.elapsed().as_secs_f64();
                 if pixels_tx.send(pixels).is_err() {
                     // The encoder stopped reading; the writing stage has the error.
@@ -625,13 +632,20 @@ pub fn export(
         let audio = has_sound.then_some(audio.as_path());
         // Masters are 10-bit; intermediates for the share copy and the GIF need not be.
         let ten_bit = matches!(job.preset, Preset::Master | Preset::Vertical);
+        // Real 10-bit frames from the compositor cost twice the bytes on the
+        // way to the encoder (4K: 34 instead of 57 frames per second). They
+        // are worth it where the picture has values between the 8-bit steps
+        // of its sources: where a scenario grades it. Otherwise the 8-bit
+        // frame is widened on the GPU and nothing is lost.
+        let graded = |s: &sg_core::Scenario| (s.look_on && !s.look.is_empty()) || (s.match_on && s.members.len() > 1);
+        let deep = ten_bit && job.project.scenarios.values().any(|s| graded(s));
         let rendered = work.join("render.mp4");
         let mut encoder_name = "hevc_vaapi";
         let mut render_fps = 0.0;
         let mut stage_ms = [0.0; 4];
         for hardware in [true, false] {
-            let mut encoder = Encoder::start(size, sequence.rate, audio, hardware, ten_bit, &rendered)?;
-            match render(job, &sequence, range, size, cover, device, queue, &mut encoder, cancel, progress) {
+            let mut encoder = Encoder::start(size, sequence.rate, audio, hardware, ten_bit, deep, &rendered)?;
+            match render(job, &sequence, range, size, cover, deep, device, queue, &mut encoder, cancel, progress) {
                 Ok(fps) => match encoder.finish() {
                     Ok(()) => {
                         (render_fps, stage_ms) = fps;

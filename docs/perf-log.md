@@ -319,3 +319,19 @@ the match is on real takes (that stays `OPEN` in 05).
 
 Not measured: the cost of the look per module on the GPU, 4K, more than one
 graded layer at once.
+
+## 2026-11-19, M10 part 1 (10-bit masters), commit after 7f181ce
+
+Command: `sg-bench export <project> master`. Load average 3.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| 4K60 master, ungraded (8-bit frames widened on the GPU as before), 10 s | 60.5 fps render (1.01x); 24.2 s in all (0.41x) | >= realtime where the encoder allows | render pass at the line; whole export **miss** (check decode) |
+| 4K60 master with real 10-bit frames from the compositor (forced, for comparison), 20 s | 33.5 fps render | same | **miss**: the encoder process takes 29.5 ms per frame to read and upload 24 MB |
+| 1080p60 master with real 10-bit frames (graded project), 12 s | 160 to 190 fps render | none | |
+
+Real 10-bit frames are therefore only used when a scenario grades the
+picture (a look, or a match between two or more takes); an ungraded 8-bit
+source has no values between its steps to keep. A 4K graded master is
+below realtime. The earlier M6 figure of 57 fps for the ungraded case was
+measured under load 9; this one under load 3.

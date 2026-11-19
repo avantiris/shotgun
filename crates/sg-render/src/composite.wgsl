@@ -204,3 +204,26 @@ fn chroma_fs(v: V) -> @location(0) vec4<f32> {
     let cr = (c.r - y) / 1.5748;
     return vec4<f32>((128.0 + 224.0 * cb) / 255.0, (128.0 + 224.0 * cr) / 255.0, 0.0, 1.0);
 }
+
+// The same in 10 bits, written as the bytes of P010: a sample is its
+// 10-bit code in the upper bits of 16, low byte first.
+fn p010(code: f32) -> vec2<f32> {
+    let value = u32(clamp(round(code), 0.0, 1023.0)) << 6u;
+    return vec2<f32>(f32(value & 255u), f32(value >> 8u)) / 255.0;
+}
+
+@fragment
+fn luma10_fs(v: V) -> @location(0) vec4<f32> {
+    let c = display_rgb(v.uv);
+    let y = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return vec4<f32>(p010(64.0 + 876.0 * y), 0.0, 1.0);
+}
+
+@fragment
+fn chroma10_fs(v: V) -> @location(0) vec4<f32> {
+    let c = display_rgb(v.uv);
+    let y = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let cb = (c.b - y) / 1.8556;
+    let cr = (c.r - y) / 1.5748;
+    return vec4<f32>(p010(512.0 + 896.0 * cb), p010(512.0 + 896.0 * cr));
+}

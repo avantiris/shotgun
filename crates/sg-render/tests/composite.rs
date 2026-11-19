@@ -322,3 +322,45 @@ fn the_shader_matches_and_grades_as_the_model_says() {
     let second = Grade { correction: Correction::NONE, look: first.look.iter().rev().copied().collect() };
     assert!(!near(shot(&first, 0.0, (32, 18)), shot(&second, 0.0, (32, 18))));
 }
+
+#[test]
+fn p010_delivery_has_ten_real_bits() {
+    let Some((device, queue)) = device() else { return };
+    let (w, h) = (1024u32, 4u32);
+    let mut comp = Compositor::new(device.clone(), queue.clone(), w, h);
+    let sample =
+        |bytes: &[u8], index: usize| (u16::from_le_bytes([bytes[index * 2], bytes[index * 2 + 1]]) >> 6) as i32;
+    // Flat colours land on the standard's code values.
+    for (rgba, (y, cb, cr)) in [
+        ([255u8, 255, 255, 255], (940, 512, 512)),
+        ([0, 0, 0, 255], (64, 512, 512)),
+        ([255, 0, 0, 255], (250, 409, 960)),
+    ] {
+        let tex = Compositor::upload(&device, &queue, 2, 2, &solid(2, 2, |_, _| rgba));
+        let view = tex.create_view(&Default::default());
+        comp.render(&[LayerDraw::fitted(&view, (w, h), 0)]);
+        let bytes = comp.read_output_p010().unwrap();
+        assert_eq!(bytes.len(), (w * h * 3) as usize);
+        let chroma = (w * h) as usize;
+        let got = (sample(&bytes, 100), sample(&bytes, chroma + 20), sample(&bytes, chroma + 21));
+        assert!((got.0 - y).abs() <= 1 && (got.1 - cb).abs() <= 1 && (got.2 - cr).abs() <= 1, "{rgba:?}: {got:?}");
+    }
+    // A ramp that is one 8-bit step from end to end, stretched over the
+    // whole width (as a soft vignette does): 8 bits can show two levels of
+    // it, 10 bits several in between.
+    let pixels = solid(2, 1, |x, _| if x == 0 { [100, 100, 100, 255] } else { [101, 101, 101, 255] });
+    let tex = Compositor::upload(&device, &queue, 2, 1, &pixels);
+    let view = tex.create_view(&Default::default());
+    comp.render(&[LayerDraw::fitted(&view, (w, h), 0)]);
+    let ten = comp.read_output_p010().unwrap();
+    let eight = comp.read_output_nv12().unwrap();
+    let levels = |values: Vec<i32>| {
+        let mut v = values;
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    };
+    let ten_levels = levels((0..w as usize).map(|x| sample(&ten, x)).collect());
+    let eight_levels = levels(eight[..w as usize].iter().map(|v| *v as i32).collect());
+    assert!(eight_levels <= 2 && ten_levels >= 4, "{eight_levels} levels in 8 bits, {ten_levels} in 10");
+}

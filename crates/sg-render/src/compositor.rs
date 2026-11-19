@@ -115,6 +115,8 @@ pub struct Compositor {
     cover: bool,
     luma_pipeline: wgpu::RenderPipeline,
     chroma_pipeline: wgpu::RenderPipeline,
+    luma10_pipeline: wgpu::RenderPipeline,
+    chroma10_pipeline: wgpu::RenderPipeline,
     /// Targets of the NV12 conversion, made on first use.
     delivery: Option<Delivery>,
 }
@@ -236,6 +238,22 @@ impl Compositor {
             None,
             wgpu::PrimitiveTopology::TriangleList,
         );
+        let luma10_pipeline = pipeline(
+            "delivery luma 10",
+            "output_vs",
+            "luma10_fs",
+            wgpu::TextureFormat::Rg8Unorm,
+            None,
+            wgpu::PrimitiveTopology::TriangleList,
+        );
+        let chroma10_pipeline = pipeline(
+            "delivery chroma 10",
+            "output_vs",
+            "chroma10_fs",
+            wgpu::TextureFormat::Rgba8Unorm,
+            None,
+            wgpu::PrimitiveTopology::TriangleList,
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("composite"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -266,6 +284,8 @@ impl Compositor {
             cover: false,
             luma_pipeline,
             chroma_pipeline,
+            luma10_pipeline,
+            chroma10_pipeline,
             delivery: None,
         }
     }
@@ -468,14 +488,30 @@ impl Compositor {
         Ok(pixels)
     }
 
-    /// Converts the last rendered frame to NV12 on the GPU (limited-range
-    /// BT.709, as encoders expect) and reads it back: the luma plane followed
-    /// by the interleaved chroma plane, tightly packed. Width and height must
-    /// be even. Blocks; for export.
+    /// Converts the last rendered frame to NV12 on the GPU (8-bit,
+    /// limited-range BT.709, as encoders expect) and reads it back: the luma
+    /// plane followed by the interleaved chroma plane, tightly packed. Width
+    /// and height must be even. Blocks; for export.
     pub fn read_output_nv12(&mut self) -> Result<Vec<u8>, wgpu::PollError> {
+        self.read_delivery(false)
+    }
+
+    /// As [`read_output_nv12`](Self::read_output_nv12) in 10 bits: P010,
+    /// two bytes per sample (little-endian, the value in the upper ten
+    /// bits). The composite is floating point, so a graded 8-bit source
+    /// gets real in-between values here instead of banding.
+    pub fn read_output_p010(&mut self) -> Result<Vec<u8>, wgpu::PollError> {
+        self.read_delivery(true)
+    }
+
+    fn read_delivery(&mut self, ten_bit: bool) -> Result<Vec<u8>, wgpu::PollError> {
         let (width, height) = self.size;
         let (cw, ch) = (width / 2, height / 2);
-        if self.delivery.as_ref().is_none_or(|d| d.size != self.size) {
+        // Bytes per luma sample and per chroma pair. The 10-bit planes are
+        // rendered as the bytes of P010 themselves: two 8-bit channels per
+        // sample, low byte first.
+        let (luma_bytes, chroma_bytes) = if ten_bit { (2, 4) } else { (1, 2) };
+        if self.delivery.as_ref().is_none_or(|d| d.size != self.size || d.ten_bit != ten_bit) {
             let plane = |label, format, w, h| {
                 self.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
@@ -488,17 +524,23 @@ impl Compositor {
                     view_formats: &[],
                 })
             };
-            let luma = plane("delivery luma", wgpu::TextureFormat::R8Unorm, width, height);
-            let chroma = plane("delivery chroma", wgpu::TextureFormat::Rg8Unorm, cw, ch);
+            let (luma_format, chroma_format) = if ten_bit {
+                (wgpu::TextureFormat::Rg8Unorm, wgpu::TextureFormat::Rgba8Unorm)
+            } else {
+                (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
+            };
+            let luma = plane("delivery luma", luma_format, width, height);
+            let chroma = plane("delivery chroma", chroma_format, cw, ch);
             let rows = |bytes: u32| bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("delivery readback"),
-                size: rows(width) as u64 * height as u64 + rows(cw * 2) as u64 * ch as u64,
+                size: rows(width * luma_bytes) as u64 * height as u64 + rows(cw * chroma_bytes) as u64 * ch as u64,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
             self.delivery = Some(Delivery {
                 size: self.size,
+                ten_bit,
                 luma_view: luma.create_view(&Default::default()),
                 chroma_view: chroma.create_view(&Default::default()),
                 luma,
@@ -509,14 +551,17 @@ impl Compositor {
         let group = self.bind(&self.linear_view);
         let Some(delivery) = &self.delivery else { return Ok(Vec::new()) };
         let (luma_row, chroma_row) = (
-            width.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
-            (cw * 2).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+            (width * luma_bytes).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+            (cw * chroma_bytes).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
         );
         let chroma_offset = luma_row as u64 * height as u64;
+        let pipelines = if ten_bit {
+            (&self.luma10_pipeline, &self.chroma10_pipeline)
+        } else {
+            (&self.luma_pipeline, &self.chroma_pipeline)
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        for (view, pipeline) in
-            [(&delivery.luma_view, &self.luma_pipeline), (&delivery.chroma_view, &self.chroma_pipeline)]
-        {
+        for (view, pipeline) in [(&delivery.luma_view, pipelines.0), (&delivery.chroma_view, pipelines.1)] {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("delivery"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -550,14 +595,14 @@ impl Compositor {
         self.queue.submit([encoder.finish()]);
         delivery.buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None })?;
-        let mut out = Vec::with_capacity((width * height * 3 / 2) as usize);
+        let mut out = Vec::with_capacity((width * height * luma_bytes * 3 / 2) as usize);
         if let Ok(data) = delivery.buffer.slice(..).get_mapped_range() {
             let (luma, chroma) = data.split_at(chroma_offset as usize);
             for line in luma.chunks_exact(luma_row as usize) {
-                out.extend_from_slice(&line[..width as usize]);
+                out.extend_from_slice(&line[..(width * luma_bytes) as usize]);
             }
             for line in chroma.chunks_exact(chroma_row as usize) {
-                out.extend_from_slice(&line[..(cw * 2) as usize]);
+                out.extend_from_slice(&line[..(cw * chroma_bytes) as usize]);
             }
         }
         delivery.buffer.unmap();
@@ -586,6 +631,7 @@ impl Compositor {
 
 struct Delivery {
     size: (u32, u32),
+    ten_bit: bool,
     luma: wgpu::Texture,
     luma_view: wgpu::TextureView,
     chroma: wgpu::Texture,
