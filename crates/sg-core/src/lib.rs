@@ -20,5 +20,5 @@ pub use history::{Document, History, HistoryError, Record};
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};
 pub use model::{Marker, Project, Sequence, SequenceHeader, Song, Track, TrackHeader, TrackKind, TrackSettings};
 pub use ops::{Op, OpError, apply};
-pub use props::{ClipProps, Key, Param, Title};
+pub use props::{ClipProps, Key, Param, Shift, Title, Transition, TransitionKind};
 pub use time::Rate;

@@ -1,8 +1,20 @@
 //! GPU compositing on wgpu.
 
+use sg_core::Shift;
 use wgpu::util::DeviceExt;
 
 /// One picture to draw: fitted into the frame, turned and faded.
+/// How a picture moves while the shutter of one frame is open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Motion {
+    /// Displacement when the shutter opens and when it closes. Equal: no blur.
+    pub from: Shift,
+    pub to: Shift,
+    /// The picture repeats mirrored beyond its edges, so that moving it
+    /// uncovers no black (whip, zoom). Otherwise it moves as a whole (slide).
+    pub mirror: bool,
+}
+
 /// One picture to draw.
 #[derive(Clone, Copy)]
 pub struct LayerDraw<'a> {
@@ -24,6 +36,8 @@ pub struct LayerDraw<'a> {
     pub crop: [f32; 4],
     /// Draw at one texture pixel per frame pixel instead of fitting (titles).
     pub natural_size: bool,
+    /// Movement during this frame (a transition), if any.
+    pub motion: Option<Motion>,
 }
 
 impl<'a> LayerDraw<'a> {
@@ -40,6 +54,7 @@ impl<'a> LayerDraw<'a> {
             turn_degrees: 0.0,
             crop: [0.0; 4],
             natural_size: false,
+            motion: None,
         }
     }
 }
@@ -54,10 +69,20 @@ struct LayerUniform {
     /// 2x2 matrix from quad corners to texture coordinate offsets.
     uv: [f32; 4],
     uv_centre: [f32; 4],
+    /// Content shift in quad units (xy) and size factor (z) at shutter open and close.
+    motion0: [f32; 4],
+    motion1: [f32; 4],
+    /// Quad repeat count (x) and samples along the movement (y).
+    extra: [f32; 4],
 }
 
 /// Layers per frame the uniform buffer has room for.
 const MAX_LAYERS: usize = 64;
+/// Samples along the movement of a blurred layer: at 4 frames of whip
+/// across 1.5 frame widths the fastest frame travels about 0.9 widths,
+/// 40 pixels between samples at 1080p; the shader shifts the samples from
+/// pixel to pixel so that the steps do not line up into ghost edges.
+const MOTION_TAPS: f32 = 48.0;
 /// Uniform offsets must be multiples of this on every backend.
 const UNIFORM_STRIDE: u64 = 256;
 
@@ -307,13 +332,32 @@ impl Compositor {
                 // Vertical export of landscape footage: fill the frame, cut the sides.
                 (false, true) => (fw / dw).max(fh / dh),
             };
-            let s = fit * layer.scale.max(0.0);
+            // A picture that moves as a whole simply sits elsewhere this frame.
+            let whole = layer.motion.filter(|m| !m.mirror).map_or(Shift::REST, |m| m.from);
+            let s = fit * layer.scale.max(0.0) * whole.zoom;
             let (hx, hy) = (dw * (1.0 - l - r) * s / 2.0, dh * (1.0 - t - b) * s / 2.0);
             // Clockwise on screen is a negative angle with y up.
             let (sin, cos) = (-layer.turn_degrees).to_radians().sin_cos();
             // Cropping moves the middle of what is left; that offset turns with the picture.
             let (sx, sy) = ((l - r) / 2.0 * dw * s, -(t - b) / 2.0 * dh * s);
-            let (cx, cy) = (layer.x * fw + cos * sx - sin * sy, -layer.y * fh + sin * sx + cos * sy);
+            let (cx, cy) =
+                ((layer.x + whole.x) * fw + cos * sx - sin * sy, -(layer.y + whole.y) * fh + sin * sx + cos * sy);
+            // Movement inside the quad: where the content lay, in quad units
+            // (y up), and how far the quad must reach to cover the frame.
+            let (motion0, motion1, extra) = match layer.motion.filter(|m| m.mirror) {
+                Some(m) => {
+                    let state = |shift: Shift| {
+                        [-shift.x * fw / hx.max(1.0), shift.y * fh / hy.max(1.0), shift.zoom.max(0.01), 0.0]
+                    };
+                    let reach = ((fw / 2.0 + cx.abs()) / hx.max(1.0))
+                        .max((fh / 2.0 + cy.abs()) / hy.max(1.0))
+                        .ceil()
+                        .clamp(1.0, 64.0);
+                    let taps = if m.from == m.to { 1.0 } else { MOTION_TAPS };
+                    (state(m.from), state(m.to), [reach, taps, 0.0, 0.0])
+                }
+                None => ([0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0]),
+            };
             let (hex, hey) = ((1.0 - l - r) / 2.0, (1.0 - t - b) / 2.0);
             let (du, dv) = ((l - r) / 2.0, (t - b) / 2.0);
             let uniform = LayerUniform {
@@ -321,6 +365,9 @@ impl Compositor {
                 offset: [cx / (fw / 2.0), cy / (fh / 2.0), layer.opacity.clamp(0.0, 1.0), 0.0],
                 uv: [turn[0] * hex, turn[1] * hey, turn[2] * hex, turn[3] * hey],
                 uv_centre: [0.5 + turn[0] * du + turn[1] * dv, 0.5 + turn[2] * du + turn[3] * dv, 0.0, 0.0],
+                motion0,
+                motion1,
+                extra,
             };
             self.queue.write_buffer(&self.uniforms, i as u64 * UNIFORM_STRIDE, bytemuck::bytes_of(&uniform));
         }

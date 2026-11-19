@@ -522,26 +522,9 @@ impl State {
                     }
                 })
                 .collect();
-            let default = ClipProps::default();
             let draws: Vec<LayerDraw<'_>> = views
                 .iter()
-                .map(|(view, size, rotation, index, title)| {
-                    let layer = &layers[*index];
-                    let props = layer.props.as_deref().unwrap_or(&default);
-                    let at = layer.at;
-                    LayerDraw {
-                        view,
-                        size: *size,
-                        rotation: *rotation,
-                        opacity: props.opacity.at(at),
-                        x: props.x.at(at),
-                        y: props.y.at(at),
-                        scale: props.scale.at(at),
-                        turn_degrees: props.rotation.at(at),
-                        crop: props.crop,
-                        natural_size: *title,
-                    }
-                })
+                .map(|(view, size, rotation, index, title)| layers[*index].draw(view, *size, *rotation, *title))
                 .collect();
             self.compositor.render(&draws);
             self.rendered = Some((self.frame, keys.clone()));

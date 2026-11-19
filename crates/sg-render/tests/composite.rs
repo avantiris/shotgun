@@ -191,3 +191,51 @@ fn nv12_readback_is_complete_for_every_frame() {
         assert_eq!(nv12.len(), 1920 * 1080 * 3 / 2, "frame {frame}");
     }
 }
+
+/// Left half red, right half blue, 64x36.
+fn two_halves(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let pixels = solid(64, 36, |x, _| if x < 32 { [255, 0, 0, 255] } else { [0, 0, 255, 255] });
+    Compositor::upload(device, queue, 64, 36, &pixels).create_view(&Default::default())
+}
+
+#[test]
+fn a_whipped_picture_moves_mirrored_and_blurs_along_its_way() {
+    use sg_core::Shift;
+    use sg_render::Motion;
+    let Some((device, queue)) = device() else { return };
+    let view = two_halves(&device, &queue);
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 64, 36);
+    let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+    let moved = |x: f32| Shift { x, ..Shift::REST };
+    let shot = |comp: &mut Compositor, motion: Motion| {
+        comp.render(&[LayerDraw { motion: Some(motion), ..LayerDraw::fitted(&view, (64, 36), 0) }]);
+        comp.read_output().unwrap()
+    };
+    // At rest inside a transition: the picture as it is.
+    let out = shot(&mut comp, Motion { from: Shift::REST, to: Shift::REST, mirror: true });
+    assert!(near(pixel(&out, 64, 8, 18), red) && near(pixel(&out, 64, 56, 18), blue));
+    // A quarter of the width to the left, no blur: the border is at 16, and
+    // what comes in at the right is the picture's mirror image, not black.
+    let out = shot(&mut comp, Motion { from: moved(-0.25), to: moved(-0.25), mirror: true });
+    assert!(near(pixel(&out, 64, 8, 18), red), "{:?}", pixel(&out, 64, 8, 18));
+    assert!(near(pixel(&out, 64, 24, 18), blue), "{:?}", pixel(&out, 64, 24, 18));
+    assert!(near(pixel(&out, 64, 60, 18), blue), "{:?}", pixel(&out, 64, 60, 18));
+    // One and a quarter widths: past the mirror image, into the next copy
+    // (the border of the mirrored picture is where red returns).
+    let out = shot(&mut comp, Motion { from: moved(-1.25), to: moved(-1.25), mirror: true });
+    assert!(near(pixel(&out, 64, 8, 18), blue) && near(pixel(&out, 64, 40, 18), red), "{:?}", pixel(&out, 64, 40, 18));
+    // Moving half a width while the shutter is open: a pixel that sees red
+    // first and blue later is a mix of both; one that only ever sees blue stays blue.
+    let out = shot(&mut comp, Motion { from: Shift::REST, to: moved(-0.5), mirror: true });
+    let mixed = pixel(&out, 64, 10, 18);
+    assert!(mixed[0] > 100 && mixed[2] > 60 && mixed[0] < 250, "{mixed:?}");
+    assert!(near(pixel(&out, 64, 44, 18), blue), "{:?}", pixel(&out, 64, 44, 18));
+    // A slide moves the picture as a whole: what it leaves behind is empty.
+    let out = shot(&mut comp, Motion { from: moved(-0.5), to: moved(-0.5), mirror: false });
+    assert!(near(pixel(&out, 64, 8, 18), blue) && near(pixel(&out, 64, 48, 18), [0, 0, 0, 255]));
+    // Zooming in on the centre: the border stays in the middle, the picture
+    // still fills the frame.
+    let zoomed = Shift { zoom: 2.0, ..Shift::REST };
+    let out = shot(&mut comp, Motion { from: zoomed, to: zoomed, mirror: true });
+    assert!(near(pixel(&out, 64, 2, 2), red) && near(pixel(&out, 64, 61, 33), blue));
+}

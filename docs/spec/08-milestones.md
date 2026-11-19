@@ -112,7 +112,7 @@ stage 2 starts.
 | M | Scope |
 |---|-------|
 | M7 (done) | Auto-sync takes to the song, beat detection + grid + snap, live multicam switching |
-| M8 | Whip-pan transition engine (+ slide/zoom variants) |
+| M8 (done) | Whip-pan transition engine (+ slide/zoom variants) |
 | M9 | Scenarios, match stage, look chain modules, presets, A/B |
 | M10 | Speed ramps, stabilisation, background render cache, 10-bit masters |
 
@@ -142,6 +142,18 @@ Status:
   number comes from synthetic recordings (`docs/spikes/s6-sync-beats.md`).
   Not verifiable without a person: cutting live by ear and eye, and whether
   the cuts land where they were meant.
+
+- **M8 done 2026-11-19.** `B` puts a whip-pan on the cut nearest to the
+  playhead (again: removes it); its direction alternates with the one
+  before. The clip inspector sets kind (whip, slide, zoom), length, direction,
+  blur, travel and speed-up. Built as specified in 05 with these
+  differences: a whip or zoom shows one picture per frame (the outgoing one
+  up to the cut, the incoming one after it), so it needs no spare frames
+  beyond the cut; only the slide shows both and runs them past the cut
+  (holding the last or first frame if the source ends). Not built: scale and
+  rotation overshoot, chromatic split, moving the transition off the centre
+  of the cut, transitions on audio (a cut in the sound stays a cut).
+  Not verifiable without a person: how it feels in motion.
 
 ## Stage 3: DAW
 

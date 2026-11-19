@@ -90,6 +90,16 @@ Placed on a cut between two clips that have handles (spare frames past the cut).
 - Optional: slight scale and rotation overshoot, chromatic split amount.
 - Variants (slide, zoom punch) are the same engine with other parameters.
 
+As built (M8): the transition is a property of the incoming clip
+(`ClipProps::transition`), so it moves, copies and undoes with the clip. A
+whip or zoom never shows two pictures at once: the outgoing picture is on
+screen up to the cut and the incoming one from it, each displaced and blurred
+by `Transition::shift`, which is why no handles are needed. The blur is 48
+samples per pixel between the picture's place when the frame's shutter opens
+and when it closes (dithered from pixel to pixel), averaged in linear light,
+with the picture mirrored beyond its edges. The slide is the one kind that
+draws both clips. Overshoot and chromatic split are not built.
+
 ## Other music-video quality defaults
 
 - Sequence frame rate follows the footage; mixed rates are conformed without

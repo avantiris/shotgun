@@ -57,6 +57,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             Step::Dev(DevStep::Drop(frame.parse()?, row, only))
         }
         "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
+        "transition" => Step::Dev(DevStep::Act(Action::Transition)),
         "song" => Step::Dev(DevStep::Song),
         "sync" => Step::Dev(DevStep::Sync(false)),
         "syncall" => Step::Dev(DevStep::Sync(true)),

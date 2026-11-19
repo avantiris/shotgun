@@ -270,3 +270,21 @@ Notes:
 Not measured: sync and beat analysis inside the app on a long real song
 (they run on their own thread; the UI does not wait), the monitor with more
 than three angles, switching by mouse or keyboard in real time.
+
+## 2026-11-19, M8, commit after ce0388b
+
+Command: scripted runs of the hidden app on the synthetic multicam project
+(`/disk/shotgun-dev/tmp/lib-m7/band`), `sg-bench export`. Load average 2 to 3.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Playback across a whip-pan (9 s around it, 1080p60 sequence, proxies, 3-angle monitor on) | 541 frames, 0 late | 0 dropped | pass |
+| Export of 20 frames containing the whip-pan | 71 fps render | none | |
+
+The blur takes 48 samples per pixel for the four frames of a transition; no
+GPU time was measured separately. Preview and export frames of the
+transition were compared side by side by eye (same picture); they are drawn
+by the same function (`PlanLayer::draw`) and shader.
+
+Not measured: a whip between 4K clips at full quality, many transitions in
+a row, the zoom and slide kinds during playback.

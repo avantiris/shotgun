@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2};
 use sg_core::time::SAMPLE_RATE;
-use sg_core::{Asset, AssetId, Clip, ClipId, Marker, Op, Project, Rate, Sequence, Track, TrackId, TrackKind, Visible};
+use sg_core::{
+    Asset, AssetId, Clip, ClipId, ClipProps, Marker, Op, Project, Rate, Sequence, Track, TrackId, TrackKind, Visible,
+};
 use sg_media::analysis::Beats;
 use sg_media::peaks::Peaks;
 
@@ -1075,6 +1077,15 @@ impl Timeline {
                     if selected {
                         instances.push(Instance::new(quad(x0, y1 - 2.0, x1, y1), theme::ACCENT, 0.0, 0.0));
                     }
+                    // A transition into this clip: a mark across the cut.
+                    if track.props_of(clip.id).is_some_and(|p| p.transition.is_some()) {
+                        instances.push(Instance::new(
+                            quad(x0 - 4.0, y0 - 1.0, x0 + 4.0, y1 + 1.0),
+                            theme::ACCENT,
+                            px(3.0),
+                            0.0,
+                        ));
+                    }
                     if x1 - x0 >= LABEL_MIN && row_h >= 16.0 && labels.len() < 400 {
                         // A title shows its text, anything else its asset's label.
                         let title = track.props_of(clip.id).and_then(|p| p.title.as_ref()).map(|t| t.text.as_str());
@@ -1526,6 +1537,76 @@ impl Timeline {
     /// The peaks of this asset were (re)built: load them at the next sight.
     pub fn peaks_changed(&mut self, id: AssetId) {
         self.waves.remove(&id);
+    }
+}
+
+impl Timeline {
+    /// Puts a whip-pan on the cut nearest to the playhead (on the selected
+    /// clip's track, else on the lowest shown video track that has a cut
+    /// nearby), or removes the transition that is there. The direction
+    /// alternates with the transition before it. Returns the frame of the cut.
+    pub fn toggle_transition(
+        &mut self,
+        session: &mut Session,
+        playhead: i64,
+        error: &mut Option<String>,
+    ) -> Option<i64> {
+        let project = session.project().clone();
+        let sequence = project.sequences.first()?;
+        let selected =
+            self.selection.iter().find_map(|s| sequence.track(s.track).filter(|t| t.kind == TrackKind::Video));
+        let shown = sequence.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video && !t.mix.hidden);
+        // The incoming clip of the nearest cut on a track: a clip that
+        // starts where another one ends.
+        let nearest = |track: &Arc<Track>| -> Option<Clip> {
+            let here = track.clips.at(playhead).or_else(|| track.clips.last_before(playhead))?;
+            let after = track.clips.at(here.end());
+            [Some(here), after]
+                .into_iter()
+                .flatten()
+                .filter(|c| c.start > 0 && track.clips.at(c.start - 1).is_some_and(|p| p.end() == c.start))
+                .min_by_key(|c| (c.start - playhead).abs())
+        };
+        let (track, clip) = selected
+            .into_iter()
+            .chain(shown)
+            .filter_map(|t| nearest(t).map(|c| (t.clone(), c)))
+            .min_by_key(|(_, c)| (c.start - playhead).abs())
+            .or_else(|| {
+                *error = Some("There is no cut here: a transition sits between two clips that touch.".to_owned());
+                None
+            })?;
+        let mut props = track.props_of(clip.id).map(|p| ClipProps::clone(p)).unwrap_or_default();
+        props.transition = match props.transition {
+            Some(_) => None,
+            None => {
+                // Opposite to the transition before this one on the track.
+                let mut earlier = track.clips.last_before(clip.start);
+                let mut previous = None;
+                for _ in 0..256 {
+                    let Some(c) = earlier else { break };
+                    previous = track.props_of(c.id).and_then(|p| p.transition);
+                    if previous.is_some() {
+                        break;
+                    }
+                    earlier = track.clips.last_before(c.start);
+                }
+                let angle = previous.map_or(0.0, |p| (p.angle + 180.0).rem_euclid(360.0));
+                Some(sg_core::Transition { angle, ..Default::default() })
+            }
+        };
+        let props = (props != ClipProps::default()).then(|| Box::new(props));
+        let op = Op::SetClipProps { seq: sequence.id, track: track.id, clip: clip.id, props };
+        match session.apply(op, None) {
+            Ok(()) => {
+                self.selection = vec![Sel { track: track.id, start: clip.start, id: clip.id }];
+                Some(clip.start)
+            }
+            Err(e) => {
+                *error = Some(e.to_string());
+                None
+            }
+        }
     }
 }
 

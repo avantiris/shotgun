@@ -7,6 +7,14 @@ struct Layer {
     // 2x2 matrix (rows) from quad corners to texture coordinate offsets.
     uv: vec4<f32>,
     uv_centre: vec4<f32>,
+    // Movement of the content inside the quad while the shutter is open
+    // (transitions): xy shift in quad units and z size factor, at the
+    // moment it opens and at the moment it closes.
+    motion0: vec4<f32>,
+    motion1: vec4<f32>,
+    // x: how many times its size the quad is drawn (the content repeats
+    // mirrored), y: samples taken along the movement.
+    extra: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> layer: Layer;
 @group(0) @binding(1) var picture: texture_2d<f32>;
@@ -17,16 +25,20 @@ struct V {
     @location(0) uv: vec2<f32>,
 };
 
+struct LayerV {
+    @builtin(position) pos: vec4<f32>,
+    // Position in quad units: -1..1 across the picture, beyond it for its mirror images.
+    @location(0) q: vec2<f32>,
+};
+
 @vertex
-fn layer_vs(@builtin(vertex_index) i: u32) -> V {
-    // Corners of a strip: (-1,-1) (1,-1) (-1,1) (1,1).
-    let corner = vec2<f32>(f32(i & 1u) * 2.0 - 1.0, f32((i >> 1u) & 1u) * 2.0 - 1.0);
-    var out: V;
+fn layer_vs(@builtin(vertex_index) i: u32) -> LayerV {
+    // Corners of a strip: (-1,-1) (1,-1) (-1,1) (1,1), times the repeat count.
+    let corner = vec2<f32>(f32(i & 1u) * 2.0 - 1.0, f32((i >> 1u) & 1u) * 2.0 - 1.0) * max(layer.extra.x, 1.0);
+    var out: LayerV;
     let p = vec2<f32>(dot(layer.matrix.xy, corner), dot(layer.matrix.zw, corner));
     out.pos = vec4<f32>(layer.offset.xy + p, 0.0, 1.0);
-    // Texture space has y down; quad space has y up.
-    let q = vec2<f32>(corner.x, -corner.y);
-    out.uv = layer.uv_centre.xy + vec2<f32>(dot(layer.uv.xy, q), dot(layer.uv.zw, q));
+    out.q = corner;
     return out;
 }
 
@@ -46,11 +58,27 @@ fn to_display(c: vec3<f32>) -> vec3<f32> {
 }
 
 @fragment
-fn layer_fs(v: V) -> @location(0) vec4<f32> {
-    let texel = textureSample(picture, picture_sampler, v.uv);
-    let alpha = texel.a * layer.offset.z;
-    // Premultiplied, to match the blend state.
-    return vec4<f32>(to_linear(texel.rgb) * alpha, alpha);
+fn layer_fs(v: LayerV) -> @location(0) vec4<f32> {
+    let taps = max(u32(layer.extra.y), 1u);
+    var sum = vec4<f32>(0.0);
+    // Each pixel takes its samples at slightly different instants: the steps
+    // between samples then show as fine grain instead of as repeated edges.
+    let jitter = select(0.5, fract(52.9829189 * fract(dot(v.pos.xy, vec2<f32>(0.06711056, 0.00583715)))), taps > 1u);
+    for (var i = 0u; i < taps; i++) {
+        // The content as it lay at this instant of the open shutter.
+        let m = mix(layer.motion0, layer.motion1, (f32(i) + jitter) / f32(taps));
+        var q = (v.q + m.xy) / max(m.z, 0.01);
+        // Beyond its edge the picture continues mirrored: no black comes into view.
+        let w = q - 1.0;
+        q = abs(w - 4.0 * floor(w / 4.0) - 2.0) - 1.0;
+        // Texture space has y down; quad space has y up.
+        let t = vec2<f32>(q.x, -q.y);
+        let uv = layer.uv_centre.xy + vec2<f32>(dot(layer.uv.xy, t), dot(layer.uv.zw, t));
+        let texel = textureSampleLevel(picture, picture_sampler, uv, 0.0);
+        // Averaged in linear light and premultiplied, as light adds up on a sensor.
+        sum += vec4<f32>(to_linear(texel.rgb) * texel.a, texel.a);
+    }
+    return sum / f32(taps) * layer.offset.z;
 }
 
 // Output pass: the linear composite, encoded for the display.

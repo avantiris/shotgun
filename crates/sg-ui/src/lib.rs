@@ -478,6 +478,12 @@ impl Shell {
                 }
             }
             Action::Mixer => self.editor.mixer.open = !self.editor.mixer.open,
+            Action::Transition => {
+                if let Some(session) = &mut self.session {
+                    self.editor.mixer.open = false;
+                    self.editor.timeline.toggle_transition(session, self.playhead, &mut self.error);
+                }
+            }
             Action::Angle(n) => self.switch_angle(n as usize),
             Action::History => {
                 if let Some(session) = &self.session {

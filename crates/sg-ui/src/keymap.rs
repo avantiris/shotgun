@@ -42,6 +42,8 @@ pub enum Action {
     Checkpoint,
     /// Cut the programme to camera angle 1 to 9 at the playhead.
     Angle(u8),
+    /// Put a transition on the nearest cut, or remove the one there.
+    Transition,
     /// Show or hide the mixer.
     Mixer,
     /// Show saved states and checkpoints.
@@ -123,6 +125,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, true, Key::F, Action::KeyframeRemove),
     bind(Scope::Editor, false, false, Key::T, Action::AddTitle),
     bind(Scope::Editor, false, false, Key::M, Action::Mixer),
+    bind(Scope::Editor, false, false, Key::B, Action::Transition),
     bind(Scope::Editor, false, false, Key::Num1, Action::Angle(1)),
     bind(Scope::Editor, false, false, Key::Num2, Action::Angle(2)),
     bind(Scope::Editor, false, false, Key::Num3, Action::Angle(3)),

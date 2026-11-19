@@ -117,6 +117,9 @@ pub struct ClipProps {
     pub fade_out: i64,
     /// Playback speed as a fraction: 2/1 is double speed.
     pub speed: (u32, u32),
+    /// How the picture arrives from the clip before it on the track.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
     /// Set on title clips: the text to draw instead of an asset.
     pub title: Option<Title>,
 }
@@ -135,6 +138,7 @@ impl Default for ClipProps {
             fade_out: 0,
             speed: (1, 1),
             title: None,
+            transition: None,
         }
     }
 }
@@ -261,5 +265,174 @@ mod tests {
             keys.iter().map(|k| Key { value: k.value + if k.frame % 2 == 0 { 0.05 } else { -0.05 }, ..*k }).collect();
         assert!(simplify(&noisy, 0.2).len() <= 5);
         assert_eq!(simplify(&keys[..2], 0.1).len(), 2);
+    }
+}
+
+/// What a transition looks like. All three are one engine with other
+/// numbers (05-color.md, "Whip-pan transition").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionKind {
+    /// The outgoing picture races out of the frame, blurred by its speed;
+    /// at the height of the blur the incoming one takes over and comes to
+    /// rest. Reads as a cut; feels like the camera whipped across.
+    Whip,
+    /// The incoming picture pushes the outgoing one out.
+    Slide,
+    /// As the whip, but into and out of the picture instead of across it.
+    Zoom,
+}
+
+/// A transition on the cut at the start of a clip, centred on the cut.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Transition {
+    pub kind: TransitionKind,
+    /// Length in sequence frames: 2 to 16, even.
+    pub frames: u8,
+    /// Direction the picture moves in, degrees: 0 to the left (the camera
+    /// whips right), 90 up, 180 to the right, 270 down.
+    pub angle: f32,
+    /// Motion blur: the share of each frame's time the shutter is open.
+    /// 0 is none, 1 a full frame, up to 2 for more streak than a camera gives.
+    pub blur: f32,
+    /// How far the picture travels on each side of the cut, in frame
+    /// widths (whip), or how much it grows, as a factor minus one (zoom).
+    pub amount: f32,
+    /// Shape of the speed-up: 1 is even, larger starts slower and ends faster.
+    pub ease: f32,
+}
+
+impl Default for Transition {
+    fn default() -> Transition {
+        Transition { kind: TransitionKind::Whip, frames: 4, angle: 0.0, blur: 1.0, amount: 1.5, ease: 2.5 }
+    }
+}
+
+/// The picture's displacement at one instant of a transition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shift {
+    /// In frame widths (right is positive) and heights (down is positive).
+    pub x: f32,
+    pub y: f32,
+    /// Size factor about the frame centre.
+    pub zoom: f32,
+}
+
+impl Shift {
+    pub const REST: Shift = Shift { x: 0.0, y: 0.0, zoom: 1.0 };
+}
+
+impl Transition {
+    /// The values a file or a script may hold, brought into range.
+    pub fn clamped(self) -> Transition {
+        let finite = |v: f32, low: f32, high: f32, or: f32| if v.is_finite() { v.clamp(low, high) } else { or };
+        Transition {
+            kind: self.kind,
+            frames: (self.frames.clamp(2, 16) / 2) * 2,
+            angle: finite(self.angle, -360.0, 360.0, 0.0),
+            blur: finite(self.blur, 0.0, 2.0, 1.0),
+            amount: finite(self.amount, 0.0, 4.0, 1.5),
+            ease: finite(self.ease, 1.0, 6.0, 2.5),
+        }
+    }
+
+    /// The transition a kind starts with.
+    pub fn of(kind: TransitionKind) -> Transition {
+        match kind {
+            TransitionKind::Whip => Transition::default(),
+            TransitionKind::Slide => {
+                Transition { kind, frames: 8, blur: 0.0, amount: 1.0, ease: 2.0, ..Transition::default() }
+            }
+            TransitionKind::Zoom => Transition { kind, amount: 0.6, ..Transition::default() },
+        }
+    }
+
+    /// Displacement of the outgoing (`incoming == false`) or incoming
+    /// picture at `progress` through the transition, 0 at its first
+    /// instant and 1 at its last; the cut is at 0.5.
+    pub fn shift(&self, progress: f32, incoming: bool) -> Shift {
+        let p = progress.clamp(0.0, 1.0);
+        let (sin, cos) = self.angle.to_radians().sin_cos();
+        // Angle 0 moves the picture left, 90 up (y is down).
+        let along = |distance: f32| Shift { x: -cos * distance, y: -sin * distance, zoom: 1.0 };
+        match self.kind {
+            TransitionKind::Whip | TransitionKind::Zoom => {
+                // Outgoing: from rest, ever faster, up to the cut. Incoming:
+                // the same path in reverse, arriving from the other side.
+                let travelled = if incoming {
+                    -(2.0 - 2.0 * p).clamp(0.0, 1.0).powf(self.ease)
+                } else {
+                    (2.0 * p).clamp(0.0, 1.0).powf(self.ease)
+                };
+                if self.kind == TransitionKind::Whip {
+                    along(travelled * self.amount)
+                } else {
+                    // Into the picture, then out of the next one's enlargement.
+                    Shift { zoom: 1.0 + travelled.abs() * self.amount, ..Shift::REST }
+                }
+            }
+            TransitionKind::Slide => {
+                // One frame width or height of travel, eased at both ends.
+                let eased =
+                    if p < 0.5 { 0.5 * (2.0 * p).powf(self.ease) } else { 1.0 - 0.5 * (2.0 - 2.0 * p).powf(self.ease) };
+                along(if incoming { eased - 1.0 } else { eased })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    #[test]
+    fn whip_leaves_and_arrives_in_the_same_direction() {
+        let whip = Transition::default();
+        // Out to the left, ever faster.
+        let out: Vec<f32> = [0.0, 0.1, 0.3, 0.5].map(|p| whip.shift(p, false).x).to_vec();
+        assert_eq!(out[0], 0.0);
+        assert!(out[1] > out[2] && out[2] > out[3]);
+        assert!((out[3] + 1.5).abs() < 1e-5);
+        assert!(out[1] - out[2] < out[2] - out[3]);
+        // In from the right, slowing to rest.
+        let arriving: Vec<f32> = [0.5, 0.6, 0.8, 1.0].map(|p| whip.shift(p, true).x).to_vec();
+        assert!((arriving[0] - 1.5).abs() < 1e-5 && arriving[3] == 0.0);
+        assert!(arriving[0] > arriving[1] && arriving[1] > arriving[2]);
+        // Upwards.
+        let up = Transition { angle: 90.0, ..whip }.shift(0.5, false);
+        assert!(up.x.abs() < 1e-5 && (up.y + 1.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn slide_keeps_the_two_pictures_side_by_side() {
+        let slide = Transition::of(TransitionKind::Slide);
+        for p in [0.0, 0.3, 0.5, 0.9, 1.0] {
+            let (a, b) = (slide.shift(p, false), slide.shift(p, true));
+            // Both move left; the incoming one is one frame width behind.
+            assert!((b.x - a.x - 1.0).abs() < 1e-5, "{p}: {a:?} {b:?}");
+        }
+        assert_eq!(slide.shift(0.0, false).x, 0.0);
+        assert!((slide.shift(1.0, true).x).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zoom_grows_into_the_cut_and_settles_after_it() {
+        let zoom = Transition::of(TransitionKind::Zoom);
+        assert_eq!(zoom.shift(0.0, false).zoom, 1.0);
+        assert!((zoom.shift(0.5, false).zoom - 1.6).abs() < 1e-5);
+        assert!((zoom.shift(0.5, true).zoom - 1.6).abs() < 1e-5);
+        assert_eq!(zoom.shift(1.0, true).zoom, 1.0);
+    }
+
+    #[test]
+    fn stored_values_are_brought_into_range() {
+        let wild = Transition { frames: 7, blur: 9.0, amount: f32::NAN, ease: 0.0, ..Transition::default() }.clamped();
+        assert_eq!((wild.frames, wild.blur, wild.amount, wild.ease), (6, 2.0, 1.5, 1.0));
+        // Old files without the field read as "no transition".
+        let props: ClipProps = serde_json::from_str("{}").unwrap();
+        assert_eq!(props.transition, None);
+        let json = serde_json::to_string(&ClipProps::default()).unwrap();
+        assert!(!json.contains("transition"));
     }
 }

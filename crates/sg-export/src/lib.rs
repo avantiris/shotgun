@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use sg_audio::{Backend, Engine, SAMPLE_RATE};
 use sg_core::text::slug;
-use sg_core::{AssetId, AssetKind, ClipProps, Project, Sequence};
+use sg_core::{AssetId, AssetKind, Project, Sequence};
 use sg_media::decode::{VideoDecoder, VideoFrame};
 use sg_media::tool::{Cancel, ToolError, run_lines, run_output};
 use sg_project::cache;
@@ -354,7 +354,6 @@ fn render(
     // The picture each asset shows at the moment.
     let mut pictures: HashMap<AssetId, (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
     let mut titles: HashMap<(String, u32, [u8; 4]), (wgpu::TextureView, (u32, u32))> = HashMap::new();
-    let default = ClipProps::default();
     let started = Instant::now();
     let total = (range.1 - range.0).max(1);
     let (mut uploading, mut compositing) = (0.0f64, 0.0f64);
@@ -429,20 +428,7 @@ fn render(
                 let draws: Vec<LayerDraw<'_>> = drawn
                     .iter()
                     .map(|(view, picture_size, rotation, title, index)| {
-                        let layer = &layers[*index];
-                        let props = layer.props.as_deref().unwrap_or(&default);
-                        LayerDraw {
-                            view,
-                            size: *picture_size,
-                            rotation: *rotation,
-                            opacity: props.opacity.at(layer.at),
-                            x: props.x.at(layer.at),
-                            y: props.y.at(layer.at),
-                            scale: props.scale.at(layer.at),
-                            turn_degrees: props.rotation.at(layer.at),
-                            crop: props.crop,
-                            natural_size: *title,
-                        }
+                        layers[*index].draw(view, *picture_size, *rotation, *title)
                     })
                     .collect();
                 let mark = Instant::now();

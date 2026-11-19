@@ -175,6 +175,9 @@ impl ClipPanel {
                 }
             }
         });
+        if video {
+            changed |= transition_rows(ui, &mut props.transition, target);
+        }
         if changed {
             let dragging = ui.input(|i| i.pointer.any_down());
             let group = self.group_for(dragging, session);
@@ -266,4 +269,76 @@ fn value_row(
         }
     });
     changed
+}
+
+/// The transition on the cut at the start of the clip. Returns whether
+/// anything changed.
+fn transition_rows(ui: &mut egui::Ui, transition: &mut Option<sg_core::Transition>, target: &Target) -> bool {
+    use sg_core::{Transition, TransitionKind};
+    let before = *transition;
+    // A transition needs a clip to come from, ending where this one starts.
+    let follows = target.clip.start > 0 && target.track.clips.at(target.clip.start - 1).is_some();
+    ui.add_space(6.0);
+    ui.label(RichText::new("TRANSITION INTO THIS CLIP").size(11.0).strong().color(theme::DIM));
+    let Some(t) = transition else {
+        let button = ui.add_enabled(follows, egui::Button::new("Add whip-pan (B)"));
+        if button.on_disabled_hover_text("There is no clip directly before this one.").clicked() {
+            *transition = Some(Transition::default());
+        }
+        return *transition != before;
+    };
+    let label = |ui: &mut egui::Ui, text: &str| {
+        ui.add_sized([84.0, 16.0], egui::Label::new(RichText::new(text).color(theme::DIM)).halign(egui::Align::LEFT));
+    };
+    ui.horizontal(|ui| {
+        label(ui, "Kind");
+        for (kind, name) in
+            [(TransitionKind::Whip, "Whip"), (TransitionKind::Slide, "Slide"), (TransitionKind::Zoom, "Zoom")]
+        {
+            if ui.selectable_label(t.kind == kind, name).clicked() && t.kind != kind {
+                // The numbers that suit the kind; the direction stays.
+                *t = Transition { angle: t.angle, ..Transition::of(kind) };
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        label(ui, "Length");
+        let mut frames = t.frames as i32;
+        if ui.add(egui::DragValue::new(&mut frames).range(2..=16).speed(0.1).suffix(" frames")).changed() {
+            t.frames = ((frames.clamp(2, 16) + 1) / 2 * 2) as u8;
+        }
+    });
+    if t.kind != TransitionKind::Zoom {
+        ui.horizontal(|ui| {
+            label(ui, "Moves");
+            for (angle, name) in [(0.0f32, "left"), (180.0, "right"), (90.0, "up"), (270.0, "down")] {
+                if ui.selectable_label((t.angle.rem_euclid(360.0) - angle).abs() < 0.5, name).clicked() {
+                    t.angle = angle;
+                }
+            }
+            ui.add(egui::DragValue::new(&mut t.angle).range(0.0..=360.0).speed(1.0).suffix(" deg").max_decimals(0));
+        });
+    }
+    ui.horizontal(|ui| {
+        label(ui, "Blur");
+        ui.add(egui::DragValue::new(&mut t.blur).range(0.0..=2.0).speed(0.01).max_decimals(2))
+            .on_hover_text("Share of each frame the shutter is open: 0 none, 1 as a camera, 2 stronger");
+    });
+    if t.kind != TransitionKind::Slide {
+        ui.horizontal(|ui| {
+            label(ui, if t.kind == TransitionKind::Zoom { "Zoom" } else { "Travel" });
+            ui.add(egui::DragValue::new(&mut t.amount).range(0.0..=4.0).speed(0.01).max_decimals(2)).on_hover_text(
+                "Whip: frame widths travelled on each side of the cut. Zoom: how much the picture grows.",
+            );
+        });
+    }
+    ui.horizontal(|ui| {
+        label(ui, "Speed-up");
+        ui.add(egui::DragValue::new(&mut t.ease).range(1.0..=6.0).speed(0.02).max_decimals(2))
+            .on_hover_text("1 moves evenly; larger starts gently and is fastest at the cut");
+    });
+    if ui.button("Remove transition").clicked() {
+        *transition = None;
+    }
+    *transition != before
 }
