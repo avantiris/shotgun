@@ -1360,7 +1360,7 @@ impl Timeline {
             Action::Split => {
                 for (track, clip) in self.targets(&sequence, playhead) {
                     let at = Lane::of(&track, &sequence).units(playhead);
-                    ops.extend(Op::split(seq, track.id, &clip, at, session.new_clip_id()));
+                    ops.extend(split_ops(seq, &track, Lane::of(&track, &sequence), &clip, at, session.new_clip_id()));
                 }
                 self.selection.clear();
             }
@@ -1642,6 +1642,46 @@ impl Timeline {
             }
         }
     }
+}
+
+/// Cuts `clip` at `at` (track units) and gives both halves what belongs to
+/// them of its properties: the right half continues the source where the
+/// left one stops (speed and ramp counted), keeps its keyframes in place
+/// and the fade-out; the left half keeps the fade-in and the transition
+/// into the clip.
+fn split_ops(seq: sg_core::SequenceId, track: &Track, lane: Lane, clip: &Clip, at: i64, right_id: ClipId) -> Vec<Op> {
+    if at <= clip.start || at >= clip.end() {
+        return Vec::new();
+    }
+    let Some(props) = track.props_of(clip.id) else {
+        return Op::split(seq, track.id, clip, at, right_id).into_iter().collect();
+    };
+    // How far into the clip the cut is, in sequence frames (the unit of keyframes).
+    let cut = lane.frame(at) - lane.frame(clip.start);
+    let consumed = match lane.kind {
+        TrackKind::Video => props.source_offset(cut),
+        // Sound has no ramp: the set speed times the samples played.
+        TrackKind::Audio => {
+            let (num, den) = if props.speed_valid() { props.speed } else { (1, 1) };
+            ((at - clip.start) as i128 * num as i128 / den as i128) as i64
+        }
+    };
+    let (mut left, mut right) = (ClipProps::clone(props), ClipProps::clone(props));
+    (left.fade_out, right.fade_in, right.transition) = (0, 0, None);
+    for param in right.picture_params() {
+        param.shift_keys(-cut);
+    }
+    right.gain_db.shift_keys(-cut);
+    // A ramp continues from its value at the cut, not from its start.
+    let left_clip = Clip { len: at - clip.start, ..*clip };
+    let right_clip = Clip { id: right_id, start: at, len: clip.end() - at, src_in: clip.src_in + consumed, ..*clip };
+    let stored = |props: ClipProps| (props != ClipProps::default()).then(|| Box::new(props));
+    vec![
+        Op::SetClip { seq, track: track.id, start: clip.start, clip: left_clip },
+        Op::InsertClip { seq, track: track.id, clip: right_clip },
+        Op::SetClipProps { seq, track: track.id, clip: clip.id, props: stored(left) },
+        Op::SetClipProps { seq, track: track.id, clip: right_id, props: stored(right) },
+    ]
 }
 
 /// Beat positions for a tempo choice: as found (0), with the beats between
@@ -2203,6 +2243,52 @@ mod tests {
         // One pass of switching is one undo step.
         assert!(session.undo().unwrap());
         assert_eq!(programme(&session), vec![(1, 0, 600, 0)]);
+    }
+
+    #[test]
+    fn splitting_a_clip_shares_out_its_properties() {
+        use sg_core::{Key, Param};
+        let (_dir, mut session) = session();
+        let project = session.project().clone();
+        let seq = &project.sequences[0];
+        let (track, clip) = (seq.tracks[0].clone(), seq.tracks[0].clips.at(0).unwrap());
+        // Moving across the frame over the whole clip, slowing down to half
+        // speed, fading in and out.
+        let props = ClipProps {
+            x: Param { value: 0.0, keys: vec![Key { frame: 0, value: -0.5 }, Key { frame: 600, value: 0.5 }] },
+            ramp: Param { value: 1.0, keys: vec![Key { frame: 0, value: 1.0 }, Key { frame: 600, value: 0.5 }] },
+            fade_in: 30,
+            fade_out: 40,
+            ..ClipProps::default()
+        };
+        let before_at = |frame: i64| (props.x.at(frame), props.source_offset(frame));
+        let set =
+            Op::SetClipProps { seq: seq.id, track: track.id, clip: clip.id, props: Some(Box::new(props.clone())) };
+        session.apply(set, None).unwrap();
+        let mut timeline = Timeline::default();
+        timeline.select_only(track.id, &clip);
+        act(&mut timeline, &mut session, Action::Split, 200);
+        let project = session.project().clone();
+        let track = &project.sequences[0].tracks[0];
+        let (left, right) = (track.clips.at(0).unwrap(), track.clips.at(200).unwrap());
+        let (lp, rp) = (track.props_of(left.id).unwrap(), track.props_of(right.id).unwrap());
+        assert_eq!((left.len, right.start, right.len), (200, 200, 400));
+        assert_eq!((lp.fade_in, lp.fade_out, rp.fade_in, rp.fade_out), (30, 0, 0, 40));
+        // Every frame shows what it showed before the cut: same place, same source frame.
+        for frame in [0, 100, 199] {
+            assert_eq!((lp.x.at(frame), left.src_in + lp.source_offset(frame)), before_at(frame));
+        }
+        for frame in [200, 201, 450, 599] {
+            let (x, source) = (rp.x.at(frame - 200), right.src_in + rp.source_offset(frame - 200));
+            let (was_x, was_source) = before_at(frame);
+            assert!(
+                (x - was_x).abs() < 1e-5 && (source - was_source).abs() <= 1,
+                "frame {frame}: {x} {source} vs {was_x} {was_source}"
+            );
+        }
+        // One undo step.
+        assert!(session.undo().unwrap());
+        assert_eq!(session.project().sequences[0].tracks[0].clips.at(0).unwrap().len, 600);
     }
     /// The whole gesture through egui's own input handling: press on an
     /// asset tile, move over the timeline, let go.

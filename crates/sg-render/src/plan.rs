@@ -27,6 +27,8 @@ pub struct PlanLayer {
     pub props: Option<Arc<ClipProps>>,
     /// Colour treatment of the picture, from the scenario of its asset.
     pub grade: Option<Grade>,
+    /// Length of the clip in frames, for its fades.
+    pub len: i64,
     /// Sequence frame this layer was planned for.
     pub frame: i64,
     /// Movement during this frame, when it lies inside a transition.
@@ -49,7 +51,8 @@ impl PlanLayer {
             view,
             size,
             rotation,
-            opacity: props.opacity.at(self.at),
+            // The fades of a clip fade its picture as they fade its sound.
+            opacity: props.opacity.at(self.at) * ClipProps::fade_gain(self.at, self.len, props.fade_in, props.fade_out),
             x: props.x.at(self.at),
             y: props.y.at(self.at),
             scale: props.scale.at(self.at),
@@ -98,7 +101,16 @@ fn layer(
     // Keyframes are read inside the clip.
     let at = elapsed.clamp(0, (clip.len - 1).max(0));
     if props.as_ref().is_some_and(|p| p.title.is_some()) {
-        return Some(PlanLayer { clip: clip.id, source: Source::Title, at, props, motion, grade: None, frame });
+        return Some(PlanLayer {
+            clip: clip.id,
+            source: Source::Title,
+            at,
+            props,
+            motion,
+            grade: None,
+            frame,
+            len: clip.len,
+        });
     }
     let video = project.assets.get(&clip.asset).and_then(|a| a.video.as_ref())?;
     let source_frame = if video.is_still() {
@@ -119,6 +131,7 @@ fn layer(
         motion,
         grade: project.grade_of(clip.asset),
         frame,
+        len: clip.len,
     })
 }
 
