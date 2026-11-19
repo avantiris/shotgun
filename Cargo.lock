@@ -3299,6 +3299,7 @@ dependencies = [
  "sg-media",
  "sg-play",
  "sg-project",
+ "sg-render",
  "sg-ui",
  "wayland-backend",
  "wayland-client",

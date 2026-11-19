@@ -1540,6 +1540,30 @@ impl Timeline {
                     ops.push(Op::InsertClip { seq, track: track.id, clip });
                 }
             }
+            Action::Nudge(frames) => {
+                // The same as dragging the selection that far, without snapping.
+                if let Some(primary) = self.selection.first().copied() {
+                    let view = ViewerState::default();
+                    self.plan_move(&sequence, &view, frames as f64, 0, primary, false, false);
+                    let blocked = self.ghosts.iter().any(|g| !g.3);
+                    self.ghosts.clear();
+                    match self.pending.take() {
+                        Some(moves) => {
+                            if session.apply(Op::Batch(moves), None).is_ok() {
+                                // The selection follows its clips.
+                                for sel in &mut self.selection {
+                                    if let Some(track) = sequence.track(sel.track) {
+                                        let lane = Lane::of(track, &sequence);
+                                        sel.start += lane.units(i64::from(frames).abs()) * i64::from(frames).signum();
+                                    }
+                                }
+                            }
+                        }
+                        None if blocked => *error = Some("No room to move the selection there.".to_owned()),
+                        None => {}
+                    }
+                }
+            }
             Action::Marker => {
                 ops.push(match sequence.markers.iter().any(|m| m.frame == playhead) {
                     true => Op::RemoveMarker { seq, frame: playhead },
@@ -2170,6 +2194,19 @@ mod tests {
         timeline.select(&seq, &seq.tracks[0], &second, false, false);
         let primary = timeline.selection[0];
 
+        // The arrow keys move the selection by frames, picture and sound together.
+        let mut error = None;
+        timeline.act(Action::Nudge(10), &mut session, 0, &mut error);
+        timeline.act(Action::Nudge(-1), &mut session, 0, &mut error);
+        assert_eq!(layout(&session), (vec![(0, 600), (609, 600)], vec![(0, 600), (609, 600)]));
+        assert_eq!(timeline.selection[0].start, 609);
+        timeline.act(Action::Nudge(-10), &mut session, 0, &mut error);
+        assert_eq!(
+            (layout(&session).0, error.take()),
+            (vec![(0, 600), (609, 600)], Some("No room to move the selection there.".to_owned()))
+        );
+        timeline.act(Action::Nudge(-9), &mut session, 0, &mut error);
+        assert_eq!(layout(&session), (vec![(0, 600), (600, 600)], vec![(0, 600), (600, 600)]));
         // Onto the first take: no room.
         timeline.plan_move(&seq, &view, -300.0, 0, primary, false, false);
         assert!(timeline.pending.is_none());

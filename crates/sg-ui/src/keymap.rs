@@ -44,6 +44,8 @@ pub enum Action {
     Angle(u8),
     /// Put a transition on the nearest cut, or remove the one there.
     Transition,
+    /// Move the selected clips by this many frames.
+    Nudge(i8),
     /// Show or hide the colour panel.
     Colour,
     /// A/B: switch the look chain, or the match, of the shown scenario on and off.
@@ -148,6 +150,10 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::Num8, Action::Angle(8)),
     bind(Scope::Editor, false, false, Key::Num9, Action::Angle(9)),
     bind(Scope::Editor, false, false, Key::R, Action::LiveRecord),
+    bind(Scope::Editor, false, false, Key::ArrowLeft, Action::Nudge(-1)),
+    bind(Scope::Editor, false, false, Key::ArrowRight, Action::Nudge(1)),
+    bind(Scope::Editor, false, true, Key::ArrowLeft, Action::Nudge(-10)),
+    bind(Scope::Editor, false, true, Key::ArrowRight, Action::Nudge(10)),
     bind(Scope::Editor, true, false, Key::V, Action::Paste),
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
 ];
@@ -360,6 +366,8 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::Copy => ("Cutting", "copy the selected clips"),
         Action::PasteClips => ("Cutting", "paste them at the playhead"),
         Action::Marker => ("Cutting", "marker at the playhead (again: remove it)"),
+        Action::Nudge(1) => ("Cutting", "selected clips one frame later (left: earlier; Shift: ten frames)"),
+        Action::Nudge(_) => return None,
         Action::Undo => ("Cutting", "undo"),
         Action::Redo => ("Cutting", "redo"),
         Action::InsertAsset => ("Making", "put the selected asset on the timeline"),
@@ -401,6 +409,8 @@ pub fn cap(binding: &Binding) -> String {
         Key::Space => "Space".to_owned(),
         Key::Escape => "Esc".to_owned(),
         Key::Delete => "Del".to_owned(),
+        Key::ArrowLeft => "Left".to_owned(),
+        Key::ArrowRight => "Right".to_owned(),
         other => other.name().to_owned(),
     };
     format!("{}{}{key}", if binding.ctrl { "Ctrl+" } else { "" }, if binding.shift { "Shift+" } else { "" })

@@ -42,6 +42,7 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Click or drag on the ruler or on empty timeline | set / scrub playhead |
 | Click clip | select it with its partner (picture + sound of one take); Shift adds, Alt selects it alone |
 | Drag clip | move (snaps; hold Alt to disable snapping; hold Ctrl to put it over what is in the way, `PROPOSED`, added 2026-11-19) |
+| Left / Right arrow | move the selected clips one frame earlier / later; with Shift ten frames (`PROPOSED`, added 2026-11-19) |
 | Drag clip edge | trim (Ctrl = ripple) |
 | Drag in viewer | move the selected clip's picture; its corner handles size it, the knob above it turns it (added 2026-11-19) |
 | Drag an asset from the panel onto the timeline | place it where it is let go: picture on the video track under the pointer, sound on an audio track; snaps like a moved clip (Alt disables). Where the spot is taken, or outside the tracks, it goes to the next free track, and a new track is made if there is none. A ghost shows the result before the button is released |

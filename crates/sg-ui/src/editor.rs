@@ -583,6 +583,11 @@ impl Editor {
                     title.text = value.replace("\\n", "\n");
                 }
             }
+            "shadow" => {
+                if let Some(title) = &mut props.title {
+                    title.shadow = number;
+                }
+            }
             "font" => {
                 if let Some(title) = &mut props.title {
                     title.font = value.to_owned();

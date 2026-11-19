@@ -283,6 +283,12 @@ impl Shell {
         }
     }
 
+    /// The message in the banner, if there is one. For scripted runs, whose
+    /// only reader is the log.
+    pub fn error_shown(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     pub fn report_error(&mut self, error: String) {
         self.library.pending = None;
         self.error = Some(error);
@@ -524,6 +530,7 @@ impl Shell {
             | Action::Copy
             | Action::PasteClips
             | Action::Marker
+            | Action::Nudge(_)
             | Action::PrevCut
             | Action::NextCut => self.timeline_action(action, commands),
             Action::Delete => {

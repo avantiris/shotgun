@@ -121,9 +121,99 @@ pub fn rasterize(text: &str, px: f32, color: [u8; 4], font_file: Option<&[u8]>) 
     TextImage { width, height, rgba }
 }
 
+/// Puts a soft dark shadow under the letters of `image`, a little down
+/// and to the right, so that a title stays readable on a bright or busy
+/// picture. `px` is the letter height the image was drawn with; `strength`
+/// (0 to 1) is how dark the shadow is. It fits in the margin every text
+/// image has.
+pub fn with_shadow(mut image: TextImage, px: f32, strength: f32) -> TextImage {
+    let strength = strength.clamp(0.0, 1.0);
+    let (w, h) = (image.width as usize, image.height as usize);
+    if strength <= 0.0 || w < 4 || h < 4 {
+        return image;
+    }
+    let shift = ((px * 0.035).round() as usize).max(1);
+    let radius = ((px * 0.03).round() as usize).max(1);
+    // The letters' coverage, moved down and to the right.
+    let mut shade = vec![0f32; w * h];
+    for y in shift..h {
+        for x in shift..w {
+            shade[y * w + x] = image.rgba[((y - shift) * w + (x - shift)) * 4 + 3] as f32 / 255.0;
+        }
+    }
+    // Softened: a box blur along the rows and the columns, twice.
+    let mut line = vec![0f32; w.max(h)];
+    let mut blur = |values: &mut [f32], start: usize, step: usize, len: usize| {
+        let mut sum = 0.0;
+        for i in 0..len {
+            line[i] = values[start + i * step];
+        }
+        let window = (2 * radius + 1) as f32;
+        for i in 0..len + radius {
+            if i < len {
+                sum += line[i];
+            }
+            if i > 2 * radius {
+                sum -= line[i - 2 * radius - 1];
+            }
+            if i >= radius {
+                values[start + (i - radius) * step] = sum / window;
+            }
+        }
+    };
+    for _ in 0..2 {
+        for y in 0..h {
+            blur(&mut shade, y * w, 1, w);
+        }
+        for x in 0..w {
+            blur(&mut shade, x, w, h);
+        }
+    }
+    // The letters over the shadow (black), back to straight alpha.
+    for (pixel, shade) in image.rgba.chunks_exact_mut(4).zip(shade) {
+        let letter = pixel[3] as f32 / 255.0;
+        let under = (shade * strength).clamp(0.0, 1.0) * (1.0 - letter);
+        let alpha = letter + under;
+        if alpha > 0.0 {
+            for channel in &mut pixel[..3] {
+                *channel = (*channel as f32 * letter / alpha).round() as u8;
+            }
+            pixel[3] = (alpha * 255.0).round() as u8;
+        }
+    }
+    image
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shadow_darkens_below_and_right_of_the_letters_only() {
+        let plain = rasterize("I", 100.0, [255; 4], None);
+        let (w, h) = (plain.width as usize, plain.height as usize);
+        let shadowed = with_shadow(rasterize("I", 100.0, [255; 4], None), 100.0, 0.8);
+        assert_eq!((shadowed.width, shadowed.height), (plain.width, plain.height));
+        let mut letters_kept = true;
+        let (mut right, mut left) = (0u32, 0u32);
+        for y in 0..h {
+            for x in 0..w {
+                let (a, b) = (&plain.rgba[(y * w + x) * 4..][..4], &shadowed.rgba[(y * w + x) * 4..][..4]);
+                if a[3] == 255 {
+                    // Where a letter is solid nothing changes.
+                    letters_kept &= a == b;
+                } else if a[3] == 0 && b[3] > 40 {
+                    // New ink is dark, and lies to the right rather than the left.
+                    assert!(b[0] < 30, "shadow pixel {b:?}");
+                    if x > w / 2 { right += 1 } else { left += 1 }
+                }
+            }
+        }
+        assert!(letters_kept);
+        assert!(right > 50 && right > left * 3, "{right} right, {left} left");
+        // Off is off.
+        assert_eq!(with_shadow(rasterize("I", 100.0, [255; 4], None), 100.0, 0.0).rgba, plain.rgba);
+    }
 
     #[test]
     fn text_has_ink_in_its_colour_and_grows_with_size() {

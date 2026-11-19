@@ -83,6 +83,8 @@ pub enum ExportError {
     Tool(String),
     #[error("the exported file does not play: {0}")]
     Verify(String),
+    #[error("the GPU reported an error while the frames were drawn (the log has it); the file was not kept")]
+    Gpu,
 }
 
 impl From<ToolError> for ExportError {
@@ -370,7 +372,7 @@ fn render(
     let importer = YuvImporter::new(device.clone(), queue.clone());
     // The picture each asset shows at the moment.
     let mut pictures: HashMap<(AssetId, bool), (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
-    let mut titles: HashMap<(String, u32, [u8; 4], String), (wgpu::TextureView, (u32, u32))> = HashMap::new();
+    let mut titles: HashMap<(String, u32, [u8; 4], String, u8), (wgpu::TextureView, (u32, u32))> = HashMap::new();
     let mut fonts = sg_render::text::Fonts::default();
     let started = Instant::now();
     let total = (range.1 - range.0).max(1);
@@ -404,6 +406,7 @@ fn render(
                                 (title.size * size.1 as f32).round().max(4.0) as u32,
                                 title.color,
                                 title.font.clone(),
+                                (title.shadow.clamp(0.0, 1.0) * 100.0).round() as u8,
                             );
                             let entry = titles.entry(key.clone()).or_insert_with(|| {
                                 let font = fonts.get(&job.root, &key.3);
@@ -413,6 +416,7 @@ fn render(
                                     key.2,
                                     font.as_ref().map(|bytes| bytes.as_slice()),
                                 );
+                                let image = sg_render::text::with_shadow(image, key.1 as f32, key.4 as f32 / 100.0);
                                 let texture = Compositor::upload(device, queue, image.width, image.height, &image.rgba);
                                 (texture.create_view(&Default::default()), (image.width, image.height))
                             });
@@ -666,10 +670,13 @@ pub fn export(
         let mut encoder_name = "hevc_vaapi";
         let mut render_fps = 0.0;
         let mut stage_ms = [0.0; 4];
+        let gpu_errors = sg_render::gpu_errors();
         for hardware in [true, false] {
             let mut encoder = Encoder::start(size, sequence.rate, audio, hardware, ten_bit, deep, &rendered)?;
             match render(job, &sequence, range, size, cover, deep, device, queue, &mut encoder, cancel, progress) {
                 Ok(fps) => match encoder.finish() {
+                    // A frame the GPU refused to draw is in the file as something else.
+                    Ok(()) if sg_render::gpu_errors() != gpu_errors => return Err(ExportError::Gpu),
                     Ok(()) => {
                         (render_fps, stage_ms) = fps;
                         encoder_name = if hardware { "hevc_vaapi" } else { "libx264" };

@@ -112,6 +112,18 @@ impl ClipPanel {
                     changed = true;
                 }
             });
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [84.0, 16.0],
+                    egui::Label::new(RichText::new("Shadow").color(theme::DIM)).halign(egui::Align::LEFT),
+                );
+                changed |= ui
+                    .add(egui::DragValue::new(&mut title.shadow).speed(0.01).range(0.0..=1.0).max_decimals(2))
+                    .on_hover_text(
+                        "A soft dark shadow under the letters, for titles on bright or busy pictures. 0 is none",
+                    )
+                    .changed();
+            });
             // The folder is listed the first time a title is shown.
             if !self.fonts_asked {
                 (self.fonts_asked, self.fonts_request) = (true, true);

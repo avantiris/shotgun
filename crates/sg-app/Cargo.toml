@@ -19,6 +19,7 @@ egui-wgpu.workspace = true
 egui-winit.workspace = true
 sg-export.workspace = true
 sg-play.workspace = true
+sg-render.workspace = true
 wl-clipboard-rs = "0.9"
 libc = "0.2"
 raw-window-handle = "0.6"

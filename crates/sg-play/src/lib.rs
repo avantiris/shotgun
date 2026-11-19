@@ -485,6 +485,7 @@ impl State {
                         px: (title.size * frame_height).round().max(4.0) as u32,
                         color: title.color,
                         font: title.font.clone(),
+                        shadow: (title.shadow.clamp(0.0, 1.0) * 100.0).round() as u8,
                     };
                     if !self.titles.contains_key(&key) {
                         let font = self.fonts.get(&root, &key.font);
@@ -494,6 +495,7 @@ impl State {
                             key.color,
                             font.as_ref().map(|bytes| bytes.as_slice()),
                         );
+                        let image = sg_render::text::with_shadow(image, key.px as f32, key.shadow as f32 / 100.0);
                         let texture =
                             Compositor::upload(&self.device, &self.queue, image.width, image.height, &image.rgba);
                         // Titles are few and small; a simple cap keeps the map bounded.
@@ -754,6 +756,8 @@ struct TitleKey {
     px: u32,
     color: [u8; 4],
     font: String,
+    /// Shadow strength in hundredths.
+    shadow: u8,
 }
 
 /// What a layer of the rendered frame was drawn from.

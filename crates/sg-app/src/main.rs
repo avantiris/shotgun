@@ -481,7 +481,12 @@ impl App {
                 if let Some(player) = &self.player {
                     self.shell.set_playhead(player.frame());
                 }
+                let before = self.shell.error_shown().map(str::to_owned);
                 let commands = self.shell.dev(dev);
+                // Nobody reads the banner in a scripted run: say it in the log.
+                if let Some(message) = self.shell.error_shown().filter(|m| before.as_deref() != Some(*m)) {
+                    log::warn!("script step answered: {message}");
+                }
                 self.run_commands(commands);
             }
             Step::Shot(path) => self.screenshot(&path),

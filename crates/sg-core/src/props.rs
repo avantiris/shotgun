@@ -198,11 +198,14 @@ pub struct Title {
     /// File name of the font in `assets/font/`; empty for the built-in one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub font: String,
+    /// How dark the shadow under the letters is, 0 (none) to 1.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shadow: f32,
 }
 
 impl Default for Title {
     fn default() -> Title {
-        Title { text: "Title".to_owned(), size: 0.12, color: [255, 255, 255, 255], font: String::new() }
+        Title { text: "Title".to_owned(), size: 0.12, color: [255, 255, 255, 255], font: String::new(), shadow: 0.0 }
     }
 }
 

@@ -55,6 +55,7 @@ impl Gfx {
         let t_adapter = Instant::now();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .context("opening the GPU device")?;
+        sg_render::report_gpu_errors(&device);
         let t_device = Instant::now();
 
         let caps = surface.get_capabilities(&adapter);
