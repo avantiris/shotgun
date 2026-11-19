@@ -53,6 +53,13 @@ pub enum Command {
     /// rescan the library.
     Close {
         writer: ProjectWriter,
+        root: PathBuf,
+        /// The asset whose poster becomes the project's picture in the library.
+        poster: Option<AssetId>,
+    },
+    /// Read a project's picture for the library; answered with [`Shell::project_poster_loaded`].
+    LoadProjectPoster {
+        path: PathBuf,
     },
     /// Take a file, link or pasted image into the project at `root`.
     Import {
@@ -373,11 +380,14 @@ impl Shell {
                     None => {}
                 }
             }
-            None => match self.library.ui(ui, now_unix) {
-                Some(LibraryRequest::Open(path)) => self.open(path, &mut commands),
-                Some(LibraryRequest::Create(name)) => self.create(name, &mut commands),
-                None => {}
-            },
+            None => {
+                match self.library.ui(ui, now_unix) {
+                    Some(LibraryRequest::Open(path)) => self.open(path, &mut commands),
+                    Some(LibraryRequest::Create(name)) => self.create(name, &mut commands),
+                    None => {}
+                }
+                commands.extend(self.library.poster_requests.drain(..).map(|path| Command::LoadProjectPoster { path }));
+            }
         }
         for request in asset_requests {
             let Some(root) = self.session.as_ref().map(|s| s.root.clone()) else { break };
@@ -492,7 +502,8 @@ impl Shell {
             }
             Action::CloseProject => {
                 if let Some(session) = self.session.take() {
-                    commands.push(Command::Close { writer: session.into_writer() });
+                    let (root, poster) = (session.root.clone(), poster_asset(session.project()));
+                    commands.push(Command::Close { writer: session.into_writer(), root, poster });
                 }
             }
             Action::Undo | Action::Redo => {
@@ -898,7 +909,28 @@ impl Shell {
     }
 }
 
+/// The asset that stands for a project in the library: what its topmost
+/// shown video track begins with, or else any asset with a picture. Looks
+/// at one clip per track, whatever the size of the project.
+fn poster_asset(project: &sg_core::Project) -> Option<AssetId> {
+    let pictured = |id: &AssetId| project.assets.get(id).is_some_and(|a| a.video.is_some());
+    project
+        .sequences
+        .first()
+        .into_iter()
+        .flat_map(|s| s.tracks.iter())
+        .filter(|t| t.kind == sg_core::TrackKind::Video && !t.mix.hidden)
+        .filter_map(|t| t.clips.iter().next().map(|c| c.asset))
+        .find(pictured)
+        .or_else(|| project.assets.keys().find(|id| pictured(id)).copied())
+}
+
 impl Shell {
+    /// The picture of a project in the library was read (or it has none).
+    pub fn project_poster_loaded(&mut self, ctx: &egui::Context, path: PathBuf, rgba: Option<Vec<u8>>) {
+        self.library.set_poster(ctx, path, rgba);
+    }
+
     /// Appends the selected asset to the timeline and moves the playhead to it.
     fn insert_selected(&mut self, only: Option<sg_core::TrackKind>, commands: &mut Vec<Command>) {
         let Some(session) = &mut self.session else { return };

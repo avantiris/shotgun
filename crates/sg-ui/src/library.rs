@@ -24,6 +24,11 @@ pub struct Library {
     selected: usize,
     /// Shown instead of accepting input while a create/open job runs.
     pub pending: Option<String>,
+    /// The projects' pictures: asked for when a tile is first shown;
+    /// `None` while unknown or if the project has none.
+    posters: std::collections::HashMap<PathBuf, Option<egui::TextureHandle>>,
+    /// Projects whose picture should be read; taken by the shell.
+    pub poster_requests: Vec<PathBuf>,
 }
 
 impl Library {
@@ -31,6 +36,18 @@ impl Library {
         self.entries = entries;
         self.loaded = true;
         self.selected = 0;
+        // A project that was just closed may have a new picture.
+        self.posters.clear();
+    }
+
+    /// The picture of the project at `path` was read (or it has none).
+    pub fn set_poster(&mut self, ctx: &egui::Context, path: PathBuf, rgba: Option<Vec<u8>>) {
+        let size = crate::assets::POSTER_SIZE;
+        let texture = rgba.filter(|b| b.len() == size[0] * size[1] * 4).map(|bytes| {
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, &bytes);
+            ctx.load_texture(format!("project-{}", path.display()), image, egui::TextureOptions::LINEAR)
+        });
+        self.posters.insert(path, texture);
     }
 
     pub fn loaded(&self) -> bool {
@@ -114,15 +131,29 @@ impl Library {
                         None => (opened_ago(entry.last_opened, now_unix), theme::DIM),
                     };
                     let poster = poster_colour(entry.id.map_or(0, |id| id.0 as u64));
-                    let response =
-                        tile(ui, slot == self.selected, poster, &initials(&entry.name), &entry.name, &subtitle, colour);
+                    if entry.error.is_none() && !self.posters.contains_key(&entry.path) {
+                        self.posters.insert(entry.path.clone(), None);
+                        self.poster_requests.push(entry.path.clone());
+                    }
+                    let picture = self.posters.get(&entry.path).and_then(Option::as_ref);
+                    let response = tile(
+                        ui,
+                        slot == self.selected,
+                        poster,
+                        picture,
+                        &initials(&entry.name),
+                        &entry.name,
+                        &subtitle,
+                        colour,
+                    );
                     if response.clicked() && accepts_input {
                         activated = Some(slot);
                     }
                 }
                 let name = self.filter.trim();
                 let title = if name.is_empty() { "New project".to_owned() } else { format!("New: {name}") };
-                let response = tile(ui, self.selected == tiles - 1, theme::RAISED, "+", &title, "Ctrl+N", theme::DIM);
+                let response =
+                    tile(ui, self.selected == tiles - 1, theme::RAISED, None, "+", &title, "Ctrl+N", theme::DIM);
                 if response.clicked() && accepts_input {
                     activated = Some(tiles - 1);
                 }
@@ -145,6 +176,7 @@ fn tile(
     ui: &mut egui::Ui,
     selected: bool,
     poster: Color32,
+    picture: Option<&egui::TextureHandle>,
     glyph: &str,
     title: &str,
     subtitle: &str,
@@ -155,13 +187,21 @@ fn tile(
         let painter = ui.painter().with_clip_rect(rect.expand(3.0));
         let poster_rect = Rect::from_min_size(rect.min, vec2(TILE.x, POSTER_H));
         painter.rect_filled(poster_rect, 6.0, poster);
-        painter.text(
-            poster_rect.center(),
-            Align2::CENTER_CENTER,
-            glyph,
-            FontId::proportional(36.0),
-            Color32::from_white_alpha(210),
-        );
+        match picture {
+            // A frame of the project, as wide as the tile (both are 16:9 or nearly).
+            Some(texture) => {
+                egui::Image::new(texture).corner_radius(6.0).paint_at(ui, poster_rect);
+            }
+            None => {
+                painter.text(
+                    poster_rect.center(),
+                    Align2::CENTER_CENTER,
+                    glyph,
+                    FontId::proportional(36.0),
+                    Color32::from_white_alpha(210),
+                );
+            }
+        }
         let text = ui.painter().with_clip_rect(rect);
         text.text(
             pos2(rect.left() + 2.0, poster_rect.bottom() + 8.0),
@@ -191,7 +231,7 @@ fn tile(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A stable, muted colour per project until real poster frames exist (M2).
+/// A stable, muted colour per project, shown until its picture is read and for projects without one.
 fn poster_colour(seed: u64) -> Color32 {
     let hue = (seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as f32 / (1u64 << 24) as f32;
     egui::ecolor::Hsva::new(hue, 0.6, 0.1, 1.0).into()

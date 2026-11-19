@@ -64,3 +64,24 @@ pub(crate) fn touch_last_opened(root: &Path) -> Result<(), ProjectError> {
     let text = toml::to_string(&Local { last_opened: unix_now() }).unwrap_or_default();
     std::fs::write(&path, text).map_err(at(&path))
 }
+
+/// The picture a project shows in the library: a copy of one asset's
+/// poster, made when the project is closed.
+fn project_poster_file(root: &Path) -> PathBuf {
+    root.join(".shotgun/poster.rgba")
+}
+
+/// Makes the poster of `asset` the picture of the project.
+pub fn save_project_poster(root: &Path, asset: sg_core::AssetId) -> std::io::Result<()> {
+    std::fs::copy(crate::layout::cache::poster(root, asset), project_poster_file(root)).map(|_| ())
+}
+
+/// The project's picture as raw RGBA, `sg_media::derive::POSTER_W` x `POSTER_H`.
+pub fn read_project_poster(root: &Path) -> std::io::Result<Vec<u8>> {
+    let bytes = std::fs::read(project_poster_file(root))?;
+    if bytes.len() == (sg_media::derive::POSTER_W * sg_media::derive::POSTER_H * 4) as usize {
+        Ok(bytes)
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "poster has the wrong size"))
+    }
+}

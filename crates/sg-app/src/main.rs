@@ -137,6 +137,10 @@ enum UserEvent {
         id: AssetId,
         rgba: Option<Vec<u8>>,
     },
+    ProjectPoster {
+        path: PathBuf,
+        rgba: Option<Vec<u8>>,
+    },
     /// Drag-and-drop or clipboard data from the Wayland data device.
     Data(DataEvent),
     /// Files chosen in the file picker.
@@ -227,12 +231,16 @@ impl App {
                         let _ = proxy.send_event(UserEvent::Opened(result));
                     });
                 }
-                Command::Close { writer } => {
+                Command::Close { writer, root, poster } => {
                     self.pending_jobs += 1;
                     self.saw_editor_frame = false;
                     self.io.run(move || {
                         if let Some(thread) = writer.close() {
                             let _ = thread.join();
+                        }
+                        // The picture the library shows for it. Without one the tile keeps its letters.
+                        if let Some(asset) = poster {
+                            let _ = sg_project::save_project_poster(&root, asset);
                         }
                         let _ = proxy.send_event(scan_library(&library));
                     });
@@ -415,6 +423,13 @@ impl App {
                     self.reads.run(move || {
                         let peaks = sg_media::peaks::Peaks::read(&sg_project::cache::peaks(&root, id)).ok();
                         let _ = proxy.send_event(UserEvent::Peaks { root, id, peaks });
+                    });
+                }
+                Command::LoadProjectPoster { path } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let rgba = sg_project::read_project_poster(&path).ok();
+                        let _ = proxy.send_event(UserEvent::ProjectPoster { path, rgba });
                     });
                 }
                 Command::LoadPoster { root, id } => {
@@ -859,6 +874,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Peaks { root, id, peaks } => {
                 self.shell.peaks_loaded(&root, id, peaks);
+                self.job_done();
+            }
+            UserEvent::ProjectPoster { path, rgba } => {
+                self.shell.project_poster_loaded(&self.ctx, path, rgba);
                 self.job_done();
             }
             UserEvent::Poster { root, id, rgba } => {
