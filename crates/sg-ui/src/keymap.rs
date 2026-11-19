@@ -46,6 +46,8 @@ pub enum Action {
     Transition,
     /// Move the selected clips by this many frames.
     Nudge(i8),
+    /// Show the whole sequence in the timeline.
+    FitTimeline,
     /// Show or hide the colour panel.
     Colour,
     /// A/B: switch the look chain, or the match, of the shown scenario on and off.
@@ -150,6 +152,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::Num8, Action::Angle(8)),
     bind(Scope::Editor, false, false, Key::Num9, Action::Angle(9)),
     bind(Scope::Editor, false, false, Key::R, Action::LiveRecord),
+    bind(Scope::Editor, false, false, Key::H, Action::FitTimeline),
     bind(Scope::Editor, false, false, Key::ArrowLeft, Action::Nudge(-1)),
     bind(Scope::Editor, false, false, Key::ArrowRight, Action::Nudge(1)),
     bind(Scope::Editor, false, true, Key::ArrowLeft, Action::Nudge(-10)),
@@ -386,6 +389,7 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::ToggleMatch => ("Panels", "match of the shown scenario off / on"),
         Action::History => ("Panels", "saved states and checkpoints"),
         Action::Help => ("Panels", "this list"),
+        Action::FitTimeline => ("Playing", "show the whole sequence in the timeline"),
         Action::TogglePerf => ("Panels", "performance numbers"),
         Action::Export => ("Output", "export panel"),
         Action::ExportAgain => ("Output", "the last export again"),

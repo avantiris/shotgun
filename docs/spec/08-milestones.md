@@ -107,7 +107,9 @@ Status:
   the whole sequence; only the GIF takes the selection or marker range),
   export of 10-bit pictures as real 10 bits (the file is 10-bit, the
   pipeline in front of the encoder is 8-bit until M10), a queue of several
-  exports, a "reveal in file manager" action. Export reads the constant-rate
+  exports (a "Show in folder" button beside the news of a finished export
+  was added 2026-11-19; not tried, since it opens a window on the desktop).
+  Export reads the constant-rate
   conform of a variable-rate source instead of its original (`PROPOSED`,
   see 02). Not verifiable without a person: the keys and the panel with real
   input, the clipboard hand-over into a chat or browser, how the files look

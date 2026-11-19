@@ -266,7 +266,7 @@ impl Disk {
                 }
             }
             self.block = block;
-            self.fill_all(PREFILL_FRAMES);
+            self.fill_all(grain.map_or(PREFILL_FRAMES, |frames| frames.max(PREFILL_FRAMES)));
         }
         self.master = Live::new(self.mix.master_gain, 0.0, false);
         let mut master: Box<dyn Processor> = Box::new(Fader::new(self.master.clone()));
@@ -319,9 +319,8 @@ impl Disk {
             }
             Control::Grain(pos) => {
                 if !self.playing {
-                    // Half a second is prefilled by the ring's size at most; a grain is shorter.
+                    // The whole grain is in the rings before the graph is offered.
                     self.rebuild(pos, true, Some(GRAIN_FRAMES));
-                    self.fill_all(GRAIN_FRAMES);
                     self.grain_until = Some(Instant::now() + GRAIN_LINGER);
                     if let Some(activate) = &self.activate {
                         activate(true);

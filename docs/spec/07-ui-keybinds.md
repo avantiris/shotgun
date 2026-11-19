@@ -120,6 +120,7 @@ Panels and output
 | M, or the Mixer button | mixer in place of the inspector: per audio track a level meter, fader (double-click: 0 dB), pan, mute, solo, low cut, noise reduction; master fader |
 | F1, or the Keys button | every key and what it does |
 | ` (key left of 1) | performance overlay (with Ctrl while a text field has focus, e.g. in the library) |
+| H | show the whole sequence in the timeline (`PROPOSED`, added 2026-11-19) |
 | F2 | rename the project |
 | Esc | cancel / close popover |
 

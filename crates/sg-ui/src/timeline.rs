@@ -810,7 +810,9 @@ impl Timeline {
                 Edge::Start => props.fade_in = wanted.clamp(0, (frames - props.fade_out).max(0)),
                 Edge::End => props.fade_out = wanted.clamp(0, (frames - props.fade_in).max(0)),
             }
-            if track.props_of(clip.id).map(|p| &**p) == Some(&props) {
+            // Nothing changed (a clip without properties counts as the resting state).
+            let before = track.props_of(clip.id).map(|p| ClipProps::clone(p)).unwrap_or_default();
+            if before == props {
                 continue;
             }
             let props = (props != ClipProps::default()).then(|| Box::new(props));
@@ -1562,8 +1564,10 @@ impl Timeline {
         match action {
             Action::Split => {
                 for (track, clip) in self.targets(&sequence, playhead) {
-                    let at = Lane::of(&track, &sequence).units(playhead);
-                    ops.extend(split_ops(seq, &track, Lane::of(&track, &sequence), &clip, at, session.new_clip_id()));
+                    let lane = Lane::of(&track, &sequence);
+                    let at = lane.units(playhead);
+                    let ramp = picture_ramp(&sequence, &track, &clip);
+                    ops.extend(split_ops(seq, &track, lane, &clip, at, session.new_clip_id(), ramp.as_ref()));
                 }
                 self.selection.clear();
             }
@@ -1733,6 +1737,13 @@ impl Timeline {
 }
 
 impl Timeline {
+    /// Shows the whole sequence again, as when the project was opened.
+    pub fn refit(&mut self) {
+        self.fitted = false;
+    }
+}
+
+impl Timeline {
     /// Sets zoom and scroll directly (scripted runs and benchmarks).
     pub fn set_view(&mut self, frames_per_point: f64, left: f64) {
         self.frames_per_point = frames_per_point.max(0.001);
@@ -1876,21 +1887,55 @@ impl Timeline {
 /// left one stops (speed and ramp counted), keeps its keyframes in place
 /// and the fade-out; the left half keeps the fade-in and the transition
 /// into the clip.
-fn split_ops(seq: sg_core::SequenceId, track: &Track, lane: Lane, clip: &Clip, at: i64, right_id: ClipId) -> Vec<Op> {
+/// The speed ramp a sound clip follows: that of the picture of the same
+/// take (same asset, same place), if it has one. The player's mix uses the
+/// same rule.
+fn picture_ramp(sequence: &Sequence, track: &Track, clip: &Clip) -> Option<sg_core::Param> {
+    if track.kind != TrackKind::Audio {
+        return None;
+    }
+    let lane = Lane::of(track, sequence);
+    let start = lane.frame(clip.start);
+    if lane.units(start) != clip.start {
+        return None;
+    }
+    sequence.tracks.iter().filter(|t| t.kind == TrackKind::Video).find_map(|t| {
+        let picture = t.clips.get(start).filter(|p| p.asset == clip.asset && lane.units(p.len) == clip.len)?;
+        t.props_of(picture.id).map(|p| p.ramp.clone()).filter(|ramp| !ramp.is_one())
+    })
+}
+
+fn split_ops(
+    seq: sg_core::SequenceId,
+    track: &Track,
+    lane: Lane,
+    clip: &Clip,
+    at: i64,
+    right_id: ClipId,
+    picture_ramp: Option<&sg_core::Param>,
+) -> Vec<Op> {
     if at <= clip.start || at >= clip.end() {
         return Vec::new();
     }
-    let Some(props) = track.props_of(clip.id) else {
-        return Op::split(seq, track.id, clip, at, right_id).into_iter().collect();
+    let default = ClipProps::default();
+    let props = match track.props_of(clip.id) {
+        Some(props) => &**props,
+        // Nothing to share out, unless the sound follows a ramp.
+        None if picture_ramp.is_none() => return Op::split(seq, track.id, clip, at, right_id).into_iter().collect(),
+        None => &default,
     };
     // How far into the clip the cut is, in sequence frames (the unit of keyframes).
     let cut = lane.frame(at) - lane.frame(clip.start);
     let consumed = match lane.kind {
         TrackKind::Video => props.source_offset(cut),
-        // Sound has no ramp: the set speed times the samples played.
         TrackKind::Audio => {
             let (num, den) = if props.speed_valid() { props.speed } else { (1, 1) };
-            ((at - clip.start) as i128 * num as i128 / den as i128) as i64
+            match picture_ramp {
+                // The sound follows the picture's ramp: the area under it, in samples.
+                Some(ramp) => (ramp.integral(cut) * num as f64 / den as f64 * lane.per_frame()).round() as i64,
+                // The set speed times the samples played.
+                None => ((at - clip.start) as i128 * num as i128 / den as i128) as i64,
+            }
         }
     };
     let (mut left, mut right) = (ClipProps::clone(props), ClipProps::clone(props));
@@ -2665,6 +2710,33 @@ mod tests {
         // One undo step.
         assert!(session.undo().unwrap());
         assert_eq!(session.project().sequences[0].tracks[0].clips.at(0).unwrap().len, 600);
+    }
+
+    #[test]
+    fn splitting_a_ramped_take_keeps_its_sound_with_the_picture() {
+        use sg_core::{Key, Param};
+        let (_dir, mut session) = session();
+        let project = session.project().clone();
+        let seq = project.sequences[0].clone();
+        let (track, clip) = (seq.tracks[0].clone(), seq.tracks[0].clips.at(0).unwrap());
+        // Half speed throughout, on the picture; the sound has no properties.
+        let props = ClipProps {
+            ramp: Param { value: 1.0, keys: vec![Key::new(0, 0.5), Key::new(600, 0.5)] },
+            ..ClipProps::default()
+        };
+        let set = Op::SetClipProps { seq: seq.id, track: track.id, clip: clip.id, props: Some(Box::new(props)) };
+        session.apply(set, None).unwrap();
+        let mut timeline = Timeline::default();
+        let seq = session.project().sequences[0].clone();
+        timeline.select(&seq, &track, &clip, false, false);
+        act(&mut timeline, &mut session, Action::Split, 200);
+        let project = session.project().clone();
+        let (pictures, sounds) = (&project.sequences[0].tracks[0], &project.sequences[0].tracks[1]);
+        let picture = pictures.clips.at(200).unwrap();
+        let sound = sounds.clips.at(200 * 800).unwrap();
+        // Both tails go on from source frame 100: 200 frames at half speed.
+        assert_eq!((picture.start, picture.src_in), (200, 100));
+        assert_eq!((sound.start, sound.src_in), (200 * 800, 100 * 800));
     }
 
     #[test]

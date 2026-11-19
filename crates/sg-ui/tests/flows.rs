@@ -579,6 +579,11 @@ fn the_wheel_zooms_the_timeline_around_the_pointer() {
         further - here,
         further_after - here_after
     );
+    // H shows the whole sequence again.
+    harness.key_press(Key::H);
+    harness.run_steps(3);
+    let (here_again, further_again) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
+    assert_eq!((here_again, further_again), (here, further));
 }
 
 #[test]

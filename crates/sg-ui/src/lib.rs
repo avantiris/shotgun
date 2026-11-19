@@ -601,6 +601,7 @@ impl Shell {
                 }
             }
             Action::Help => self.help = !self.help,
+            Action::FitTimeline => self.editor.timeline.refit(),
             Action::Mixer => {
                 self.editor.mixer.open = !self.editor.mixer.open;
                 self.editor.colour.open = false;
