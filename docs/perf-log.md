@@ -368,3 +368,19 @@ to the processor if that fails; before, the processor decoded it.
 | 1080p60 vertical | 6.7 s = 2.98x | same | pass |
 | Share copy under 10 MB / 25 MB | 26.4 s / 27.6 s = 0.76x / 0.73x | none (two-pass x264) | |
 | GIF, 3 s | 2.6 s | none | |
+
+## 2026-11-19, re-run of M1 and M4 after the night's additions, commit 5c8e43e
+
+Commands: `scripts/bench-m1.sh`, `scripts/bench-m4.sh`. Since the last run
+the timeline draws fades, fade marks and keyframe marks on clips, the key
+file is read at start and the library asks for project pictures.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Start to library frame | median 119 ms, max 148 ms | <= 300 ms | pass |
+| Open 50 000-clip project to editor frame | median 113 ms, max 128 ms | <= 500 ms | pass |
+| Open bundle without a window, 50 000 clips | p99 102 ms | <= 500 ms | pass |
+| UI frame time, 10 clips | p99 0.29 to 0.41 ms | <= 6.9 ms p99 | pass |
+| UI frame time, 50 000 clips on 20 tracks | p99 0.66 ms | same | pass |
+| UI frame time, 50 000 clips on 4 tracks, labels | p99 0.39 to 0.66 ms | same | pass |
+| UI frame time, 500 000 clips | p99 1.55 to 1.83 ms | same | pass |
