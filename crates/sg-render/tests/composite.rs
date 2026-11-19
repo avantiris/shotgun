@@ -364,3 +364,38 @@ fn p010_delivery_has_ten_real_bits() {
     let eight_levels = levels(eight[..w as usize].iter().map(|v| *v as i32).collect());
     assert!(eight_levels <= 2 && ten_levels >= 4, "{eight_levels} levels in 8 bits, {ten_levels} in 10");
 }
+
+#[test]
+fn sharpen_and_glow_look_at_the_surroundings() {
+    use sg_core::{Correction, Grade, Module, ModuleKind};
+    let Some((device, queue)) = device() else { return };
+    let mut comp = Compositor::new(device.clone(), queue.clone(), 64, 36);
+    // Dark left half, mid-grey right half.
+    let pixels = solid(64, 36, |x, _| if x < 32 { [60, 60, 60, 255] } else { [150, 150, 150, 255] });
+    let view = Compositor::upload(&device, &queue, 64, 36, &pixels).create_view(&Default::default());
+    let mut shot = |module: Option<Module>| {
+        let grade = Grade { correction: Correction::NONE, look: module.into_iter().collect() };
+        comp.render(&[LayerDraw { grade: Some(&grade), ..LayerDraw::fitted(&view, (64, 36), 0) }]);
+        comp.read_output().unwrap()
+    };
+    let plain = shot(None);
+    let knobs = |kind: ModuleKind, values: [f32; 4]| Module { knobs: values, ..Module::new(kind) };
+    // Sharpening makes the dark side of the edge darker and the bright side
+    // brighter, and leaves flat areas alone.
+    let sharp = shot(Some(knobs(ModuleKind::Sharpen, [1.5, 6.0, 0.0, 0.0])));
+    assert!(pixel(&sharp, 64, 31, 18)[0] + 3 < pixel(&plain, 64, 31, 18)[0], "{:?}", pixel(&sharp, 64, 31, 18));
+    assert!(pixel(&sharp, 64, 32, 18)[0] > pixel(&plain, 64, 32, 18)[0] + 3, "{:?}", pixel(&sharp, 64, 32, 18));
+    assert!(
+        near(pixel(&sharp, 64, 8, 18), pixel(&plain, 64, 8, 18))
+            && near(pixel(&sharp, 64, 56, 18), pixel(&plain, 64, 56, 18))
+    );
+    // Softening does the opposite at the edge.
+    let soft = shot(Some(knobs(ModuleKind::Sharpen, [-1.0, 6.0, 0.0, 0.0])));
+    assert!(pixel(&soft, 64, 31, 18)[0] > pixel(&plain, 64, 31, 18)[0] + 3);
+    // Glow: the bright half (above the threshold) spills light onto the
+    // dark half near the edge, not far from it; warm glow is redder than blue.
+    let glow = shot(Some(knobs(ModuleKind::Glow, [0.1, 8.0, 2.0, 1.0])));
+    let (near_edge, far) = (pixel(&glow, 64, 30, 18), pixel(&glow, 64, 4, 18));
+    assert!(near_edge[0] > pixel(&plain, 64, 30, 18)[0] + 4 && near_edge[0] > near_edge[2], "{near_edge:?}");
+    assert!(near(far, pixel(&plain, 64, 4, 18)), "{far:?}");
+}

@@ -76,7 +76,13 @@ fn hue_tint(degrees: f32) -> vec3<f32> {
 
 // Match, then the look chain, on one linear-light colour. The sums of the
 // match are those of `sg_core::colour::Correction::apply`.
-fn grade(colour: vec3<f32>, q: vec2<f32>, pixel: vec2<f32>) -> vec3<f32> {
+// The picture near `uv`, in linear light with the match gain: what the
+// modules that look at a pixel's surroundings (sharpen, glow) sample.
+fn nearby(uv: vec2<f32>) -> vec3<f32> {
+    return to_linear(textureSampleLevel(picture, picture_sampler, uv, 0.0).rgb) * layer.grade0.rgb;
+}
+
+fn grade(colour: vec3<f32>, q: vec2<f32>, pixel: vec2<f32>, uv: vec2<f32>) -> vec3<f32> {
     var c = colour * layer.grade0.rgb;
     let pivot = max(layer.grade1.x, 0.001);
     let lit = max(luma(c), 1e-6);
@@ -130,6 +136,37 @@ fn grade(colour: vec3<f32>, q: vec2<f32>, pixel: vec2<f32>) -> vec3<f32> {
                 let noise = fract(sin(dot(cell, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5;
                 o = max(c + vec3<f32>(noise * k.x * 0.3 * sqrt(l)), vec3<f32>(0.0));
             }
+            // Sharpen / soften: amount, radius. The difference between the
+            // picture and a blurred copy of it is added (or taken away).
+            case 7u: {
+                let size = vec2<f32>(textureDimensions(picture));
+                let step = k.y * (size.y / 1080.0) / size;
+                var blurred = vec3<f32>(0.0);
+                for (var n = 0u; n < 8u; n++) {
+                    let angle = f32(n) * 0.7853982;
+                    blurred += nearby(uv + vec2<f32>(cos(angle), sin(angle)) * step);
+                }
+                // The surroundings are sampled before the chain; only their
+                // difference to the pixel itself (sampled the same way) is used.
+                o = max(c + (nearby(uv) - blurred / 8.0) * k.x * (l / max(luma(nearby(uv)), 1e-4)), vec3<f32>(0.0));
+            }
+            // Glow: threshold, radius, amount, warmth. Light from the bright
+            // parts around a pixel is added to it.
+            case 8u: {
+                let size = vec2<f32>(textureDimensions(picture));
+                let reach = k.y / 100.0 * vec2<f32>(size.y / size.x, 1.0);
+                // Each pixel turns the sampling pattern by its own angle: no rings.
+                let turn = 6.2831853 * fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+                var light = vec3<f32>(0.0);
+                for (var n = 0u; n < 24u; n++) {
+                    let r = sqrt((f32(n) + 0.5) / 24.0);
+                    let angle = f32(n) * 2.3999632 + turn;
+                    let s = nearby(uv + vec2<f32>(cos(angle), sin(angle)) * r * reach);
+                    light += max(s - vec3<f32>(k.x), vec3<f32>(0.0));
+                }
+                let tint = vec3<f32>(1.0 + 0.6 * k.w, 1.0 - 0.15 * abs(k.w), 1.0 - 0.6 * k.w);
+                o = c + light / 24.0 * k.z * tint;
+            }
             default: {}
         }
         c = mix(c, o, clamp(head.y, 0.0, 1.0));
@@ -141,6 +178,12 @@ fn grade(colour: vec3<f32>, q: vec2<f32>, pixel: vec2<f32>) -> vec3<f32> {
 fn layer_fs(v: LayerV) -> @location(0) vec4<f32> {
     let taps = max(u32(layer.extra.y), 1u);
     var sum = vec4<f32>(0.0);
+    // Where this pixel reads the picture when nothing moves: the centre for
+    // the modules that look at its surroundings.
+    let w0 = v.q - 1.0;
+    let q0 = abs(w0 - 4.0 * floor(w0 / 4.0) - 2.0) - 1.0;
+    let t0 = vec2<f32>(q0.x, -q0.y);
+    let centre_uv = layer.uv_centre.xy + vec2<f32>(dot(layer.uv.xy, t0), dot(layer.uv.zw, t0));
     // Each pixel takes its samples at slightly different instants: the steps
     // between samples then show as fine grain instead of as repeated edges.
     let jitter = select(0.5, fract(52.9829189 * fract(dot(v.pos.xy, vec2<f32>(0.06711056, 0.00583715)))), taps > 1u);
@@ -160,7 +203,7 @@ fn layer_fs(v: LayerV) -> @location(0) vec4<f32> {
     }
     let mean = sum / f32(taps);
     // Colour is worked on unmultiplied, then weighted by coverage again.
-    let graded = grade(mean.rgb / max(mean.a, 1e-5), v.q, v.pos.xy);
+    let graded = grade(mean.rgb / max(mean.a, 1e-5), v.q, v.pos.xy, centre_uv);
     return vec4<f32>(graded * mean.a, mean.a) * layer.offset.z;
 }
 

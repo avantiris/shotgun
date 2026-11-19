@@ -522,6 +522,8 @@ impl Editor {
             "rotation" => props.rotation.set(target.at, number),
             "opacity" => props.opacity.set(target.at, number),
             "ramp" => props.ramp.set(target.at, number),
+            "exposure" => props.exposure = number,
+            "warmth" => props.warmth = number,
             "stabilise" => {
                 props.stabilise = number != 0.0;
                 if props.stabilise {

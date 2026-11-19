@@ -164,6 +164,8 @@ pub enum ModuleKind {
     SplitTone = 4,
     Vignette = 5,
     Grain = 6,
+    Sharpen = 7,
+    Glow = 8,
 }
 
 /// A knob of a module: its name, range and resting value.
@@ -180,13 +182,15 @@ const fn knob(name: &'static str, min: f32, max: f32, rest: f32, hint: &'static 
 }
 
 impl ModuleKind {
-    pub const ALL: [ModuleKind; 6] = [
+    pub const ALL: [ModuleKind; 8] = [
         ModuleKind::Balance,
         ModuleKind::Tone,
         ModuleKind::Colour,
         ModuleKind::SplitTone,
         ModuleKind::Vignette,
         ModuleKind::Grain,
+        ModuleKind::Sharpen,
+        ModuleKind::Glow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -197,6 +201,8 @@ impl ModuleKind {
             ModuleKind::SplitTone => "Split tone",
             ModuleKind::Vignette => "Vignette",
             ModuleKind::Grain => "Grain",
+            ModuleKind::Sharpen => "Sharpen / soften",
+            ModuleKind::Glow => "Glow",
         }
     }
 
@@ -257,6 +263,36 @@ impl ModuleKind {
             }
             ModuleKind::Grain => {
                 const { &[knob("Amount", 0.0, 1.0, 0.15, ""), knob("Size", 1.0, 4.0, 1.5, "In pixels of the frame")] }
+            }
+            ModuleKind::Sharpen => {
+                const {
+                    &[
+                        knob("Amount", -1.0, 2.0, 0.5, "Above 0 sharpens edges, below 0 softens the picture"),
+                        knob(
+                            "Radius",
+                            0.5,
+                            6.0,
+                            1.5,
+                            "Width of the edges it works on, in pixels of a 1080-line picture",
+                        ),
+                    ]
+                }
+            }
+            ModuleKind::Glow => {
+                const {
+                    &[
+                        knob("Threshold", 0.0, 1.5, 0.6, "How bright a part must be to glow (1 is white)"),
+                        knob("Radius", 0.5, 8.0, 3.0, "How far the glow spreads, in percent of the picture height"),
+                        knob("Amount", 0.0, 2.0, 0.5, ""),
+                        knob(
+                            "Warmth",
+                            -1.0,
+                            1.0,
+                            0.3,
+                            "Colour of the glow: above 0 towards red, as film halation; below towards blue",
+                        ),
+                    ]
+                }
             }
         }
     }

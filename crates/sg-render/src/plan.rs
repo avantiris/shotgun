@@ -123,13 +123,21 @@ fn layer(
         let den = video.rate.den() as i128 * sequence.rate.num() as i128;
         (num.div_euclid(den) as i64).clamp(0, video.frames - 1)
     };
+    // The scenario's match and look, then the clip's own trim on top of the match.
+    let mut grade = project.grade_of(clip.asset);
+    if let Some(trim) = props.as_ref().and_then(|p| p.trim_gain()) {
+        let graded = grade.get_or_insert(Grade { correction: sg_core::Correction::NONE, look: Vec::new() });
+        for (gain, by) in graded.correction.gain.iter_mut().zip(trim) {
+            *gain *= by;
+        }
+    }
     Some(PlanLayer {
         clip: clip.id,
         source: Source::Asset { asset: clip.asset, frame: source_frame },
         at,
         props,
         motion,
-        grade: project.grade_of(clip.asset),
+        grade,
         frame,
         len: clip.len,
     })
@@ -310,5 +318,20 @@ mod tests {
         // No transition without a clip before it to come from.
         let lonely = apply(&slide, &Op::RemoveClip { seq: seq.id, track: TRACK, start: 0 }).unwrap().0;
         assert_eq!(sources(&lonely, 100), vec![(2, 50)]);
+    }
+
+    #[test]
+    fn a_clip_trim_becomes_a_grade_even_without_a_scenario() {
+        let plain = cut(None);
+        let seq = plain.sequences[0].id;
+        assert_eq!(plan(&plain, &plain.sequences[0], 150)[0].grade, None);
+        let props = ClipProps { exposure: 1.0, warmth: 1.0, ..ClipProps::default() };
+        let op = Op::SetClipProps { seq, track: TRACK, clip: ClipId(2), props: Some(Box::new(props)) };
+        let trimmed = apply(&plain, &op).unwrap().0;
+        let gain = plan(&trimmed, &trimmed.sequences[0], 150)[0].grade.as_ref().unwrap().correction.gain;
+        // One stop brighter, and warmer: more red than green, less blue.
+        assert!((gain[1] - 2.0).abs() < 1e-5 && gain[0] > 2.5 && gain[2] < 1.6, "{gain:?}");
+        // The other clip is untouched.
+        assert_eq!(plan(&trimmed, &trimmed.sequences[0], 50)[0].grade, None);
     }
 }

@@ -125,6 +125,10 @@ impl Default for Title {
     }
 }
 
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClipProps {
@@ -150,6 +154,12 @@ pub struct ClipProps {
     pub ramp: Param,
     /// Playback speed as a fraction: 2/1 is double speed.
     pub speed: (u32, u32),
+    /// Small colour trim of this clip alone, after the match of its
+    /// scenario: exposure in stops, warmth from -1 (cooler) to 1 (warmer).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub exposure: f32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub warmth: f32,
     /// Show the stabilised copy of the asset (made on first use).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stabilise: bool,
@@ -177,6 +187,8 @@ impl Default for ClipProps {
             title: None,
             transition: None,
             stabilise: false,
+            exposure: 0.0,
+            warmth: 0.0,
         }
     }
 }
@@ -514,5 +526,19 @@ mod ramp_tests {
         assert_eq!(props.source_offset(50), 75);
         // Without a ramp the field is not written to files at all.
         assert!(!serde_json::to_string(&ClipProps::default()).unwrap().contains("ramp"));
+    }
+}
+
+impl ClipProps {
+    /// The clip's own colour trim as gains on red, green and blue; `None`
+    /// if it has none.
+    pub fn trim_gain(&self) -> Option<[f32; 3]> {
+        if self.exposure == 0.0 && self.warmth == 0.0 {
+            return None;
+        }
+        let (stops, warmth) = (self.exposure.clamp(-4.0, 4.0), self.warmth.clamp(-1.0, 1.0));
+        let level = 2f32.powf(stops);
+        // The same curve as the temperature knob of the Balance module.
+        Some([level * (0.35 * warmth).exp(), level, level * (-0.35 * warmth).exp()])
     }
 }
