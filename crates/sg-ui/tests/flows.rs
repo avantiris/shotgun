@@ -647,3 +647,34 @@ fn handles_in_the_viewer_size_and_turn_the_selected_picture() {
     harness.run_steps(2);
     assert_eq!(props(&harness), None);
 }
+
+#[test]
+fn the_way_between_two_keyframes_can_be_made_smooth() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let on_clip = on_timeline(&harness, 100.0, 0);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    assert!(harness.query_by_label("Smooth").is_none());
+    // A keyframe at the start, then the picture dragged aside further on: a second one.
+    click(&mut harness, "Keyframe (F)");
+    playhead(&mut harness, 40);
+    let middle = egui::pos2(810.0, 330.0);
+    drag(&mut harness, middle, middle + vec2(120.0, 0.0));
+    let x_at = |harness: &Harness<'_, App>, frame: i64| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = &project.sequences[0].tracks[0];
+        track.props_of(track.clips.at(0).unwrap().id).unwrap().x.at(frame)
+    };
+    let end = x_at(&harness, 40);
+    assert!(end > 0.05 && x_at(&harness, 0) == 0.0);
+    playhead(&mut harness, 10);
+    assert!((x_at(&harness, 10) - end / 4.0).abs() < 1e-5);
+    click(&mut harness, "Smooth");
+    assert!(x_at(&harness, 10) < end * 0.17, "{}", x_at(&harness, 10));
+    assert!((x_at(&harness, 20) - end / 2.0).abs() < 1e-5);
+    click(&mut harness, "Hold");
+    assert_eq!((x_at(&harness, 39), x_at(&harness, 40)), (0.0, end));
+    // Outside the keyframes there is nothing to choose.
+    playhead(&mut harness, 50);
+    assert!(harness.query_by_label("Smooth").is_none());
+}

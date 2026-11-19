@@ -766,7 +766,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                         wav: cache::audio(root, c.asset),
                         // Decibels to linear. With keyframes the level moves along the clip.
                         gain: if props.gain_db.is_animated() { 1.0 } else { 10f32.powf(props.gain_db.value / 20.0) },
-                        gain_keys: props.gain_db.keys.iter().map(|k| (samples(k.frame), k.value)).collect(),
+                        gain_keys: level_points(&props.gain_db, samples),
                         fade_in: samples(props.fade_in),
                         fade_out: samples(props.fade_out),
                         speed: if props.speed_valid() { props.speed } else { (1, 1) },
@@ -790,4 +790,31 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
         })
         .collect();
     Mix { tracks, master_gain: db(sequence.master_db) }
+}
+
+/// Volume keyframes as the engine wants them: points with straight lines
+/// between. A stretch that is not straight is given points along its way.
+fn level_points(level: &sg_core::Param, samples: impl Fn(i64) -> i64) -> Vec<(i64, f32)> {
+    let mut points = Vec::with_capacity(level.keys.len());
+    for (i, key) in level.keys.iter().enumerate() {
+        points.push((samples(key.frame), key.value));
+        let Some(next) = level.keys.get(i + 1) else { continue };
+        match key.ease {
+            sg_core::Ease::Linear => {}
+            // Held until one sample before the next keyframe.
+            sg_core::Ease::Hold => points.push((samples(next.frame) - 1, key.value)),
+            sg_core::Ease::Smooth => {
+                const STEPS: i64 = 16;
+                let (from, to) = (samples(key.frame), samples(next.frame));
+                for step in 1..STEPS {
+                    let t = step as f64 / STEPS as f64;
+                    let value = key.value + (next.value - key.value) * key.ease.curve(t) as f32;
+                    points.push((from + (to - from) * step / STEPS, value));
+                }
+            }
+        }
+    }
+    // Keyframes a frame apart can make points fall on the same sample.
+    points.dedup_by_key(|p| p.0);
+    points
 }

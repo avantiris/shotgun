@@ -730,7 +730,11 @@ pub(crate) mod tests {
                     stabilise: pick % 2 == 0,
                     ramp: crate::props::Param {
                         value: 1.0,
-                        keys: vec![crate::props::Key { frame: a % 50, value: 0.5 }],
+                        keys: vec![crate::props::Key {
+                            frame: a % 50,
+                            value: 0.5,
+                            ease: crate::props::Ease::ALL[pick % 3],
+                        }],
                     },
                     transition: (pick % 3 == 0).then_some(transition),
                     ..ClipProps::default()

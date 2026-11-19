@@ -145,6 +145,29 @@ impl ClipPanel {
         } else {
             changed |= value_row(ui, "Volume", &mut props.gain_db, at, -60.0..=24.0, 0.1, " dB");
         }
+        // Between two keyframes: how the values travel from one to the other.
+        let ClipProps { x, y, scale, rotation, opacity, ramp, gain_db, .. } = &mut props;
+        let mut animated = [x, y, scale, rotation, opacity, ramp, gain_db];
+        if let Some(now) = animated.iter().find_map(|p| p.ease_at(at)) {
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [84.0, 16.0],
+                    egui::Label::new(RichText::new("Between keys").color(theme::DIM)).halign(egui::Align::LEFT),
+                );
+                for ease in sg_core::Ease::ALL {
+                    let tip = match ease {
+                        sg_core::Ease::Linear => "At a steady pace from the keyframe before the playhead to the next",
+                        sg_core::Ease::Smooth => "Starts and arrives gently",
+                        sg_core::Ease::Hold => "Stays, then jumps at the next keyframe",
+                    };
+                    if ui.selectable_label(now == ease, ease.label()).on_hover_text(tip).clicked() {
+                        for param in &mut animated {
+                            changed |= param.set_ease(at, ease);
+                        }
+                    }
+                }
+            });
+        }
         if props.title.is_none() {
             ui.horizontal(|ui| {
                 ui.add_sized(
@@ -291,8 +314,7 @@ impl ClipPanel {
         let mut props = target.props.clone();
         // Half a percent of the frame is the smallest wobble worth a keyframe.
         let keys = |pick: fn(&(i64, f32, f32)) -> f32| {
-            let mut keys: Vec<Key> =
-                recorded.iter().map(|sample| Key { frame: sample.0, value: pick(sample) }).collect();
+            let mut keys: Vec<Key> = recorded.iter().map(|sample| Key::new(sample.0, pick(sample))).collect();
             keys.dedup_by_key(|k| k.frame);
             props::simplify(&keys, 0.005)
         };

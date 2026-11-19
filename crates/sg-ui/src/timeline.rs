@@ -2406,8 +2406,8 @@ mod tests {
         // Moving across the frame over the whole clip, slowing down to half
         // speed, fading in and out.
         let props = ClipProps {
-            x: Param { value: 0.0, keys: vec![Key { frame: 0, value: -0.5 }, Key { frame: 600, value: 0.5 }] },
-            ramp: Param { value: 1.0, keys: vec![Key { frame: 0, value: 1.0 }, Key { frame: 600, value: 0.5 }] },
+            x: Param { value: 0.0, keys: vec![Key::new(0, -0.5), Key::new(600, 0.5)] },
+            ramp: Param { value: 1.0, keys: vec![Key::new(0, 1.0), Key::new(600, 0.5)] },
             fade_in: 30,
             fade_out: 40,
             ..ClipProps::default()

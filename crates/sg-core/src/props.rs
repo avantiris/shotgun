@@ -13,10 +13,66 @@ use serde::{Deserialize, Serialize};
 pub struct Key {
     pub frame: i64,
     pub value: f32,
+    /// How the value travels from this keyframe to the next.
+    #[serde(default, skip_serializing_if = "Ease::is_linear")]
+    pub ease: Ease,
 }
 
-/// A value that is either constant or follows keyframes (linear between
-/// them, held before the first and after the last).
+/// The way from one keyframe to the next.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Ease {
+    /// At a steady pace.
+    #[default]
+    Linear,
+    /// Starts and arrives gently.
+    Smooth,
+    /// Stays, then jumps at the next keyframe.
+    Hold,
+}
+
+impl Ease {
+    pub const ALL: [Ease; 3] = [Ease::Linear, Ease::Smooth, Ease::Hold];
+
+    fn is_linear(&self) -> bool {
+        *self == Ease::Linear
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Ease::Linear => "Linear",
+            Ease::Smooth => "Smooth",
+            Ease::Hold => "Hold",
+        }
+    }
+
+    /// How far the value has come when `t` (0 to 1) of the way has passed.
+    pub fn curve(self, t: f64) -> f64 {
+        match self {
+            Ease::Linear => t,
+            Ease::Smooth => t * t * (3.0 - 2.0 * t),
+            Ease::Hold => 0.0,
+        }
+    }
+
+    /// The area under `curve` from 0 to `t`.
+    fn area(self, t: f64) -> f64 {
+        match self {
+            Ease::Linear => t * t / 2.0,
+            Ease::Smooth => t * t * t - t * t * t * t / 2.0,
+            Ease::Hold => 0.0,
+        }
+    }
+}
+
+impl Key {
+    pub fn new(frame: i64, value: f32) -> Key {
+        Key { frame, value, ease: Ease::Linear }
+    }
+}
+
+/// A value that is either constant or follows keyframes (between them as
+/// the earlier one's `ease` says, held before the first and after the last).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Param {
     pub value: f32,
@@ -39,8 +95,8 @@ impl Param {
             (None, None) => self.value,
             (Some(k), None) | (None, Some(&k)) => k.value,
             (Some(a), Some(b)) => {
-                let t = (frame - a.frame) as f32 / (b.frame - a.frame) as f32;
-                a.value + (b.value - a.value) * t
+                let t = (frame - a.frame) as f64 / (b.frame - a.frame) as f64;
+                a.value + (b.value - a.value) * a.ease.curve(t) as f32
             }
         }
     }
@@ -58,7 +114,11 @@ impl Param {
     pub fn set_key(&mut self, frame: i64, value: f32) {
         match self.keys.binary_search_by_key(&frame, |k| k.frame) {
             Ok(i) => self.keys[i].value = value,
-            Err(i) => self.keys.insert(i, Key { frame, value }),
+            // A keyframe put into a stretch continues that stretch's way of moving.
+            Err(i) => {
+                let ease = i.checked_sub(1).map_or(Ease::Linear, |before| self.keys[before].ease);
+                self.keys.insert(i, Key { frame, value, ease });
+            }
         }
     }
 
@@ -70,6 +130,22 @@ impl Param {
         if self.keys.is_empty() {
             self.value = removed.value;
         }
+        true
+    }
+
+    /// The way of moving in the stretch `frame` lies in, if it lies between two keyframes.
+    pub fn ease_at(&self, frame: i64) -> Option<Ease> {
+        let after = self.keys.partition_point(|k| k.frame <= frame);
+        (after > 0 && after < self.keys.len()).then(|| self.keys[after - 1].ease)
+    }
+
+    /// Sets the way of moving in the stretch `frame` lies in.
+    pub fn set_ease(&mut self, frame: i64, ease: Ease) -> bool {
+        let after = self.keys.partition_point(|k| k.frame <= frame);
+        if after == 0 || after >= self.keys.len() || self.keys[after - 1].ease == ease {
+            return false;
+        }
+        self.keys[after - 1].ease = ease;
         true
     }
 
@@ -91,8 +167,10 @@ impl Param {
             let (a, b) = (pair[0], pair[1]);
             let (from, until) = (a.frame.max(0), b.frame.min(to));
             if until > from {
-                // Linear in between: the mean of the two ends times the width.
-                area += (self.at(from) as f64 + self.at(until) as f64) / 2.0 * (until - from) as f64;
+                let width = (b.frame - a.frame) as f64;
+                let (t0, t1) = ((from - a.frame) as f64 / width, (until - a.frame) as f64 / width);
+                area += width
+                    * (a.value as f64 * (t1 - t0) + (b.value - a.value) as f64 * (a.ease.area(t1) - a.ease.area(t0)));
             }
         }
         // Held at the last key's value after it.
@@ -309,9 +387,8 @@ mod tests {
     #[test]
     fn simplify_keeps_corners_and_drops_the_straight_parts() {
         // A straight ramp with a kink at frame 50.
-        let keys: Vec<Key> = (0..=100)
-            .map(|f| Key { frame: f, value: if f <= 50 { f as f32 } else { 50.0 - (f - 50) as f32 * 0.5 } })
-            .collect();
+        let keys: Vec<Key> =
+            (0..=100).map(|f| Key::new(f, if f <= 50 { f as f32 } else { 50.0 - (f - 50) as f32 * 0.5 })).collect();
         let simple = simplify(&keys, 0.01);
         assert_eq!(simple.iter().map(|k| k.frame).collect::<Vec<_>>(), [0, 50, 100]);
         // Noise below the tolerance disappears, the shape stays.
@@ -500,7 +577,7 @@ mod ramp_tests {
         // Constant: plain multiplication.
         assert_eq!(Param::constant(0.5).integral(100), 50.0);
         // Held at 1 until frame 20, down to 0.25 at frame 60, held after.
-        let ramp = Param { value: 1.0, keys: vec![Key { frame: 20, value: 1.0 }, Key { frame: 60, value: 0.25 }] };
+        let ramp = Param { value: 1.0, keys: vec![Key::new(20, 1.0), Key::new(60, 0.25)] };
         assert_eq!(ramp.integral(10), 10.0);
         assert_eq!(ramp.integral(20), 20.0);
         // Halfway down the slope the speed is 0.625: 20 frames at a mean of 0.8125.
@@ -520,12 +597,59 @@ mod ramp_tests {
     fn a_ramp_scales_the_set_speed_and_no_ramp_stays_exact() {
         let mut props = ClipProps { speed: (2, 1), ..ClipProps::default() };
         assert_eq!(props.source_offset(7), 14);
-        props.ramp = Param { value: 1.0, keys: vec![Key { frame: 0, value: 1.0 }, Key { frame: 100, value: 0.0 }] };
+        props.ramp = Param { value: 1.0, keys: vec![Key::new(0, 1.0), Key::new(100, 0.0)] };
         // After 100 frames at a mean of half the doubled speed: 100 source frames.
         assert_eq!(props.source_offset(100), 100);
         assert_eq!(props.source_offset(50), 75);
         // Without a ramp the field is not written to files at all.
         assert!(!serde_json::to_string(&ClipProps::default()).unwrap().contains("ramp"));
+    }
+    #[test]
+    fn easing_shapes_the_way_between_keyframes() {
+        let mut p = Param { value: 0.0, keys: vec![Key::new(0, 0.0), Key::new(100, 10.0), Key::new(200, 0.0)] };
+        assert_eq!(p.at(25), 2.5);
+        assert!(p.set_ease(50, Ease::Smooth));
+        assert!(!p.set_ease(50, Ease::Smooth));
+        assert_eq!(p.ease_at(50), Some(Ease::Smooth));
+        assert_eq!(p.ease_at(150), Some(Ease::Linear));
+        assert_eq!(p.ease_at(200), None);
+        // Gentle at both ends, the same in the middle, exact on the keyframes.
+        assert!(p.at(10) < 0.5 && p.at(90) > 9.5);
+        assert_eq!((p.at(0), p.at(50), p.at(100)), (0.0, 5.0, 10.0));
+        // The second stretch is untouched.
+        assert_eq!(p.at(150), 5.0);
+        // A keyframe put into the smooth stretch continues it.
+        p.set_key(40, p.at(40));
+        assert_eq!(p.keys[1].ease, Ease::Smooth);
+        assert!(p.set_ease(150, Ease::Hold));
+        assert_eq!((p.at(100), p.at(199), p.at(200)), (10.0, 10.0, 0.0));
+        assert!(!Param::constant(1.0).set_ease(5, Ease::Hold));
+        // Text form: the plain way is not written, so old projects read as before.
+        assert_eq!(serde_json::to_string(&Key::new(3, 1.0)).unwrap(), r#"{"frame":3,"value":1.0}"#);
+        let held = Key { ease: Ease::Hold, ..Key::new(3, 1.0) };
+        assert_eq!(serde_json::from_str::<Key>(&serde_json::to_string(&held).unwrap()).unwrap(), held);
+    }
+
+    #[test]
+    fn the_integral_follows_the_easing() {
+        for ease in Ease::ALL {
+            let key = Key { ease, ..Key::new(10, 1.0) };
+            let p = Param { value: 1.0, keys: vec![key, Key::new(70, 0.25), Key::new(90, 2.0)] };
+            // Against a sum of the values frame by frame (midpoints would be exact for straight lines only).
+            for to in [5, 10, 33, 70, 81, 120] {
+                let fine: f64 = (0..to * 100)
+                    .map(|i| {
+                        let x = i as f64 / 100.0 + 0.005;
+                        let (a, b) = (x.floor() as i64, x.floor() as i64 + 1);
+                        let t = x - a as f64;
+                        (p.at(a) as f64 * (1.0 - t) + p.at(b) as f64 * t) / 100.0
+                    })
+                    .sum();
+                // Hold jumps within a frame, which the frame-wise sum smears: allow for that.
+                let slack = if ease == Ease::Hold { 0.5 } else { 0.02 };
+                assert!((p.integral(to) - fine).abs() < slack, "{ease:?} to {to}: {} against {fine}", p.integral(to));
+            }
+        }
     }
 }
 
