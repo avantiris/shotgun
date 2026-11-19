@@ -409,6 +409,7 @@ impl Timeline {
         self.follow_song(&sequence);
         let rect = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Timeline"));
         let lanes = Rect::from_min_max(pos2(rect.left() + HEADER_W, rect.top()), rect.max);
         if !self.fitted && lanes.width() > 10.0 {
             self.fit(&sequence, lanes.width());

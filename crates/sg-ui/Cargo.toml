@@ -17,4 +17,5 @@ bytemuck.workspace = true
 workspace = true
 
 [dev-dependencies]
+egui_kittest = { version = "0.37", default-features = false }
 tempfile.workspace = true

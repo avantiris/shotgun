@@ -197,6 +197,8 @@ impl AssetsPanel {
             ui.horizontal_wrapped(|ui| {
                 for asset in assets {
                     let (rect, response) = ui.allocate_exact_size(tile, Sense::click_and_drag());
+                    // The tile is painted by hand: say what it is for screen readers and tests.
+                    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &asset.label));
                     // Dragged onto the timeline, the asset is placed where it is let go.
                     response.dnd_set_drag_payload(asset.id);
                     if response.drag_started() {
