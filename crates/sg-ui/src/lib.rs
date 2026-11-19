@@ -1311,6 +1311,12 @@ fn help_panel(ctx: &egui::Context) {
                 }
             });
             ui.set_max_width(1180.0);
+            if let Some((file, problems)) = keymap::source() {
+                ui.label(RichText::new(format!("To change keys, edit {file} and start again.")).color(theme::DIM));
+                for problem in problems {
+                    ui.label(RichText::new(format!("Not understood in that file, {problem}")).color(theme::ACCENT));
+                }
+            }
             ui.label(RichText::new("Mouse: wheel zooms the timeline, Shift + wheel scrolls it; drag clips to move, their edges to trim; right click for menus; drag assets onto the timeline (Shift: only picture or only sound).").color(theme::DIM));
         });
     });

@@ -67,7 +67,7 @@ Status:
   places it at the playhead instead), dropping a file directly onto a
   position in the timeline, overwrite and insert edits (a move onto occupied
   space is refused), waveforms and thumbnails on clips, track add/remove/
-  mute in the UI, renaming markers, the key map config file, journal
+  mute in the UI, renaming markers, (the key map file was added 2026-11-19, see 07), journal
   compaction. After restoring an older state, media of assets that state does
   not know stays in `assets/` instead of moving to the trash. Not verifiable
   without a person: every mouse gesture on the timeline (they are covered by

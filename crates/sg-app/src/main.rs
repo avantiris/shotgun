@@ -40,7 +40,7 @@ shotgun [options]
                        size:<w>x<h> exportpanel export:<master|vertical|gif|share:<MB>> (see script.rs for all)
   --bench-start        print the time to the first library frame and quit
   --bench-open         with --open: print the time to the first editor frame and quit
-Environment: SHOTGUN_LIBRARY (library folder), SHOTGUN_APP_ID (Wayland app id), SHOTGUN_LOG (error..trace),
+Environment: SHOTGUN_LIBRARY (library folder), SHOTGUN_KEYS (key file instead of ~/.config/shotgun/keys.conf), SHOTGUN_APP_ID (Wayland app id), SHOTGUN_LOG (error..trace),
   SHOTGUN_AUDIO (null | sink:<name>), SHOTGUN_NO_CLIPBOARD (exports leave the clipboard alone)";
 
 #[derive(Default)]
@@ -906,6 +906,43 @@ fn spawn_script(steps: Vec<Step>, proxy: EventLoopProxy<UserEvent>) -> std::io::
     Ok(())
 }
 
+/// Reads the user's changes to the key map (`SHOTGUN_KEYS`, or
+/// `shotgun/keys.conf` in the configuration folder). A missing file is
+/// written with the built-in keys as comments, unless this is an automated
+/// run, which leaves the user's folders alone.
+fn load_keys(write_if_missing: bool) {
+    let path = std::env::var_os("SHOTGUN_KEYS").map(PathBuf::from).or_else(|| {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+        Some(config.join("shotgun/keys.conf"))
+    });
+    let Some(path) = path else { return };
+    let shown = path.display().to_string();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let changed = sg_ui::keymap::with_changes(&text, &shown);
+            for problem in &changed.problems {
+                log::warn!("{shown}: {problem}");
+            }
+            sg_ui::keymap::install(changed);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && write_if_missing => {
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, sg_ui::keymap::default_file()));
+            match written {
+                Ok(()) => sg_ui::keymap::install(sg_ui::keymap::with_changes("", &shown)),
+                Err(e) => log::warn!("could not write {shown}: {e}"),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("could not read {shown}: {e}"),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let mut args = parse_args()?;
@@ -917,6 +954,10 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().context("connecting to the Wayland display")?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
+
+    // Before there is a window: one small file, read once.
+    let by_hand = args.script.is_empty() && args.exit_after.is_none() && !args.bench_start && !args.bench_open;
+    load_keys(by_hand);
 
     // The library is read while the window and GPU come up.
     let library = sg_project::library_dir();

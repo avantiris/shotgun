@@ -125,8 +125,18 @@ Modifiers follow one rule: **Shift = bigger/alternate, Ctrl = ripple or
 app-level, Alt = disable snapping / fine adjustment.**
 
 The key map lives in one table in code and is written to a config file so it
-can be changed without rebuilding. (M1: the table exists in
-`sg-ui/src/keymap.rs`; the config file is not written yet.)
+can be changed without rebuilding. Built 2026-11-19: the table is in
+`sg-ui/src/keymap.rs`; `~/.config/shotgun/keys.conf` (or the file named by
+`SHOTGUN_KEYS`) is read at start. `PROPOSED` form: the file holds only
+changes. On the first start by hand it is written with every built-in key
+as a comment line (`# editor S = Split`); removing the `#` and editing the
+line changes that key. An action named in the file has only the keys given
+there, a key given there is taken from whatever had it, and
+`none = <action>` leaves an action without a key. Keys are named by
+position with US names. F1 shows the keys in force, the file's path and
+the lines it did not understand. Labels on buttons that mention a key
+("Keyframe (F)") still show the built-in key. Automated runs never write
+the file and `scripts/run-hidden.sh` points them away from the user's.
 
 Rule for text fields: while one has focus, keys without Ctrl go to the text;
 Ctrl bindings and Esc keep working.

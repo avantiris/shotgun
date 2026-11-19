@@ -78,6 +78,7 @@ pub enum Scope {
     Editor,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub scope: Scope,
     pub ctrl: bool,
@@ -151,13 +152,165 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
 ];
 
+/// The map in use, once the user's changes have been read: the table above
+/// until then (and in tests).
+static ACTIVE: std::sync::OnceLock<Changed> = std::sync::OnceLock::new();
+
+/// The table with the user's changes applied.
+pub struct Changed {
+    pub bindings: Vec<Binding>,
+    /// Lines of the file that were not understood, as messages.
+    pub problems: Vec<String>,
+    /// Where the changes were read from, for the key reference.
+    pub file: String,
+}
+
+pub fn active() -> &'static [Binding] {
+    ACTIVE.get().map_or(KEYMAP, |changed| &changed.bindings)
+}
+
+/// The file the changes came from and what was wrong in it, if a file was read.
+pub fn source() -> Option<(&'static str, &'static [String])> {
+    ACTIVE.get().map(|changed| (changed.file.as_str(), changed.problems.as_slice()))
+}
+
+/// Puts the user's map in force. Once, at start.
+pub fn install(changed: Changed) {
+    let _ = ACTIVE.set(changed);
+}
+
+fn scope_name(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Any => "any",
+        Scope::Library => "library",
+        Scope::Editor => "editor",
+    }
+}
+
+/// The key as the file names it: by position, with the names of the US layout.
+fn chord(binding: &Binding) -> String {
+    format!(
+        "{}{}{}",
+        if binding.ctrl { "Ctrl+" } else { "" },
+        if binding.shift { "Shift+" } else { "" },
+        binding.key.name()
+    )
+}
+
+/// The file as it is first written: every key of the table as a comment,
+/// to be changed by removing the `#` and editing the line.
+pub fn default_file() -> String {
+    let mut text = String::from(
+        "# Shotgun keys. Read when the program starts.\n\
+         #\n\
+         # Below is every key as built in, switched off by the '#'. To change one,\n\
+         # remove the '#' and edit the line:\n\
+         #\n\
+         #   <where> <key> = <action>      where: any, library or editor\n\
+         #   none = <action>               the action gets no key at all\n\
+         #\n\
+         # An action named here has only the keys given here; a key given here is\n\
+         # taken away from whatever had it. Keys are named by their place on the\n\
+         # keyboard, with the names of the US layout: on the Swiss keyboard the cap\n\
+         # Y is called Z and the cap Z is called Y, and the key left of 1 is\n\
+         # Backtick. Modifiers: Ctrl+ and Shift+ (Alt is kept for the mouse).\n\
+         # F1 in the program shows the keys in force and what this file got wrong.\n\n",
+    );
+    for binding in KEYMAP {
+        text.push_str(&format!("# {} {} = {:?}\n", scope_name(binding.scope), chord(binding), binding.action));
+    }
+    text
+}
+
+/// The table with the changes of a key file applied.
+pub fn with_changes(text: &str, file: &str) -> Changed {
+    let mut problems = Vec::new();
+    let mut added: Vec<Binding> = Vec::new();
+    let mut named: Vec<Action> = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut problem = |what: &str| problems.push(format!("line {}: {what}", number + 1));
+        let Some((keys, action)) = line.split_once('=') else {
+            problem("no '='");
+            continue;
+        };
+        let action = action.trim();
+        let Some(action) =
+            KEYMAP.iter().map(|b| b.action).find(|known| format!("{known:?}").eq_ignore_ascii_case(action))
+        else {
+            problem(&format!("no action is called '{action}'"));
+            continue;
+        };
+        let mut words = keys.split_whitespace();
+        let (first, second) = (words.next().unwrap_or_default(), words.next());
+        if first.eq_ignore_ascii_case("none") && second.is_none() {
+            named.push(action);
+            continue;
+        }
+        let scope = [Scope::Any, Scope::Library, Scope::Editor]
+            .into_iter()
+            .find(|s| first.eq_ignore_ascii_case(scope_name(*s)));
+        let (Some(scope), Some(keys), None) = (scope, second, words.next()) else {
+            problem("expected 'any', 'library' or 'editor', then one key");
+            continue;
+        };
+        let mut parts: Vec<&str> = keys.split('+').collect();
+        let name = parts.pop().unwrap_or_default();
+        let ctrl = parts.iter().any(|p| p.eq_ignore_ascii_case("ctrl"));
+        let shift = parts.iter().any(|p| p.eq_ignore_ascii_case("shift"));
+        if parts.iter().any(|p| !p.eq_ignore_ascii_case("ctrl") && !p.eq_ignore_ascii_case("shift")) {
+            problem("only Ctrl+ and Shift+ can go before a key");
+            continue;
+        }
+        // (Names are case-sensitive in egui: "A", "F2", "Space".)
+        let key = Key::from_name(name)
+            .or_else(|| Key::from_name(&name.to_uppercase()))
+            .or_else(|| Key::ALL.iter().copied().find(|k| k.name().eq_ignore_ascii_case(name)));
+        let Some(key) = key else {
+            problem(&format!("no key is called '{name}'"));
+            continue;
+        };
+        named.push(action);
+        added.push(Binding { scope, ctrl, shift, key, action });
+    }
+    let collide = |a: &Binding, b: &Binding| {
+        (a.scope == b.scope || a.scope == Scope::Any || b.scope == Scope::Any)
+            && a.key == b.key
+            && a.ctrl == b.ctrl
+            && a.shift == b.shift
+    };
+    // The file's keys first, then what is left of the table.
+    let mut bindings: Vec<Binding> = Vec::new();
+    for binding in added {
+        match bindings.iter().find(|b| collide(b, &binding)) {
+            Some(taken) => problems.push(format!(
+                "{} is given to both {:?} and {:?}; the first stays",
+                chord(&binding),
+                taken.action,
+                binding.action
+            )),
+            None => bindings.push(binding),
+        }
+    }
+    let from_file = bindings.len();
+    for binding in KEYMAP {
+        if !named.contains(&binding.action) && !bindings[..from_file].iter().any(|b| collide(b, binding)) {
+            bindings.push(*binding);
+        }
+    }
+    Changed { bindings, problems, file: file.to_owned() }
+}
+
 /// The action bound to a key press. While a text field has focus, keys
 /// without Ctrl belong to the text (except Escape).
 pub fn lookup(screen: Scope, typing: bool, key: Key, mods: Modifiers) -> Option<Action> {
     if mods.alt || (typing && !mods.ctrl && key != Key::Escape) {
         return None;
     }
-    KEYMAP
+    active()
         .iter()
         .find(|b| {
             (b.scope == Scope::Any || b.scope == screen) && b.key == key && b.ctrl == mods.ctrl && b.shift == mods.shift
@@ -258,7 +411,7 @@ pub fn reference() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
     let mut groups: Vec<(&'static str, Vec<(String, &'static str)>)> = Vec::new();
     for order in ["Playing", "Cutting", "Making", "Panels", "Output", "Project"] {
         let mut lines: Vec<(String, &'static str)> = Vec::new();
-        for binding in KEYMAP {
+        for binding in active() {
             let Some((group, what)) = describe(binding.action) else { continue };
             if group != order {
                 continue;
@@ -306,6 +459,35 @@ mod tests {
         assert_eq!(lookup(Scope::Library, false, Key::Z, Modifiers::NONE), None);
         assert_eq!(lookup(Scope::Library, true, Key::N, CTRL), Some(Action::NewProject));
         assert_eq!(lookup(Scope::Editor, false, Key::N, CTRL), None);
+    }
+
+    #[test]
+    fn a_key_file_changes_the_table() {
+        // The file as first written changes nothing.
+        let same = with_changes(&default_file(), "keys.conf");
+        assert!(same.problems.is_empty(), "{:?}", same.problems);
+        assert_eq!(same.bindings, KEYMAP);
+        let find = |changed: &Changed, key: Key, ctrl: bool, shift: bool| {
+            changed.bindings.iter().find(|b| b.key == key && b.ctrl == ctrl && b.shift == shift).map(|b| b.action)
+        };
+        let changed = with_changes(
+            "editor x = Split\neditor Ctrl+Shift+f2 = split\nnone = Marker\n# editor G = Split\n\
+             nonsense\neditor Hyper+A = Undo\neditor Blub = Undo\nany A = Fly\neditor x = Mixer\n",
+            "keys.conf",
+        );
+        // Split has exactly the two keys of the file; S is free.
+        assert_eq!(find(&changed, Key::X, false, false), Some(Action::Split));
+        assert_eq!(find(&changed, Key::F2, true, true), Some(Action::Split));
+        assert_eq!(find(&changed, Key::S, false, false), None);
+        // X was taken from the ripple delete; Shift+X still deletes.
+        assert!(!changed.bindings.iter().any(|b| b.action == Action::RippleDelete));
+        assert_eq!(find(&changed, Key::X, false, true), Some(Action::Delete));
+        // The marker has no key; Mixer was named but lost the fight for X, so it has none either.
+        assert!(!changed.bindings.iter().any(|b| b.action == Action::Marker || b.action == Action::Mixer));
+        assert_eq!(find(&changed, Key::Z, false, false), Some(Action::Undo));
+        assert_eq!(changed.problems.len(), 5, "{:?}", changed.problems);
+        assert!(changed.problems[0].starts_with("line 5:"));
+        assert!(changed.problems[4].contains("both Split and Mixer"));
     }
 
     #[test]
