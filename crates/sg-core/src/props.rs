@@ -150,6 +150,9 @@ pub struct ClipProps {
     pub ramp: Param,
     /// Playback speed as a fraction: 2/1 is double speed.
     pub speed: (u32, u32),
+    /// Show the stabilised copy of the asset (made on first use).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stabilise: bool,
     /// How the picture arrives from the clip before it on the track.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transition: Option<Transition>,
@@ -173,6 +176,7 @@ impl Default for ClipProps {
             speed: (1, 1),
             title: None,
             transition: None,
+            stabilise: false,
         }
     }
 }

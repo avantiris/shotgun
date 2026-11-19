@@ -25,6 +25,8 @@ pub struct FrameKey {
     pub asset: AssetId,
     pub quality: Quality,
     pub frame: i64,
+    /// From the stabilised copy of the asset, where there is one.
+    pub stable: bool,
 }
 
 struct Request {
@@ -49,7 +51,18 @@ fn max_dim(quality: Quality) -> u32 {
 }
 
 /// The file to decode for `quality`, and the thread count to open it with.
-fn source(root: &Path, asset: &Asset, quality: Quality) -> (PathBuf, i32) {
+fn source(root: &Path, asset: &Asset, quality: Quality, stable: bool) -> (PathBuf, i32) {
+    if stable {
+        // The stabilised copy and its proxy, once the job has made them;
+        // until then the picture as it is.
+        let (copy, proxy) = (cache::stable(root, asset.id), cache::stable_proxy(root, asset.id));
+        if quality == Quality::Proxy && proxy.is_file() {
+            return (proxy, 1);
+        }
+        if copy.is_file() {
+            return (copy, 0);
+        }
+    }
     let conform = cache::conform(root, asset.id, asset.kind == AssetKind::Image);
     let proxy = cache::proxy(root, asset.id);
     if quality == Quality::Proxy && proxy.is_file() {
@@ -68,14 +81,14 @@ const OPEN_DECODERS: usize = 6;
 
 fn worker(requests: Receiver<Request>, results: Sender<Decoded>, epoch: Arc<AtomicU64>) {
     // Most recently used last.
-    let mut decoders: Vec<((AssetId, Quality), PathBuf, VideoDecoder)> = Vec::new();
+    let mut decoders: Vec<((AssetId, Quality, bool), PathBuf, VideoDecoder)> = Vec::new();
     for request in requests {
         // A seek happened since this was asked for: nobody wants it any more.
         if request.epoch < epoch.load(Ordering::Relaxed) {
             continue;
         }
-        let id = (request.key.asset, request.key.quality);
-        let (path, threads) = source(&request.root, &request.asset, request.key.quality);
+        let id = (request.key.asset, request.key.quality, request.key.stable);
+        let (path, threads) = source(&request.root, &request.asset, request.key.quality, request.key.stable);
         // Full-quality frames of long-GOP video: roll forward on the GPU and
         // read back the one frame wanted. 4K HEVC with a 1 s GOP seeks in
         // about 115 ms this way against 390 ms in software.

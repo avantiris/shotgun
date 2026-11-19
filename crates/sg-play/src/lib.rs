@@ -473,7 +473,8 @@ impl State {
                 }
             };
             let Some(asset) = project.assets.get(&asset_id) else { continue };
-            let proxy = FrameKey { asset: asset_id, quality: Quality::Proxy, frame: source_frame };
+            let stable = layer.props.as_ref().is_some_and(|p| p.stabilise);
+            let proxy = FrameKey { asset: asset_id, quality: Quality::Proxy, frame: source_frame, stable };
             let full = FrameKey { quality: Quality::Full, ..proxy };
             if paused && !self.cache.contains(&full) {
                 self.pool.request(full, &root, asset);
@@ -499,7 +500,8 @@ impl State {
             for ahead in 1..=READ_AHEAD {
                 for layer in plan(&project, &sequence, self.frame + ahead) {
                     let Source::Asset { asset: asset_id, frame } = layer.source else { continue };
-                    let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame };
+                    let stable = layer.props.as_ref().is_some_and(|p| p.stabilise);
+                    let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame, stable };
                     if let (false, Some(asset)) = (self.cache.contains(&key), project.assets.get(&asset_id)) {
                         self.pool.request(key, &root, asset);
                     }
@@ -591,7 +593,7 @@ impl State {
                 picks.push(None);
                 continue;
             };
-            let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame };
+            let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame, stable: false };
             if self.cache.contains(&key) {
                 picks.push(Some(key));
             } else {
@@ -607,7 +609,7 @@ impl State {
                 for track in &angles {
                     let source = plan_track(project, sequence, track, self.frame + ahead).map(|layer| layer.source);
                     let Some(Source::Asset { asset: asset_id, frame }) = source else { continue };
-                    let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame };
+                    let key = FrameKey { asset: asset_id, quality: Quality::Proxy, frame, stable: false };
                     if let (false, Some(asset)) = (self.cache.contains(&key), project.assets.get(&asset_id)) {
                         self.pool.request(key, root, asset);
                     }

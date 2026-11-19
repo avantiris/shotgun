@@ -117,3 +117,29 @@ pub fn load_looks(root: &Path) -> Vec<(String, Vec<sg_core::Module>)> {
     looks.sort_by(|a, b| a.0.cmp(&b.0));
     looks
 }
+
+/// Makes the stabilised copy of an asset and its proxy, unless they are
+/// there already. `progress` gets the share done, 0 to 1.
+pub fn stabilise(
+    root: &Path,
+    asset: &sg_core::Asset,
+    cancel: &Cancel,
+    progress: &mut dyn FnMut(f32),
+) -> Result<(), ToolError> {
+    let video = asset.video.as_ref().filter(|v| !v.is_still()).ok_or_else(|| ToolError::other("it is not a video"))?;
+    let (out, proxy) = (cache::stable(root, asset.id), cache::stable_proxy(root, asset.id));
+    if out.is_file() && proxy.is_file() {
+        return Ok(());
+    }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let conform = cache::conform(root, asset.id, false);
+    let source = if conform.is_file() { conform } else { root.join(&asset.file) };
+    let seconds = video.frames as f64 * video.rate.den() as f64 / video.rate.num() as f64;
+    let motion = out.with_extension("trf");
+    sg_media::derive::stabilise(&source, &out, &motion, &video.rate.to_string(), seconds, cancel, &mut |f| {
+        progress(f * 0.85)
+    })?;
+    sg_media::derive::proxy(&out, &proxy, seconds, cancel, &mut |f| progress(0.85 + f * 0.15))
+}

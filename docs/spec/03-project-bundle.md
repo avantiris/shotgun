@@ -70,6 +70,8 @@ into a grid of these, sorted by last opened, with a poster frame each.
   asset as JSON, made the first time the asset is used as the song. Sync
   positions are not stored: the result of a sync is the place of the take
   on the timeline.
+- Stabilised copies (M10): `stable/<id>.mp4` and `stable/<id>.proxy.mp4`,
+  made when a clip of the asset is first set to "Stabilise".
 - Derived files live in `.shotgun/cache/` under the asset id: `thumb/<id>.rgba`
   (320x180 raw RGBA poster), `conform/<id>.wav`, `peaks/<id>.pk`,
   `conform/<id>.scan` (verdict of the frame-rate scan: this is where

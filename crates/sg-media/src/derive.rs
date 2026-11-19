@@ -215,3 +215,56 @@ pub fn proxy(
         other => other,
     }
 }
+
+/// A copy of `src` with the camera shake taken out (vid.stab, two passes:
+/// measure the motion, then move each frame against it and zoom in just
+/// enough to hide the borders). Same frame count and rate as the source;
+/// a short GOP so that it seeks like a conform. `motion` is a scratch
+/// file for the measured motion.
+pub fn stabilise(
+    src: &Path,
+    out: &Path,
+    motion: &Path,
+    rate: &str,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    // The filter takes the file name inside a filter string: keep it plain.
+    let name = motion.to_string_lossy();
+    if name.contains([':', '\'', ',', '\\', ' ']) {
+        return Err(ToolError::other("the project path contains a character the stabiliser cannot take"));
+    }
+    let mut detect = Command::new("ffmpeg");
+    detect.args(["-v", "error", "-nostdin", "-y", "-progress", "pipe:1", "-nostats", "-i"]).arg(src);
+    detect.args(["-an", "-vf", &format!("vidstabdetect=shakiness=6:accuracy=12:result={name}"), "-f", "null", "-"]);
+    run_lines(detect, cancel, |line| {
+        if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok())
+            && total_secs > 0.0
+        {
+            // The first pass is the first half of the work.
+            progress((us / 1e6 / total_secs).clamp(0.0, 1.0) as f32 * 0.5);
+        }
+    })?;
+    let filter =
+        format!("fps={rate},vidstabtransform=input={name}:smoothing=20:optzoom=1:interpol=bicubic,format=yuv420p");
+    let result = ffmpeg_to(out, total_secs, cancel, &mut |f| progress(0.5 + f * 0.5), |cmd| {
+        cmd.arg("-i").arg(src).args(["-an", "-vf", &filter]);
+        cmd.args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "14",
+            "-g",
+            "15",
+            "-bf",
+            "0",
+            "-movflags",
+            "+faststart",
+        ]);
+    });
+    let _ = std::fs::remove_file(motion);
+    result
+}

@@ -96,6 +96,11 @@ pub enum Command {
     LoadLooks {
         root: PathBuf,
     },
+    /// Make the stabilised copy of an asset if it is not there yet.
+    Stabilise {
+        root: PathBuf,
+        asset: Arc<Asset>,
+    },
     /// Read the waveform peaks of an asset; answered with [`Shell::peaks_loaded`].
     LoadPeaks {
         root: PathBuf,
@@ -285,6 +290,15 @@ impl Shell {
                     scenario_choice = Some((asset, choice));
                 }
                 colour_requests = std::mem::take(&mut self.editor.colour_requests);
+                if let Some(asset) = self
+                    .editor
+                    .clip_panel
+                    .stabilise_request
+                    .take()
+                    .and_then(|id| session.project().assets.get(&id).cloned())
+                {
+                    commands.push(Command::Stabilise { root: root.clone(), asset });
+                }
                 if let Some(id) = self.editor.timeline.beat_request.take() {
                     commands.push(Command::LoadBeats { root: root.clone(), id });
                 }

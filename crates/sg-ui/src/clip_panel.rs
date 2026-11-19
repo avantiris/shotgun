@@ -37,6 +37,8 @@ pub struct ClipPanel {
     /// Motion recorded while playing: (frame relative to the clip, x, y).
     recorded: Vec<(i64, f32, f32)>,
     pub recording: bool,
+    /// An asset whose stabilised copy should be made; taken by the shell.
+    pub stabilise_request: Option<sg_core::AssetId>,
 }
 
 /// Writes changed properties back as an op.
@@ -164,6 +166,17 @@ impl ClipPanel {
                 // A factor on the speed that keyframes can change along the clip.
                 // The sound of the take is not ramped with it.
                 changed |= value_row(ui, "Speed ramp", &mut props.ramp, at, 0.05..=8.0, 0.005, " x");
+            let was = props.stabilise;
+            ui.checkbox(&mut props.stabilise, "Stabilise").on_hover_text(
+                "Shows a copy of the take with the camera shake taken out. The copy is made once per asset, in the background; \
+                 until it is ready the picture is shown as it is.",
+            );
+            if props.stabilise != was {
+                changed = true;
+                if props.stabilise {
+                    self.stabilise_request = Some(target.clip.asset);
+                }
+            }
             }
             ui.add_sized(
                 [84.0, 16.0],

@@ -287,9 +287,9 @@ fn decode_stage(
     cancel: &Cancel,
     out: SyncSender<Decoded>,
 ) -> Result<f64, ExportError> {
-    let mut decoders: HashMap<AssetId, VideoDecoder> = HashMap::new();
+    let mut decoders: HashMap<(AssetId, bool), VideoDecoder> = HashMap::new();
     // The source frame last handed on per asset: stills and held frames are sent once.
-    let mut shown: HashMap<AssetId, i64> = HashMap::new();
+    let mut shown: HashMap<(AssetId, bool), i64> = HashMap::new();
     let mut spent = 0.0;
     for frame in range.0..range.1 {
         if cancel.is_cancelled() {
@@ -303,15 +303,24 @@ fn decode_stage(
                 continue;
             };
             let asset = job.project.assets.get(id);
-            let (Some(asset), true) = (asset, shown.get(id) != Some(source_frame)) else {
+            // A stabilised clip reads the stabilised copy of its asset.
+            let key = (*id, layer.props.as_ref().is_some_and(|p| p.stabilise));
+            let (Some(asset), true) = (asset, shown.get(&key) != Some(source_frame)) else {
                 fresh.push(None);
                 continue;
             };
             let failed = |e: sg_media::decode::DecodeError| ExportError::Tool(format!("{}: {e}", asset.label));
-            if !decoders.contains_key(id) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = decoders.entry(key) {
                 // Originals, or the constant-rate conform where one was needed.
                 let conform = cache::conform(&job.root, *id, asset.kind == AssetKind::Image);
-                let path = if conform.is_file() { conform } else { job.root.join(&asset.file) };
+                let stable_copy = cache::stable(&job.root, *id);
+                let path = if key.1 && stable_copy.is_file() {
+                    stable_copy
+                } else if conform.is_file() {
+                    conform
+                } else {
+                    job.root.join(&asset.file)
+                };
                 let mut decoder = VideoDecoder::open(&path, 0).map_err(failed)?;
                 if let Some(v) = &asset.video {
                     decoder.set_rate(v.rate.num(), v.rate.den());
@@ -320,16 +329,16 @@ fn decode_stage(
                 decoder.set_max_dim(8192);
                 // Planes go to the GPU as they are and become RGB there.
                 decoder.set_planes(true);
-                decoders.insert(*id, decoder);
+                slot.insert(decoder);
             }
-            let Some(decoder) = decoders.get_mut(id) else {
+            let Some(decoder) = decoders.get_mut(&key) else {
                 fresh.push(None);
                 continue;
             };
             let mark = Instant::now();
             fresh.push(Some(decoder.frame(*source_frame).map_err(failed)?));
             spent += mark.elapsed().as_secs_f64();
-            shown.insert(*id, *source_frame);
+            shown.insert(key, *source_frame);
         }
         if out.send(Decoded { layers, fresh }).is_err() {
             // The compositing stage stopped; it knows why.
@@ -360,7 +369,7 @@ fn render(
     compositor.set_cover(cover);
     let importer = YuvImporter::new(device.clone(), queue.clone());
     // The picture each asset shows at the moment.
-    let mut pictures: HashMap<AssetId, (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
+    let mut pictures: HashMap<(AssetId, bool), (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
     let mut titles: HashMap<(String, u32, [u8; 4]), (wgpu::TextureView, (u32, u32))> = HashMap::new();
     let started = Instant::now();
     let total = (range.1 - range.0).max(1);
@@ -399,6 +408,7 @@ fn render(
                             drawn.push((entry.0.clone(), entry.1, 0, true, index));
                         }
                         Source::Asset { asset: id, .. } => {
+                            let stable = layer.props.as_ref().is_some_and(|p| p.stabilise);
                             if let Some(picture) = fresh {
                                 let mark = Instant::now();
                                 let converted = picture.planes.as_ref().and_then(|p| {
@@ -425,9 +435,10 @@ fn render(
                                 };
                                 uploading += mark.elapsed().as_secs_f64();
                                 let view = texture.create_view(&Default::default());
-                                pictures.insert(*id, (view, (picture.width, picture.height), picture.rotation));
+                                pictures
+                                    .insert((*id, stable), (view, (picture.width, picture.height), picture.rotation));
                             }
-                            if let Some((view, picture_size, rotation)) = pictures.get(id) {
+                            if let Some((view, picture_size, rotation)) = pictures.get(&(*id, stable)) {
                                 drawn.push((view.clone(), *picture_size, *rotation, false, index));
                             }
                         }

@@ -514,6 +514,12 @@ impl Editor {
             "rotation" => props.rotation.set(target.at, number),
             "opacity" => props.opacity.set(target.at, number),
             "ramp" => props.ramp.set(target.at, number),
+            "stabilise" => {
+                props.stabilise = number != 0.0;
+                if props.stabilise {
+                    self.clip_panel.stabilise_request = Some(target.clip.asset);
+                }
+            }
             "gain" => props.gain_db.set(target.at, number),
             "speed" => props.speed = (number.max(1.0) as u32, 100),
             "fadein" => props.fade_in = number as i64,

@@ -104,6 +104,15 @@ pub mod cache {
         at(root, "analysis", id, "beats")
     }
 
+    /// The asset with its camera shake taken out, and a proxy of that.
+    pub fn stable(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "stable", id, "mp4")
+    }
+
+    pub fn stable_proxy(root: &Path, id: AssetId) -> PathBuf {
+        at(root, "stable", id, "proxy.mp4")
+    }
+
     pub fn proxy(root: &Path, id: AssetId) -> PathBuf {
         at(root, "proxy", id, "mp4")
     }

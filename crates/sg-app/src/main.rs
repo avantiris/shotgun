@@ -109,6 +109,11 @@ enum UserEvent {
         root: PathBuf,
         looks: Vec<(String, Vec<sg_core::Module>)>,
     },
+    Stabilised {
+        id: AssetId,
+        label: String,
+        result: Result<(), String>,
+    },
     Peaks {
         root: PathBuf,
         id: AssetId,
@@ -148,6 +153,8 @@ struct App {
     angles_texture: Option<(egui::TextureId, u64)>,
     /// The snapshot the player was last given.
     synced: Option<(PathBuf, std::sync::Arc<sg_core::Project>)>,
+    /// Jobs started here that show among the import jobs.
+    local_jobs: u64,
     /// Scratch for the level meters read each frame.
     meters: Vec<f32>,
     /// Stops the running export.
@@ -332,6 +339,41 @@ impl App {
                         let looks = sg_project::analysis::load_looks(&root);
                         let _ = proxy.send_event(UserEvent::Looks { root, looks });
                     });
+                }
+                Command::Stabilise { root, asset } => {
+                    self.pending_jobs += 1;
+                    self.local_jobs += 1;
+                    // Shown among the import jobs; numbered from the top so as not to collide with them.
+                    let job = u64::MAX - self.local_jobs;
+                    let cancel = sg_media::Cancel::new();
+                    let spawned = std::thread::Builder::new().name("sg-stabilise".into()).spawn(move || {
+                        let label = asset.label.clone();
+                        let mut last = -1i32;
+                        let mut progress = |fraction: f32| {
+                            // One event per percent.
+                            if (fraction * 100.0) as i32 != last {
+                                last = (fraction * 100.0) as i32;
+                                let event = ImportEvent::Progress {
+                                    job,
+                                    label: label.clone(),
+                                    stage: "stabilising",
+                                    fraction: Some(fraction),
+                                };
+                                let _ = proxy.send_event(UserEvent::Import(event));
+                            }
+                        };
+                        let result = sg_project::analysis::stabilise(&root, &asset, &cancel, &mut progress)
+                            .map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Import(ImportEvent::Finished { job }));
+                        let _ = proxy.send_event(UserEvent::Stabilised {
+                            id: asset.id,
+                            label: asset.label.clone(),
+                            result,
+                        });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
                 }
                 Command::LoadPeaks { root, id } => {
                     self.pending_jobs += 1;
@@ -744,6 +786,18 @@ impl ApplicationHandler<UserEvent> for App {
                 self.shell.looks_loaded(&root, looks);
                 self.job_done();
             }
+            UserEvent::Stabilised { id, label, result } => {
+                match result {
+                    // The player reopens the asset and finds the new copy.
+                    Ok(()) => {
+                        if let Some(player) = &self.player {
+                            player.asset_changed(id);
+                        }
+                    }
+                    Err(e) => self.shell.report_error(format!("{label} could not be stabilised: {e}")),
+                }
+                self.job_done();
+            }
             UserEvent::Peaks { root, id, peaks } => {
                 self.shell.peaks_loaded(&root, id, peaks);
                 self.job_done();
@@ -896,6 +950,7 @@ fn main() -> anyhow::Result<()> {
         angles_texture: None,
         synced: None,
         meters: vec![0.0; sg_play::MAX_METERS],
+        local_jobs: 0,
         export_cancel: None,
         library,
         repaint_at: None,

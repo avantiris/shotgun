@@ -116,7 +116,7 @@ stage 2 starts.
 | M7 (done) | Auto-sync takes to the song, beat detection + grid + snap, live multicam switching |
 | M8 (done) | Whip-pan transition engine (+ slide/zoom variants) |
 | M9 (done, in part) | Scenarios, match stage, look chain modules, presets, A/B |
-| M10 | Speed ramps, stabilisation, background render cache, 10-bit masters |
+| M10 (done, in part) | Speed ramps, stabilisation, background render cache, 10-bit masters |
 
 Status:
 
@@ -175,7 +175,7 @@ Status:
   verified: the match on real multi-camera footage (`docs/perf-log.md` has
   what was tried instead).
 
-- **M10 in progress.** Done: 10-bit masters with real 10-bit values where
+- **M10 done in part 2026-11-19.** Done: 10-bit masters with real 10-bit values where
   the picture is graded (the compositor's floating-point result leaves the
   GPU as P010). Sources are still decoded to 8 bits, so a 10-bit *source*
   is not yet carried through at full depth. Speed ramps: a keyframeable
@@ -184,8 +184,17 @@ Status:
   The picture follows the ramp, the sound of the take does not, and the
   clip keeps its length. Checked in the app: a ramp from 1 to 0.2 between
   frames 60 and 300 showed source second 4.4 at frame 600, as computed.
-  Open:
-  stabilisation, background render cache.
+  Stabilisation: "Stabilise" in the clip inspector shows a copy of the
+  asset with the shake taken out, made once per asset in the background by
+  ffmpeg's vid.stab filters (two passes, automatic zoom to hide the
+  borders) with a proxy of its own; preview and export read it. Checked on
+  a still scene shaken by up to 40 pixels: the mean difference between
+  consecutive exported frames fell from 36.5 to 3.0 (of 255). `PROPOSED`:
+  it is all or nothing per clip with fixed settings (smoothing over 20
+  frames); the whole asset is processed even for a short clip. Not built:
+  the background render cache (nothing built so far needs it to play in
+  real time at proxy quality), carrying 10-bit sources through at full
+  depth, ramping the sound with the picture.
 
 ## Stage 3: DAW
 
