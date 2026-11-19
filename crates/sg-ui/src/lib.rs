@@ -286,6 +286,7 @@ impl Shell {
             Ok(opened) => {
                 self.library.filter.clear();
                 self.editor = Editor::default();
+                self.dropped_at = None;
                 let session = Session::new(opened);
                 let restore =
                     Command::RestoreCache { root: session.root.clone(), assets: session.project().assets.clone() };
@@ -327,6 +328,10 @@ impl Shell {
         let mut colour_requests = Vec::new();
         self.playhead = view.frame;
         self.playing = view.playing;
+        if !view.playing {
+            // Cuts made in one pass of playing undo together; the next pass is its own step.
+            self.angle_group = None;
+        }
         match &mut self.session {
             Some(session) => {
                 let request = self.editor.ui(ui, session, &mut self.error, &mut asset_requests, view, &mut transport);
@@ -1062,7 +1067,9 @@ impl Shell {
         let commands = self.incoming(incoming);
         // Imports that were already running may finish first and take the
         // place: rare, and undo puts it right.
-        self.dropped_at = target.filter(|_| !commands.is_empty()).map(|(frame, row)| (frame, row, commands.len()));
+        // (Only media arrives as an asset to place: tables and fonts go to their folders.)
+        let media = commands.iter().filter(|c| matches!(c, Command::Import { .. })).count();
+        self.dropped_at = target.filter(|_| media > 0).map(|(frame, row)| (frame, row, media));
         commands
     }
 

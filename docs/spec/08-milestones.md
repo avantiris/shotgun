@@ -251,6 +251,28 @@ Status:
   goes on (`sg_render::report_gpu_errors`); an export during which one is
   reported fails rather than keeping a file with a wrong frame. If it
   shows again the log has the cause.
+
+- **Reviewed 2026-11-19.** Three independent reads of the night's code
+  found the defects fixed in commits `2cd9e73`, `0395eae` and the one after.
+  Left as they are, known:
+  - Cutting to a camera angle replaces the programme up to the end of that
+    angle's take, later cuts included (as designed in M7; worth changing to
+    "up to the next cut"), and the cut does not carry a speed or stabilise
+    setting of the angle's clip.
+  - A share copy aims at its size limit rather than staying under a
+    sensible bitrate: a short clip is made as large as the limit allows.
+  - Real 10-bit frames are used when a scenario grades, not for per-clip
+    exposure/warmth alone and not for HDR sources.
+  - During a whip or zoom a picture smaller than the frame (bars, picture
+    in picture) fills the frame with mirrored copies.
+  - "Sync all takes" analyses all takes at once (one thread each), and the
+    analyses and the stabiliser cannot be cancelled from their job row.
+  - "Cuts to the beat" assumes programme clips at normal speed.
+  - Head trims of a clip with a speed ramp move its source linearly.
+  - The export check by the graphics card may accept a damaged stream the
+    processor would reject (see 01, open points).
+  - The sync likeness rule may refuse a correct match on takes longer than
+    about 19 minutes.
 ## Stage 3: DAW
 
 Recording, MIDI/piano roll, plugin hosting (CLAP/VST3/LV2), mixing/mastering.

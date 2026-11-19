@@ -2113,6 +2113,9 @@ impl Timeline {
         if self.song_beats.as_ref().is_none_or(|(id, _)| *id != song.asset) {
             self.song_beats = Some((song.asset, None));
             self.beat_request = Some(song.asset);
+            // The grid of the song before is not this one's.
+            self.grid = Arc::default();
+            self.grid_for = None;
         }
         if self.grid_for != Some((song.asset, song.tempo))
             && let Some((_, Some(beats))) = &self.song_beats
@@ -2760,7 +2763,13 @@ mod tests {
         };
         assert_eq!(programme(&session), vec![(1, 0, 97, 0), (2, 97, 111, 97), (1, 208, 123, 208), (2, 331, 269, 331)]);
         // A beat every half second: every 30 frames.
-        let mut timeline = Timeline { grid: Arc::new((0..120).map(|n| n * 24_000).collect()), ..Timeline::default() };
+        let song = session.project().sequences[0].song.unwrap();
+        let mut timeline = Timeline {
+            grid: Arc::new((0..120).map(|n| n * 24_000).collect()),
+            song_beats: Some((song.asset, None)),
+            grid_for: Some((song.asset, song.tempo)),
+            ..Timeline::default()
+        };
         let mut error = None;
         assert_eq!(timeline.cuts_to_beats(&mut session, &mut error), 3);
         assert_eq!(error, None);

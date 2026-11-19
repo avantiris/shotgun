@@ -174,6 +174,8 @@ struct App {
     synced: Option<(PathBuf, std::sync::Arc<sg_core::Project>)>,
     /// Jobs started here that show among the import jobs.
     local_jobs: u64,
+    /// Assets whose stabilised copy is being made.
+    stabilising: std::collections::HashSet<AssetId>,
     /// Scratch for the level meters read each frame.
     meters: Vec<f32>,
     /// Stops the running export.
@@ -385,6 +387,8 @@ impl App {
                         let _ = proxy.send_event(UserEvent::Looks { root, looks, luts });
                     });
                 }
+                // One run per asset: a second request while it is being made changes nothing.
+                Command::Stabilise { asset, .. } if !self.stabilising.insert(asset.id) => {}
                 Command::Stabilise { root, asset } => {
                     self.pending_jobs += 1;
                     self.local_jobs += 1;
@@ -869,6 +873,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::LutImported { root, result } => {
                 let commands = self.shell.lut_imported(&root, result);
+                // A table of the same name may have been replaced.
+                if let Some(player) = &self.player {
+                    player.forget_fonts();
+                }
                 self.job_done();
                 self.run_commands(commands);
             }
@@ -890,6 +898,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.job_done();
             }
             UserEvent::Stabilised { id, label, result } => {
+                self.stabilising.remove(&id);
                 match result {
                     // The player reopens the asset and finds the new copy.
                     Ok(()) => {
@@ -1104,6 +1113,7 @@ fn main() -> anyhow::Result<()> {
         library,
         repaint_at: None,
         pending_jobs: 1,
+        stabilising: std::collections::HashSet::new(),
         script: None,
         open_requested: None,
         saw_library_frame: false,

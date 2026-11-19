@@ -169,6 +169,10 @@ impl ExportPanel {
                                     "Only a stretch: select clips, or set markers (G) before and after the playhead"
                                 }
                             };
+                            if gif_range.is_none() {
+                                // No stretch any more: the whole sequence it is, and the box says so.
+                                self.only_range = false;
+                            }
                             ui.add_enabled(gif_range.is_some(), egui::Checkbox::new(&mut self.only_range, what));
                         }
                         ui.add_space(4.0);

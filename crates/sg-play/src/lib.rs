@@ -388,6 +388,7 @@ impl State {
                     self.cache = TextureCache::new(TEXTURE_BUDGET);
                     self.fonts.clear();
                     self.titles.clear();
+                    self.compositor.clear_luts();
                     self.frame = 0;
                 }
                 let size = project.sequences.first().map_or((1920, 1080), |s| (s.width, s.height));
@@ -432,8 +433,10 @@ impl State {
                 self.rendered = None;
             }
             Command::ForgetFonts => {
+                // (Fonts and look-up tables alike: files of the project that are read once.)
                 self.fonts.clear();
                 self.titles.clear();
+                self.compositor.clear_luts();
                 self.rendered = None;
             }
             Command::Quit => return false,

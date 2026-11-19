@@ -285,7 +285,7 @@ impl ColourPanel {
             remove = true;
         }
 
-        if !ui.input(|i| i.pointer.any_down()) {
+        if !ui.input(|i| i.pointer.any_down()) && !ui.ctx().egui_wants_keyboard_input() {
             self.group = None;
         }
         let op = if remove {

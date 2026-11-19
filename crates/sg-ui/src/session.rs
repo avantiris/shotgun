@@ -123,8 +123,17 @@ impl Session {
         // the playhead, so that a second asset placed at the same spot
         // stacks on the next track; the first track of each kind otherwise.
         let pick = |kind: TrackKind, from_bottom: bool| {
+            // Not a camera-angle track and not a muted one (a camera's guide
+            // sound): what is placed should be seen and heard.
+            let open = |t: &&std::sync::Arc<sg_core::Track>| match kind {
+                TrackKind::Video => !t.mix.hidden,
+                TrackKind::Audio => !t.mix.mute,
+            };
             let mut tracks: Vec<&std::sync::Arc<sg_core::Track>> =
-                seq.tracks.iter().filter(|t| t.kind == kind).collect();
+                seq.tracks.iter().filter(|t| t.kind == kind).filter(open).collect();
+            if tracks.is_empty() {
+                tracks = seq.tracks.iter().filter(|t| t.kind == kind).collect();
+            }
             if from_bottom {
                 tracks.reverse();
             }
@@ -267,8 +276,13 @@ pub fn place_at(
         // Video stacks upwards from the bottom video track, sound downwards
         // from the top audio track: both start next to the other kind.
         // Camera-angle tracks are only used when pointed at.
-        let mut rows: Vec<usize> =
-            (0..sequence.tracks.len()).filter(|i| usable(*i) && !sequence.tracks[*i].mix.hidden).collect();
+        let mut rows: Vec<usize> = (0..sequence.tracks.len())
+            .filter(|i| {
+                let mix = &sequence.tracks[*i].mix;
+                // Nor muted sound tracks (a camera's guide sound).
+                usable(*i) && !mix.hidden && !(kind == TrackKind::Audio && mix.mute)
+            })
+            .collect();
         if kind == TrackKind::Video {
             rows.reverse();
         }

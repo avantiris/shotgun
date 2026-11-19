@@ -638,6 +638,12 @@ impl Compositor {
         self.luts.contains_key(name)
     }
 
+    /// Forgets every look-up table: another project is shown, or a table
+    /// file was replaced under the same name.
+    pub fn clear_luts(&mut self) {
+        self.luts.clear();
+    }
+
     /// Hands over a look-up table for layers whose grade names it.
     pub fn set_lut(&mut self, name: &str, lut: &Lut) {
         self.luts.insert(name.to_owned(), upload_lut(&self.device, &self.queue, lut));

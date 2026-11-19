@@ -496,6 +496,23 @@ fn render(
     Ok((total as f64 / started.elapsed().as_secs_f64().max(1e-6), per_frame))
 }
 
+/// Removes the output file when dropped, unless the export got to its end.
+struct Unfinished(Option<PathBuf>);
+
+impl Unfinished {
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Unfinished {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Decodes the whole file once and counts its frames. The graphics card
 /// decodes it (five times faster than the processor for a 4K master, and
 /// what a player on this machine would use); if that fails for any reason
@@ -718,6 +735,9 @@ pub fn export(
             verify(&rendered, frames, cancel)?;
         }
         let out = output_path(&job.root, &job.project, &job.preset);
+        // A file that was started and not finished, or that failed its
+        // check, does not stay beside the good ones.
+        let unfinished = Unfinished(Some(out.clone()));
         match &job.preset {
             Preset::Master | Preset::Vertical => {
                 if encoder_name == "hevc_vaapi" {
@@ -751,6 +771,7 @@ pub fn export(
             }
         }
         let bytes = std::fs::metadata(&out)?.len();
+        unfinished.keep();
         Ok(Exported {
             path: out,
             bytes,
