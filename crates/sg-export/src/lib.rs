@@ -273,6 +273,7 @@ fn render_mix(
     }
     // Repeats of the echo are a beat apart: only a pause longer than that is the end.
     let pause = mix.echo_samples as u64 + SAMPLE_RATE as u64 / 4;
+    let true_peak = mix.true_peak_db.is_some();
     let engine = Engine::start(Backend::Manual).map_err(|e| ExportError::Tool(e.to_string()))?;
     engine.set_mix(mix);
     let mut loudness = sg_audio::loudness::Loudness::default();
@@ -298,6 +299,12 @@ fn render_mix(
     file.write_all(&header(total))?;
     engine.play(first);
     let mut block = vec![0.0f32; 4096 * 2];
+    if true_peak {
+        // The true-peak limiter hands the sound on a few milliseconds late:
+        // those first frames are its own silence, not the song's.
+        engine.settle();
+        engine.pull(&mut block[..sg_audio::graph::Limiter::TRUE_PEAK_DELAY * 2]);
+    }
     let mut done = 0u64;
     while done < total {
         if cancel.is_cancelled() {
@@ -373,13 +380,26 @@ fn export_sound(
     let rendered = work.join("mix.wav");
     progress("mixing sound", 0.0);
     let (mut heard, mut tail) = render_mix(mix.clone(), sequence, range, &rendered, cancel, Tail::Ring)?;
-    if let (Some(target), Some(now)) = (target, heard.integrated()) {
-        // Turned up or down by what is missing, and mixed again: the
-        // limiter on the master then holds what would go over full scale.
-        // (At most 30 dB up: a near-silent piece is not made of noise.)
-        mix.master_gain *= 10f32.powf((target - now).clamp(-60.0, 30.0) / 20.0);
-        progress("setting the loudness", 0.3);
-        (heard, tail) = render_mix(mix.clone(), sequence, range, &rendered, cancel, Tail::Ring)?;
+    if let Some(target) = target {
+        // A master: the wave between the samples stays a decibel under
+        // full scale, so that converters and lossy codecs do not clip it.
+        mix.true_peak_db = Some(-1.0);
+        // Turned up or down by what is missing, and mixed again. What the
+        // limiter has to hold back is then missing in turn, so up to three
+        // more times while that still helps; the last mix is the file.
+        // (At most 30 dB up in all: a near-silent piece is not made of noise.)
+        let mut raised = 0.0f32;
+        for pass in 0..4 {
+            let Some(now) = heard.integrated() else { break };
+            let step = (target - now).clamp(-60.0, 30.0 - raised);
+            if pass > 0 && step.abs() < 0.2 {
+                break;
+            }
+            raised += step;
+            mix.master_gain *= 10f32.powf(step / 20.0);
+            progress("setting the loudness", 0.1 + 0.1 * pass as f32);
+            (heard, tail) = render_mix(mix.clone(), sequence, range, &rendered, cancel, Tail::Ring)?;
+        }
     }
     let encode = |from: &Path, to: &Path| {
         let mut cmd = Command::new("ffmpeg");

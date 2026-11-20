@@ -226,6 +226,7 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
     a.tracks.len() == b.tracks.len()
         && a.click == b.click
         && a.echo_samples == b.echo_samples
+        && a.true_peak_db == b.true_peak_db
         && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
             // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
             x.clips == y.clips
@@ -570,7 +571,10 @@ impl Disk {
         self.master = Live::new(self.mix.master_gain, 0.0, false);
         let mut master: Box<dyn Processor> = Box::new(Fader::new(self.master.clone()));
         master.prepare(SAMPLE_RATE, MAX_BLOCK);
-        let mut limiter: Box<dyn Processor> = Box::new(Limiter::new(self.shared.clone()));
+        let mut limiter: Box<dyn Processor> = Box::new(match self.mix.true_peak_db {
+            Some(ceiling) => Limiter::true_peak(self.shared.clone(), ceiling),
+            None => Limiter::new(self.shared.clone()),
+        });
         limiter.prepare(SAMPLE_RATE, MAX_BLOCK);
         let sends = self.mix.tracks.iter().any(|t| t.reverb > 0.0 || t.echo > 0.0);
         let space = sends.then(|| crate::space::Space::new(self.mix.echo_samples as usize));

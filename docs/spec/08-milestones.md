@@ -517,8 +517,17 @@ chain second version, M16 mixing and mastering.
   - Checked: a full-scale 997 Hz tone reads 0.0 LUFS as the standard
     says; an export brought to -14 LUFS was measured by ffmpeg's own
     meter (`ebur128`) at -14.0 LUFS.
-  - Still to do: group buses; an insert chain that can be reordered;
-    true-peak (oversampled) limiting: the limiter holds sample peaks at
-    full scale, so a loud master can read above 0 dB true peak; a
+  - True peak (2026-11-21): a sound export with a loudness target is
+    mastered through a limiter that looks at the wave between the
+    samples (four points per sample, from twelve neighbours) and holds
+    it under -1 dB, seeing 5 ms ahead so that the level comes down
+    before a peak instead of at it. The loudness is then corrected up to
+    four times, since what the limiter holds back is missing again.
+    Playback, films and "As mixed" keep the plain limiter at full scale
+    (`PROPOSED`): a finished song that is imported plays untouched.
+    Checked with ffmpeg's meter on a reference vocal (-20.4 LUFS, peaks at
+    full scale): to -14 it comes out at -14.1 LUFS, to -9 at -9.4 LUFS,
+    both with a true peak of -1.2 dB (before: -10.4 LUFS and -0.9 dB).
+  - Still to do: group buses; an insert chain that can be reordered; a
     loudness target far above the mix is reached only as far as the
     limiter allows (the result shows what was reached).

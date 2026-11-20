@@ -137,11 +137,15 @@ pub struct Mix {
     pub echo_samples: u32,
     /// The metronome, while it is on. Never in an export.
     pub click: Option<space::Click>,
+    /// For a master: the limiter holds the wave between the samples
+    /// ("true peak") under this many decibels (as -1.0). `None`: it holds
+    /// the samples themselves at full scale, as for everything else.
+    pub true_peak_db: Option<f32>,
 }
 
 impl Default for Mix {
     fn default() -> Mix {
-        Mix { tracks: Vec::new(), master_gain: 1.0, echo_samples: SAMPLE_RATE * 3 / 8, click: None }
+        Mix { tracks: Vec::new(), master_gain: 1.0, echo_samples: SAMPLE_RATE * 3 / 8, click: None, true_peak_db: None }
     }
 }
 

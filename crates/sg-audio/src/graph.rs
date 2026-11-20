@@ -132,18 +132,127 @@ impl Processor for Fader {
 /// the level is turned down at once and comes back over a tenth of a
 /// second. Always on the master, so that a loud mix distorts neither in
 /// the room nor in the exported file; what it had to do is reported.
+///
+/// As a rule it looks at the samples themselves and lets full scale pass:
+/// a song that is already mastered up to it plays untouched. For a master
+/// made here ([`Limiter::true_peak`]) it looks at the wave between the
+/// samples as well, which is what a converter or a lossy codec will
+/// make of them, and holds that under a ceiling below full scale.
 pub struct Limiter {
     shared: Arc<Shared>,
     gain: f32,
+    ceiling: f32,
+    /// With a true-peak ceiling: the last frames, newest last, and the
+    /// weights that give the wave at each quarter between two samples.
+    between: Option<Box<Between>>,
 }
 
 /// Full scale itself: a sound that is already mastered up to it passes
 /// untouched; only what would clip is held back.
 const CEILING: f32 = 1.0;
+/// Samples each estimate between two samples is made from.
+const TAPS: usize = 12;
+/// How far behind the newest sample the estimate lies.
+const CENTRE: usize = 6;
+/// How long before a peak the level starts to come down (5 ms): turned
+/// down that gently, the limiter does not crackle on a loud master.
+const AHEAD: usize = 240;
+/// A true-peak limiter is given a ceiling this much lower than asked:
+/// twelve neighbours find the wave's peaks to about a tenth of a decibel.
+const MARGIN_DB: f32 = 0.2;
+
+struct Between {
+    /// A ring of the last 16 frames.
+    past: [[f32; 2]; 16],
+    at: usize,
+    weights: [[f32; TAPS]; 3],
+    /// The sound on its way out, [`AHEAD`] frames behind the estimate,
+    /// and the level each of those frames asks for at most.
+    held: Vec<[f32; 2]>,
+    wanted: Vec<f32>,
+    /// The lowest of `wanted` at each of the last moments, and their sum:
+    /// their mean is the level, which so reaches every low point in time
+    /// and in a straight line.
+    lows: Vec<f32>,
+    sum: f64,
+    slot: usize,
+}
+
+impl Between {
+    fn new() -> Between {
+        // The wave between samples is the sum of sinc curves through them;
+        // twelve neighbours under a smooth window are enough to find its peaks.
+        let mut weights = [[0.0f32; TAPS]; 3];
+        for (phase, row) in weights.iter_mut().enumerate() {
+            let shift = (phase + 1) as f32 / 4.0;
+            for (k, weight) in row.iter_mut().enumerate() {
+                let x = k as f32 - CENTRE as f32 + shift;
+                let sinc =
+                    if x.abs() < 1e-6 { 1.0 } else { (std::f32::consts::PI * x).sin() / (std::f32::consts::PI * x) };
+                let window = 0.5 + 0.5 * (std::f32::consts::PI * x / (CENTRE as f32 + 0.5)).cos();
+                *weight = sinc * window;
+            }
+        }
+        Between {
+            past: [[0.0; 2]; 16],
+            at: 0,
+            weights,
+            held: vec![[0.0; 2]; AHEAD],
+            wanted: vec![1.0; AHEAD],
+            lows: vec![1.0; AHEAD],
+            sum: AHEAD as f64,
+            slot: 0,
+        }
+    }
+
+    /// Takes in the frame the estimate was made for and the level it asks
+    /// for at most; gives back the frame that leaves now and the level to
+    /// give it.
+    fn ahead(&mut self, frame: [f32; 2], wanted: f32) -> ([f32; 2], f32) {
+        let slot = self.slot;
+        let leaving = std::mem::replace(&mut self.held[slot], frame);
+        self.wanted[slot] = wanted;
+        let low = self.wanted.iter().fold(1.0f32, |m, w| m.min(*w));
+        self.sum += low as f64 - self.lows[slot] as f64;
+        self.lows[slot] = low;
+        self.slot = (slot + 1) % AHEAD;
+        // (Never above what the leaving frame itself asked for: rounding in the sum.)
+        (leaving, (self.sum / AHEAD as f64) as f32)
+    }
+
+    /// Takes a frame in; gives back the frame the estimate is made for
+    /// and the highest the wave gets around it.
+    fn push(&mut self, frame: [f32; 2]) -> ([f32; 2], f32) {
+        self.past[self.at] = frame;
+        let back = |k: usize| self.past[(self.at + 16 - k) & 15];
+        let mut peak = 0.0f32;
+        for channel in 0..2 {
+            peak = peak.max(back(CENTRE)[channel].abs());
+            for row in &self.weights {
+                let mut sum = 0.0f32;
+                for (k, weight) in row.iter().enumerate() {
+                    sum += back(k)[channel] * weight;
+                }
+                peak = peak.max(sum.abs());
+            }
+        }
+        let centre = back(CENTRE);
+        self.at = (self.at + 1) & 15;
+        (centre, peak)
+    }
+}
 
 impl Limiter {
     pub(crate) fn new(shared: Arc<Shared>) -> Limiter {
-        Limiter { shared, gain: 1.0 }
+        Limiter { shared, gain: 1.0, ceiling: CEILING, between: None }
+    }
+
+    /// A limiter that holds the wave between the samples under
+    /// `ceiling_db` (decibels below full scale, as -1.0). It hands the
+    /// sound on [`Limiter::latency`] samples late.
+    pub(crate) fn true_peak(shared: Arc<Shared>, ceiling_db: f32) -> Limiter {
+        let ceiling = 10f32.powf((ceiling_db.min(0.0) - MARGIN_DB) / 20.0);
+        Limiter { shared, gain: 1.0, ceiling, between: Some(Box::new(Between::new())) }
     }
 }
 
@@ -153,18 +262,49 @@ impl Processor for Limiter {
     fn process(&mut self, audio: &mut [f32], _transport: Transport) {
         // Back to unity with a time constant of about 100 ms at 48 kHz.
         const RELEASE: f32 = 0.0002;
+        let ceiling = self.ceiling;
         let mut lowest = 1.0f32;
         for frame in audio.as_chunks_mut::<2>().0 {
-            let peak = frame[0].abs().max(frame[1].abs());
-            let needed = if peak > CEILING { CEILING / peak } else { 1.0 };
+            let peak = match &mut self.between {
+                Some(between) => {
+                    let (centre, peak) = between.push(*frame);
+                    *frame = centre;
+                    peak
+                }
+                None => frame[0].abs().max(frame[1].abs()),
+            };
+            let needed = if peak > ceiling { ceiling / peak } else { 1.0 };
             self.gain = if needed < self.gain { needed } else { self.gain + (1.0 - self.gain) * RELEASE };
+            let gain = match &mut self.between {
+                // Seen ahead of time: the level is on its way down before the peak leaves.
+                Some(between) => {
+                    let (leaving, gain) = between.ahead(*frame, self.gain);
+                    *frame = leaving;
+                    gain
+                }
+                None => self.gain,
+            };
             // (Clamped as well: rounding must not put a sample over the line.)
-            frame[0] = (frame[0] * self.gain).clamp(-CEILING, CEILING);
-            frame[1] = (frame[1] * self.gain).clamp(-CEILING, CEILING);
-            lowest = lowest.min(self.gain);
+            frame[0] = (frame[0] * gain).clamp(-ceiling, ceiling);
+            frame[1] = (frame[1] * gain).clamp(-ceiling, ceiling);
+            lowest = lowest.min(gain);
         }
         // The strongest reduction since it was last read (a lock-free minimum).
         self.shared.limited.fetch_min(lowest.to_bits(), Ordering::Relaxed);
+    }
+
+    fn latency(&self) -> u32 {
+        if self.between.is_some() { (CENTRE + AHEAD) as u32 } else { 0 }
+    }
+}
+
+impl Limiter {
+    /// Samples by which a true-peak limiter hands the sound on late.
+    pub const TRUE_PEAK_DELAY: usize = CENTRE + AHEAD;
+
+    #[cfg(test)]
+    fn delay(&self) -> usize {
+        self.latency() as usize
     }
 }
 
@@ -490,5 +630,73 @@ impl Rt {
     /// The shared counters, for a backend that reports device state into them.
     pub(crate) fn shared_for_backend(&self) -> Arc<Shared> {
         self.shared.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// The highest the wave through `samples` (one channel) gets, found
+    /// with many more neighbours and finer steps than the limiter uses.
+    fn true_peak(samples: &[f32]) -> f32 {
+        let mut peak = 0.0f32;
+        for n in 64..samples.len() - 64 {
+            for step in 0..16 {
+                let t = step as f32 / 16.0;
+                let mut sum = 0.0f32;
+                for k in -48i32..=48 {
+                    let x = t - k as f32;
+                    let sinc = if x.abs() < 1e-6 {
+                        1.0
+                    } else {
+                        (std::f32::consts::PI * x).sin() / (std::f32::consts::PI * x)
+                    };
+                    let window = 0.5 + 0.5 * (std::f32::consts::PI * x / 49.0).cos();
+                    sum += samples[(n as i32 + k) as usize] * sinc * window;
+                }
+                peak = peak.max(sum.abs());
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn the_true_peak_limiter_holds_the_wave_between_the_samples() {
+        // A quarter of the sample rate, sampled halfway up its crests: no
+        // sample is above 0.99, the wave between them reaches 1.4.
+        let tone = |n: usize| 1.4 * (std::f32::consts::FRAC_PI_2 * n as f32 + std::f32::consts::FRAC_PI_4).sin();
+        let mut audio: Vec<f32> = (0..9600).flat_map(|n| [tone(n), tone(n)]).collect();
+        let left = |audio: &[f32]| audio.iter().step_by(2).copied().collect::<Vec<f32>>();
+        assert!(audio.iter().all(|s| s.abs() < 1.0));
+        assert!(true_peak(&left(&audio)) > 1.35);
+        let transport = Transport { position: 0, playing: true };
+        // The plain limiter sees nothing to do.
+        let mut plain = audio.clone();
+        Limiter::new(Arc::new(Shared::default())).process(&mut plain, transport);
+        assert_eq!(plain, audio);
+        // The true-peak one holds the wave under -1 dB (0.891), a few milliseconds late.
+        let mut limiter = Limiter::true_peak(Arc::new(Shared::default()), -1.0);
+        let delay = limiter.delay();
+        assert_eq!(delay, Limiter::TRUE_PEAK_DELAY);
+        limiter.process(&mut audio, transport);
+        let held = true_peak(&left(&audio)[1000..]);
+        assert!(held <= 0.8913 && held > 0.8, "{held}");
+        // A quiet sound passes as it is, only later.
+        let quiet: Vec<f32> = (0..2000).flat_map(|n| [0.3 * (n as f32 * 0.05).sin(); 2]).collect();
+        let mut passed = quiet.clone();
+        Limiter::true_peak(Arc::new(Shared::default()), -1.0).process(&mut passed, transport);
+        assert_eq!(passed[delay * 2..], quiet[..quiet.len() - delay * 2]);
+        // A sudden loud stretch after quiet: the level is already down when it leaves,
+        // and it came down gradually (no step in the quiet sound just before it).
+        let mut sudden: Vec<f32> =
+            (0..4800).flat_map(|n| [if n < 2400 { 0.2 } else { 1.6 } * (n as f32 * 0.3).sin(); 2]).collect();
+        let original = sudden.clone();
+        Limiter::true_peak(Arc::new(Shared::default()), -1.0).process(&mut sudden, transport);
+        assert!(sudden.iter().all(|s| s.abs() <= 0.8913));
+        let before = (2400 + delay - 100) * 2;
+        let ratio = sudden[before] / original[before - delay * 2];
+        assert!(ratio > 0.6 && ratio < 0.999, "{ratio}");
     }
 }

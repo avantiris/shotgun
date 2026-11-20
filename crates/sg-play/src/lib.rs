@@ -1048,7 +1048,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
     let echo_samples = sequence
         .tempo
         .map_or(SAMPLE_RATE * 3 / 8, |t| (SAMPLE_RATE as u64 * 60_000 / t.milli_bpm.max(1) as u64) as u32);
-    Mix { tracks, master_gain: db(sequence.master_db), echo_samples, click: None }
+    Mix { tracks, master_gain: db(sequence.master_db), echo_samples, click: None, true_peak_db: None }
 }
 
 /// The notes of a track's note clips in timeline samples, in order. A
