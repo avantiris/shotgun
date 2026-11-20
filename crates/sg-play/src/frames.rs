@@ -95,7 +95,14 @@ fn worker(requests: Receiver<Request>, results: Sender<Decoded>, epoch: Arc<Atom
         let hardware = request.key.quality == Quality::Full && threads == 0 && request.asset.kind == AssetKind::Video;
         // A proxy or conform may have appeared since the decoder was opened.
         decoders.retain(|(k, p, _)| *k != id || *p == path);
-        let slot = match decoders.iter().position(|(k, _, _)| *k == id) {
+        // The decoder that is already at this place in the file; one asset
+        // shown on two layers at once (a clip over a copy of itself) gets a
+        // second decoder instead of sending one back and forth, a seek for
+        // every frame. Beyond two, the one used longest ago jumps.
+        let of_asset = || decoders.iter().enumerate().filter(|(_, (k, _, _))| *k == id);
+        let here = of_asset().find(|(_, (_, _, d))| d.continues_at(request.key.frame)).map(|(i, _)| i);
+        let reuse = here.or_else(|| (of_asset().count() >= 2).then(|| of_asset().next().map(|(i, _)| i)).flatten());
+        let slot = match reuse {
             Some(i) => Ok(i),
             None => VideoDecoder::open_with(&path, threads, hardware).map(|mut decoder| {
                 decoder.set_skip_nonref(hardware);

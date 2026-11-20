@@ -260,14 +260,15 @@ Status:
   that had failed one time in four: the race was met twice, retried, and
   no error reached the log.
 
-- **Known problem, not looked into (2026-11-20).** Exporting a 60 fps
-  sequence made of a 30 fps H.264 test clip (`media/m2/av.mp4`) decodes at
-  33.8 ms per frame: 28 frames a second in the render pass, 0.44x realtime
-  for a 1080p master, where a project of 60 fps takes renders at 165
-  frames a second on the same build. Composite and encode are as fast as
-  ever, so it is the decoder on this source (a seek per frame is the
-  suspicion; a source at half the sequence's rate asks for every picture
-  twice). Preview of the same project was not measured.
+- **Slow export with one asset on two layers: found and fixed
+  (2026-11-20).** A project where a clip lay over a copy of itself
+  exported at 0.44x realtime (decode 33.8 ms a frame). Not the source's
+  frame rate, as first suspected: the export kept one decoder per asset,
+  and two layers showing the same asset at different places sent it back
+  and forth, a seek for every frame. Now a decoder (and a picture) per
+  asset and per layer showing it at once; the player's decode workers keep
+  up to two per asset likewise. The same ten seconds: 3.01x realtime,
+  decode 1.3 ms a frame, the file byte for byte the same.
 
 - **Reviewed 2026-11-19.** Three independent reads of the night's code
   found the defects fixed in commits `2cd9e73`, `0395eae` and the one after.

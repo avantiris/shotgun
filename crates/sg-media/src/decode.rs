@@ -118,6 +118,7 @@ pub struct VideoDecoder {
     draining: bool,
     /// Index of the frame the next sequential decode produces, if known.
     next_index: Option<i64>,
+    seeks: u64,
     /// The last frame handed out, repeated when asked past the end.
     last: Option<VideoFrame>,
 }
@@ -173,6 +174,7 @@ impl VideoDecoder {
                 height: 0,
                 draining: false,
                 next_index: None,
+                seeks: 0,
                 last: None,
             };
             check(avformat_open_input(&mut dec.format, c_path.as_ptr(), null(), null_mut()), "open")?;
@@ -342,7 +344,21 @@ impl VideoDecoder {
         self.draining = false;
         self.holding = false;
         self.next_index = None;
+        self.seeks += 1;
         Ok(())
+    }
+
+    /// Whether `index` comes next for this decoder, or a few frames on:
+    /// reading it needs no seek.
+    pub fn continues_at(&self, index: i64) -> bool {
+        self.next_index.is_some_and(|next| index >= next && index - next <= ROLL_FORWARD)
+            || self.last.as_ref().is_some_and(|last| last.index == index)
+    }
+
+    /// How often the file was repositioned so far. Playing or exporting
+    /// straight through a file must not add to it (tests, benchmarks).
+    pub fn seeks(&self) -> u64 {
+        self.seeks
     }
 
     /// The frame at `index`. Past the end, the last frame of the file.
@@ -353,7 +369,7 @@ impl VideoDecoder {
         {
             return Ok(last.clone());
         }
-        let sequential = self.next_index.is_some_and(|next| index >= next && index - next <= ROLL_FORWARD);
+        let sequential = self.continues_at(index);
         let target = self.pts_of(index);
         let mut seek_pts = target;
         let mut attempts = 0;

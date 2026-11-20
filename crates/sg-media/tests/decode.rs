@@ -88,3 +88,22 @@ fn not_a_video() {
     assert!(VideoDecoder::open(&path, 1).is_err());
     assert!(VideoDecoder::open(&dir.path().join("missing.mp4"), 1).is_err());
 }
+
+/// Diagnosis of the slow export (08-milestones.md, 2026-11-20): straight
+/// through a file, as an export reads it.
+#[test]
+#[ignore = "needs /disk/shotgun-dev/media/m2/av.mp4"]
+fn straight_through_a_file_as_an_export_reads_it() {
+    let path = std::path::Path::new("/disk/shotgun-dev/media/m2/av.mp4");
+    let mut decoder = VideoDecoder::open(path, 0).unwrap();
+    decoder.set_rate(30, 1);
+    decoder.set_max_dim(8192);
+    decoder.set_planes(true);
+    let start = std::time::Instant::now();
+    for index in 0..120 {
+        decoder.frame(index).unwrap();
+    }
+    let ms = start.elapsed().as_secs_f64() * 1000.0 / 120.0;
+    eprintln!("{ms:.2} ms per frame, {} seeks", decoder.seeks());
+    assert!(decoder.seeks() <= 1, "{} seeks", decoder.seeks());
+}

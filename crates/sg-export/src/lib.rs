@@ -327,6 +327,26 @@ struct Decoded {
     fresh: Vec<Option<VideoFrame>>,
 }
 
+/// Which decoder and which picture a layer uses: its asset, whether the
+/// stabilised copy, and the how-manieth layer of the frame showing that.
+type Slot = (AssetId, bool, usize);
+
+/// The slot of every layer of a frame (`None` for a title). The decode
+/// stage and the compositing stage both count this way, so they agree.
+fn slots(layers: &[PlanLayer]) -> Vec<Option<Slot>> {
+    let mut seen: Vec<(AssetId, bool)> = Vec::with_capacity(layers.len());
+    layers
+        .iter()
+        .map(|layer| {
+            let Source::Asset { asset, .. } = &layer.source else { return None };
+            let key = (*asset, layer.props.as_ref().is_some_and(|p| p.stabilise));
+            let nth = seen.iter().filter(|k| **k == key).count();
+            seen.push(key);
+            Some((key.0, key.1, nth))
+        })
+        .collect()
+}
+
 /// Frames waiting between two stages. Small: a 4K picture is 33 MB.
 const QUEUE: usize = 3;
 
@@ -339,9 +359,13 @@ fn decode_stage(
     cancel: &Cancel,
     out: SyncSender<Decoded>,
 ) -> Result<f64, ExportError> {
-    let mut decoders: HashMap<(AssetId, bool), VideoDecoder> = HashMap::new();
-    // The source frame last handed on per asset: stills and held frames are sent once.
-    let mut shown: HashMap<(AssetId, bool), i64> = HashMap::new();
+    // One decoder per asset and per layer showing it at the same time: two
+    // layers of one asset at different places in it (a clip over a copy of
+    // itself) would otherwise send one decoder back and forth, a seek for
+    // every frame (measured: 34 ms a frame instead of 2).
+    let mut decoders: HashMap<Slot, VideoDecoder> = HashMap::new();
+    // The source frame last handed on per slot: stills and held frames are sent once.
+    let mut shown: HashMap<Slot, i64> = HashMap::new();
     let mut spent = 0.0;
     for frame in range.0..range.1 {
         if cancel.is_cancelled() {
@@ -349,14 +373,12 @@ fn decode_stage(
         }
         let layers = plan(&job.project, sequence, frame);
         let mut fresh = Vec::with_capacity(layers.len());
-        for layer in &layers {
-            let Source::Asset { asset: id, frame: source_frame } = &layer.source else {
+        for (layer, key) in layers.iter().zip(slots(&layers)) {
+            let (Source::Asset { asset: id, frame: source_frame }, Some(key)) = (&layer.source, key) else {
                 fresh.push(None);
                 continue;
             };
             let asset = job.project.assets.get(id);
-            // A stabilised clip reads the stabilised copy of its asset.
-            let key = (*id, layer.props.as_ref().is_some_and(|p| p.stabilise));
             let (Some(asset), true) = (asset, shown.get(&key) != Some(source_frame)) else {
                 fresh.push(None);
                 continue;
@@ -366,6 +388,7 @@ fn decode_stage(
                 // Originals, or the constant-rate conform where one was needed.
                 let conform = cache::conform(&job.root, *id, asset.kind == AssetKind::Image);
                 let stable_copy = cache::stable(&job.root, *id);
+                // A stabilised clip reads the stabilised copy of its asset.
                 let path = if key.1 && stable_copy.is_file() {
                     stable_copy
                 } else if conform.is_file() {
@@ -421,7 +444,7 @@ fn render(
     compositor.set_cover(cover);
     let importer = YuvImporter::new(device.clone(), queue.clone());
     // The picture each asset shows at the moment.
-    let mut pictures: HashMap<(AssetId, bool), (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
+    let mut pictures: HashMap<Slot, (wgpu::TextureView, (u32, u32), i32)> = HashMap::new();
     let mut titles: HashMap<(String, u32, [u8; 4], String, u8), (wgpu::TextureView, (u32, u32))> = HashMap::new();
     let mut fonts = sg_render::text::Fonts::default();
     let started = Instant::now();
@@ -447,6 +470,7 @@ fn render(
             for Decoded { layers, fresh } in frames_rx.iter() {
                 let mut drawn: Vec<(wgpu::TextureView, (u32, u32), i32, bool, usize)> =
                     Vec::with_capacity(layers.len());
+                let slot_of = slots(&layers);
                 for (index, (layer, fresh)) in layers.iter().zip(fresh).enumerate() {
                     match &layer.source {
                         Source::Title => {
@@ -472,8 +496,8 @@ fn render(
                             });
                             drawn.push((entry.0.clone(), entry.1, 0, true, index));
                         }
-                        Source::Asset { asset: id, .. } => {
-                            let stable = layer.props.as_ref().is_some_and(|p| p.stabilise);
+                        Source::Asset { .. } => {
+                            let Some(slot) = slot_of[index] else { continue };
                             if let Some(picture) = fresh {
                                 let mark = Instant::now();
                                 let converted = picture.planes.as_ref().and_then(|p| {
@@ -500,10 +524,9 @@ fn render(
                                 };
                                 uploading += mark.elapsed().as_secs_f64();
                                 let view = texture.create_view(&Default::default());
-                                pictures
-                                    .insert((*id, stable), (view, (picture.width, picture.height), picture.rotation));
+                                pictures.insert(slot, (view, (picture.width, picture.height), picture.rotation));
                             }
-                            if let Some((view, picture_size, rotation)) = pictures.get(&(*id, stable)) {
+                            if let Some((view, picture_size, rotation)) = pictures.get(&slot) {
                                 drawn.push((view.clone(), *picture_size, *rotation, false, index));
                             }
                         }

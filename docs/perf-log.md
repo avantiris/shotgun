@@ -396,3 +396,17 @@ rows of buttons (about 30) and a volume line on every sound clip.
 | UI frame time, 50 000 clips on 20 tracks | p99 0.78 to 0.85 ms | same | pass |
 | UI frame time, 50 000 clips on 4 tracks, labels | p99 0.51 to 0.52 ms | same | pass |
 | UI frame time, 500 000 clips | p99 2.25 to 4.89 ms (three runs) | same | pass, slower than the 1.55 to 1.83 ms before; one run of three stood out |
+
+## 2026-11-20, export with one asset on two layers, commit after 6bc4863
+
+Command: `sg-bench export /disk/shotgun-dev/tmp/lib-r9/pairs2 master 0 600`
+(1080p60, a 30 fps H.264 clip on V1 and a copy of it overlapping on V2).
+
+| Metric | Before | After | Budget | Result |
+|--------|--------|-------|--------|--------|
+| 1080p60 master, overall | 0.44x realtime | 3.01x | >= 1x | pass (was a miss nobody had measured) |
+| Decode per frame | 33.8 ms | 1.3 ms | | |
+| Render pass | 28 fps | 280 fps | | |
+
+`scripts/bench-m5.sh` after the change to the player's decode workers:
+1797 frames, 0 late.
