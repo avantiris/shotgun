@@ -801,8 +801,8 @@ impl Timeline {
                 for (action, label) in [
                     (Action::KeyframeSet, "Keyframe at the playhead"),
                     (Action::KeyframeRemove, "Remove the keyframe here"),
-                    (Action::Transition, "Whip-pan on the nearest cut"),
-                    (Action::Blackout, "Dip to black on the nearest cut"),
+                    (Action::Transition, "Whip-pan on this clip's cut"),
+                    (Action::Blackout, "Dip to black on this clip's cut"),
                     (Action::Group, "Group the selected clips, or ungroup"),
                     (Action::Delete, "Delete clip"),
                 ] {
@@ -2209,10 +2209,14 @@ impl Timeline {
 }
 
 impl Timeline {
-    /// Puts a whip-pan on the cut nearest to the playhead (on the selected
-    /// clip's track, else on the lowest shown video track that has a cut
-    /// nearby), or removes the transition that is there. The direction
-    /// alternates with the transition before it. Returns the frame of the cut.
+    /// Puts a transition of `kind` on the cuts of the selected clips
+    /// (feedback F12.1), or takes it off if they all have it already.
+    /// Which cuts: those between two selected clips; if no two selected
+    /// clips touch, the cut at the start of each selected clip, or at its
+    /// end if nothing touches its start. With nothing selected: the cut
+    /// nearest to the playhead on the lowest shown video track that has
+    /// one nearby. A whip's direction alternates with the transition
+    /// before it. Returns the frame of the first cut.
     pub fn toggle_transition(
         &mut self,
         session: &mut Session,
@@ -2222,54 +2226,112 @@ impl Timeline {
     ) -> Option<i64> {
         let project = session.project().clone();
         let sequence = project.sequences.first()?;
-        let selected =
-            self.selection.iter().find_map(|s| sequence.track(s.track).filter(|t| t.kind == TrackKind::Video));
-        let shown = sequence.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video && !t.mix.hidden);
-        // The incoming clip of the nearest cut on a track: a clip that
-        // starts where another one ends.
-        let nearest = |track: &Arc<Track>| -> Option<Clip> {
-            let here = track.clips.at(playhead).or_else(|| track.clips.last_before(playhead))?;
-            let after = track.clips.at(here.end());
-            [Some(here), after]
-                .into_iter()
-                .flatten()
-                .filter(|c| c.start > 0 && track.clips.at(c.start - 1).is_some_and(|p| p.end() == c.start))
-                .min_by_key(|c| (c.start - playhead).abs())
-        };
-        let (track, clip) = selected
-            .into_iter()
-            .chain(shown)
-            .filter_map(|t| nearest(t).map(|c| (t.clone(), c)))
-            .min_by_key(|(_, c)| (c.start - playhead).abs())
-            .or_else(|| {
-                *error = Some("There is no cut here: a transition sits between two clips that touch.".to_owned());
-                None
-            })?;
-        let mut props = track.props_of(clip.id).map(|p| ClipProps::clone(p)).unwrap_or_default();
-        props.transition = match props.transition {
-            Some(_) => None,
-            None => {
-                // Opposite to the transition before this one on the track.
-                let mut earlier = track.clips.last_before(clip.start);
-                let mut previous = None;
-                for _ in 0..256 {
-                    let Some(c) = earlier else { break };
-                    previous = track.props_of(c.id).and_then(|p| p.transition);
-                    if previous.is_some() {
-                        break;
-                    }
-                    earlier = track.clips.last_before(c.start);
-                }
-                let angle = previous.map_or(0.0, |p| (p.angle + 180.0).rem_euclid(360.0));
-                Some(sg_core::Transition { angle, ..sg_core::Transition::of(kind) })
+        // A cut is named by its incoming clip: one that starts where another ends.
+        let follows =
+            |track: &Track, c: &Clip| c.start > 0 && track.clips.at(c.start - 1).is_some_and(|p| p.end() == c.start);
+        let chosen: Vec<(Arc<Track>, Clip)> = self
+            .selection
+            .iter()
+            .filter_map(|s| {
+                let track = sequence.tracks.iter().find(|t| t.id == s.track && t.kind == TrackKind::Video)?;
+                Some((track.clone(), track.clips.get(s.start)?))
+            })
+            .collect();
+        let from_selection = !chosen.is_empty();
+        let mut targets: Vec<(Arc<Track>, Clip)> = if from_selection {
+            let is_chosen = |track: &Track, c: &Clip| chosen.iter().any(|(t, x)| t.id == track.id && x.id == c.id);
+            let between: Vec<(Arc<Track>, Clip)> = chosen
+                .iter()
+                .filter(|(t, c)| follows(t, c) && t.clips.at(c.start - 1).is_some_and(|p| is_chosen(t, &p)))
+                .cloned()
+                .collect();
+            if !between.is_empty() {
+                between
+            } else {
+                chosen
+                    .iter()
+                    .filter_map(|(t, c)| {
+                        if follows(t, c) {
+                            Some((t.clone(), *c))
+                        } else {
+                            t.clips.at(c.end()).map(|next| (t.clone(), next))
+                        }
+                    })
+                    .collect()
             }
+        } else {
+            let shown = sequence.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video && !t.mix.hidden);
+            let nearest = |track: &Arc<Track>| -> Option<Clip> {
+                let here = track.clips.at(playhead).or_else(|| track.clips.last_before(playhead))?;
+                let after = track.clips.at(here.end());
+                [Some(here), after]
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| follows(track, c))
+                    .min_by_key(|c| (c.start - playhead).abs())
+            };
+            shown
+                .filter_map(|t| nearest(t).map(|c| (t.clone(), c)))
+                .min_by_key(|(_, c)| (c.start - playhead).abs())
+                .into_iter()
+                .collect()
         };
-        let props = (props != ClipProps::default()).then(|| Box::new(props));
-        let op = Op::SetClipProps { seq: sequence.id, track: track.id, clip: clip.id, props };
-        match session.apply(op, None) {
+        targets.sort_by_key(|(t, c)| (t.id, c.start));
+        targets.dedup_by(|a, b| a.0.id == b.0.id && a.1.id == b.1.id);
+        if targets.is_empty() {
+            *error = Some(
+                if from_selection {
+                    "The selected clips touch no other clip: a transition sits between two clips that touch."
+                } else {
+                    "There is no cut here: a transition sits between two clips that touch."
+                }
+                .to_owned(),
+            );
+            return None;
+        }
+        let has = |track: &Track, c: &Clip| track.props_of(c.id).and_then(|p| p.transition);
+        // All of them have it: the key takes it off again.
+        let remove = targets.iter().all(|(t, c)| has(t, c).is_some_and(|x| x.kind == kind));
+        let mut ops = Vec::new();
+        let mut last: Option<(TrackId, f32)> = None;
+        for (track, clip) in &targets {
+            let mut props = track.props_of(clip.id).map(|p| ClipProps::clone(p)).unwrap_or_default();
+            props.transition = if remove {
+                None
+            } else {
+                // Opposite to the transition before this one on the track:
+                // the one just given in this pass, or the nearest earlier one.
+                let previous = match last {
+                    Some((id, angle)) if id == track.id => Some(angle),
+                    _ => {
+                        let mut earlier = track.clips.last_before(clip.start);
+                        let mut found = None;
+                        for _ in 0..256 {
+                            let Some(c) = earlier else { break };
+                            found = has(track, &c).map(|p| p.angle);
+                            if found.is_some() {
+                                break;
+                            }
+                            earlier = track.clips.last_before(c.start);
+                        }
+                        found
+                    }
+                };
+                let angle = previous.map_or(0.0, |p| (p + 180.0).rem_euclid(360.0));
+                last = Some((track.id, angle));
+                Some(sg_core::Transition { angle, ..sg_core::Transition::of(kind) })
+            };
+            let props = (props != ClipProps::default()).then(|| Box::new(props));
+            ops.push(Op::SetClipProps { seq: sequence.id, track: track.id, clip: clip.id, props });
+        }
+        match session.apply(Op::Batch(ops), None) {
             Ok(()) => {
-                self.selection = vec![Sel { track: track.id, start: clip.start, id: clip.id }];
-                Some(clip.start)
+                // Without a selection the clip of the cut becomes it, so that the inspector shows the transition.
+                if !from_selection {
+                    self.selection =
+                        targets.iter().map(|(t, c)| Sel { track: t.id, start: c.start, id: c.id }).collect();
+                }
+                targets.iter().map(|(_, c)| c.start).min()
             }
             Err(e) => {
                 *error = Some(e.to_string());
@@ -3125,6 +3187,51 @@ mod tests {
         // One pass of switching is one undo step.
         assert!(session.undo().unwrap());
         assert_eq!(programme(&session), vec![(1, 0, 600, 0)]);
+    }
+
+    #[test]
+    fn a_transition_goes_on_the_cuts_of_the_selected_clips_not_to_the_playhead() {
+        use sg_core::TransitionKind::{Black, Whip};
+        let (_dir, mut session) = session();
+        let mut timeline = Timeline::default();
+        // Three pictures in a row: 0..300, 300..600, 600..1200.
+        act(&mut timeline, &mut session, Action::Split, 300);
+        let kinds = |session: &Session| -> Vec<Option<sg_core::TransitionKind>> {
+            let track = &session.project().sequences[0].tracks[0];
+            track.clips.iter().map(|c| track.props_of(c.id).and_then(|p| p.transition).map(|t| t.kind)).collect()
+        };
+        let pick = |timeline: &mut Timeline, session: &Session, starts: &[i64]| {
+            let project = session.project().clone();
+            let track = &project.sequences[0].tracks[0];
+            timeline.selection = starts
+                .iter()
+                .map(|s| Sel { track: track.id, start: *s, id: track.clips.get(*s).unwrap().id })
+                .collect();
+        };
+        let mut error = None;
+        // The middle one selected, the playhead far away near the last cut: the cut at its start.
+        pick(&mut timeline, &session, &[300]);
+        assert_eq!(timeline.toggle_transition(&mut session, 610, Whip, &mut error), Some(300));
+        assert_eq!(kinds(&session), [None, Some(Whip), None]);
+        // Two that touch: the cut between them, and only that one.
+        pick(&mut timeline, &session, &[300, 600]);
+        assert_eq!(timeline.toggle_transition(&mut session, 0, Black, &mut error), Some(600));
+        assert_eq!(kinds(&session), [None, Some(Whip), Some(Black)]);
+        // The first has nothing before it: the cut at its end. Another kind replaces the one there.
+        pick(&mut timeline, &session, &[0]);
+        assert_eq!(timeline.toggle_transition(&mut session, 1100, Black, &mut error), Some(300));
+        assert_eq!(kinds(&session), [None, Some(Black), Some(Black)]);
+        // All three: both cuts between them have it already, so it comes off both, as one step.
+        pick(&mut timeline, &session, &[0, 300, 600]);
+        timeline.toggle_transition(&mut session, 0, Black, &mut error);
+        assert_eq!(kinds(&session), [None, None, None]);
+        assert!(session.undo().unwrap());
+        assert_eq!(kinds(&session), [None, Some(Black), Some(Black)]);
+        assert_eq!(error, None);
+        // Nothing selected: the cut nearest the playhead, as before.
+        timeline.selection.clear();
+        assert_eq!(timeline.toggle_transition(&mut session, 610, Whip, &mut error), Some(600));
+        assert_eq!(kinds(&session), [None, Some(Black), Some(Whip)]);
     }
 
     #[test]

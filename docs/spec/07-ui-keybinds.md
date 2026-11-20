@@ -137,8 +137,8 @@ Animation and creation
 | Shift + F | remove keyframe at playhead |
 | R | live record: plays; drag the selected clip's picture in the viewer and the motion is recorded as keyframes. R again or pause ends it |
 | T | add a 3 s title at the playhead, on the topmost video track that is free there (a new track if none is) |
-| B | add transition on the nearest cut (whip-pan by default) |
-| Shift + B | a dip to black on the nearest cut; again removes it (feedback F11.1). Eight frames by default (2 to 16): the picture before goes dark into the cut, the one after comes up out of it. Dark, not transparent: tracks underneath do not show through. Also a button above the timeline, an entry in the clip's menu and the kind "Black" in the inspector |
+| B | whip-pan on the cuts of the selected clips (feedback F12.1): the cuts between two selected clips; if no two of them touch, the cut at the start of each, or at its end if nothing touches its start. If they all have it already, it is taken off. Another kind there is replaced. With nothing selected: the cut nearest the playhead |
+| Shift + B | a dip to black on the same cuts as B; again removes it (feedback F11.1). Eight frames by default (2 to 16): the picture before goes dark into the cut, the one after comes up out of it. Dark, not transparent: tracks underneath do not show through. Also a button above the timeline, an entry in the clip's menu and the kind "Black" in the inspector |
 
 Panels and output
 
