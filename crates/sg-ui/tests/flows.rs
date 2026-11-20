@@ -1496,3 +1496,20 @@ fn sound_is_recorded_while_playing_and_the_take_laid_where_it_was_played() {
     harness.run_steps(3);
     assert_eq!(tracks(&harness).len(), 2);
 }
+
+#[test]
+fn the_metronome_needs_a_tempo_and_is_switched_with_its_button() {
+    let mut harness = editor();
+    // Without a tempo there are no beats to click on: the program says what to do.
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::K);
+    harness.run_steps(3);
+    assert!(harness.state().shell.error_shown().is_some_and(|e| e.contains("tempo")));
+    assert!(!harness.state().commands.iter().any(|c| matches!(c, Command::Metronome(_))));
+    click(&mut harness, "Bars and beats");
+    click(&mut harness, "Metronome");
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Metronome(true))));
+    // The button says that it is on; again turns it off.
+    click(&mut harness, "Metronome on");
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Metronome(false))));
+    assert!(harness.query_by_label("Metronome").is_some());
+}

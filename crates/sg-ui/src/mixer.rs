@@ -508,6 +508,22 @@ impl Mixer {
                             );
                         }
                         ui.add_space(4.0);
+                        for (name, value, tip) in [
+                            ("Reverb", &mut mix.reverb, "How much of this track goes into the room all tracks share. \
+                              10 to 20 % sets a voice into a space without washing it out."),
+                            ("Echo", &mut mix.echo, "How much of this track is repeated in time with the tempo \
+                              (every beat), each repeat quieter and duller."),
+                        ] {
+                            let mut percent = *value * 100.0;
+                            field(
+                                ui,
+                                name,
+                                egui::DragValue::new(&mut percent).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                                tip,
+                            );
+                            *value = percent / 100.0;
+                        }
+                        ui.add_space(4.0);
                         field(
                             ui,
                             "Compress above",
@@ -608,6 +624,8 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "drive" => mix.drive = value,
         "voice" => mix.voice = value != 0.0,
         "duck" => mix.duck_db = value,
+        "reverb" => mix.reverb = value,
+        "echo" => mix.echo = value,
         "hidden" => mix.hidden = value != 0.0,
         // The n-th preset of the list (0 is Flat).
         "preset" => match PRESETS.get(value as usize) {

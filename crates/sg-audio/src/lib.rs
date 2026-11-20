@@ -20,6 +20,7 @@ pub mod graph;
 mod null;
 mod pw;
 pub mod record;
+pub mod space;
 mod synth;
 pub mod tune;
 
@@ -92,6 +93,10 @@ pub struct TrackMix {
     pub plugin: Option<PluginSpec>,
     /// Sorted by start.
     pub notes: Vec<NoteSpan>,
+    /// How much of the track (after its fader) goes to the shared reverb
+    /// and to the shared echo, as factors; 0 is none.
+    pub reverb: f32,
+    pub echo: f32,
 }
 
 /// A plugin to run for a track, in a process of its own (crate `sg-plug`).
@@ -120,11 +125,15 @@ pub struct Mix {
     pub tracks: Vec<TrackMix>,
     /// Linear gain of the master fader.
     pub master_gain: f32,
+    /// Samples between the repeats of the shared echo (a beat of the song).
+    pub echo_samples: u32,
+    /// The metronome, while it is on. Never in an export.
+    pub click: Option<space::Click>,
 }
 
 impl Default for Mix {
     fn default() -> Mix {
-        Mix { tracks: Vec::new(), master_gain: 1.0 }
+        Mix { tracks: Vec::new(), master_gain: 1.0, echo_samples: SAMPLE_RATE * 3 / 8, click: None }
     }
 }
 
@@ -399,6 +408,8 @@ impl TrackMix {
             tone: Tone::default(),
             plugin: None,
             notes: Vec::new(),
+            reverb: 0.0,
+            echo: 0.0,
         }
     }
 }

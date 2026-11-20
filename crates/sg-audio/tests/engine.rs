@@ -76,6 +76,7 @@ fn clips_land_on_their_timeline_samples() {
             gain_keys: Vec::new(),
             warp: Vec::new(),
         }])],
+        ..Mix::default()
     });
     assert_eq!(engine.position(), 0);
     assert!(!engine.is_playing());
@@ -124,6 +125,7 @@ fn mono_gain_pan_mute_and_mixing() {
             track(vec![clip(&other, 1.0)]),
         ],
         master_gain: 1.0,
+        ..Mix::default()
     };
     // Mono 0.5, clip gain 0.5, track gain 2, centre: 0.5 on both sides, plus 0.25.
     engine.set_mix(mix(0.0, false));
@@ -165,6 +167,7 @@ fn pause_seek_and_resume_are_sample_accurate() {
             gain_keys: Vec::new(),
             warp: Vec::new(),
         }])],
+        ..Mix::default()
     });
     engine.play(0);
     engine.settle();
@@ -213,6 +216,7 @@ fn a_missing_file_is_silence_until_it_appears() {
             gain_keys: Vec::new(),
             warp: Vec::new(),
         }])],
+        ..Mix::default()
     };
     engine.set_mix(mix.clone());
     engine.play(0);
@@ -266,7 +270,7 @@ fn fades_and_speed() {
         gain_keys: Vec::new(),
         warp: Vec::new(),
     };
-    engine.set_mix(Mix { tracks: vec![track(vec![faded])], master_gain: 1.0 });
+    engine.set_mix(Mix { tracks: vec![track(vec![faded])], master_gain: 1.0, ..Mix::default() });
     engine.play(0);
     engine.settle();
     let out = pull(&engine, 1024);
@@ -294,7 +298,7 @@ fn fades_and_speed() {
             gain_keys: Vec::new(),
             warp: Vec::new(),
         };
-        engine.set_mix(Mix { tracks: vec![track(vec![clip])], master_gain: 1.0 });
+        engine.set_mix(Mix { tracks: vec![track(vec![clip])], master_gain: 1.0, ..Mix::default() });
         engine.play(0);
         engine.settle();
         let out = pull(&engine, 600);
@@ -345,11 +349,11 @@ fn noise_reduction_keeps_the_track_in_time() {
         gain_keys: Vec::new(),
         warp: Vec::new(),
     };
-    let plain = rendered(Mix { tracks: vec![track(vec![span.clone()])], master_gain: 1.0 }, 48_000);
+    let plain = rendered(Mix { tracks: vec![track(vec![span.clone()])], master_gain: 1.0, ..Mix::default() }, 48_000);
     // Blended half and half, the treated sound must line up with the plain
     // one: if it were late, the two halves would cancel in places.
     let half = TrackMix { denoise: 0.0001, ..track(vec![span]) };
-    let treated = rendered(Mix { tracks: vec![half], master_gain: 1.0 }, 48_000);
+    let treated = rendered(Mix { tracks: vec![half], master_gain: 1.0, ..Mix::default() }, 48_000);
     let worst = plain.iter().zip(&treated).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(worst < 0.01, "a nearly dry noise reduction changed the sound by {worst}");
     // And the burst starts where it starts in the file.
@@ -376,6 +380,7 @@ fn faders_move_without_a_new_graph_and_meters_follow() {
     let mix = |gain: f32, master: f32| Mix {
         tracks: vec![TrackMix { gain, ..track(vec![span.clone()]) }],
         master_gain: master,
+        ..Mix::default()
     };
     let engine = Engine::start(Backend::Manual).unwrap();
     engine.set_mix(mix(1.0, 1.0));
@@ -416,7 +421,11 @@ fn the_master_never_leaves_full_scale() {
         warp: Vec::new(),
     };
     let engine = Engine::start(Backend::Manual).unwrap();
-    engine.set_mix(Mix { tracks: vec![track(vec![span.clone()]), track(vec![span])], master_gain: 1.0 });
+    engine.set_mix(Mix {
+        tracks: vec![track(vec![span.clone()]), track(vec![span])],
+        master_gain: 1.0,
+        ..Mix::default()
+    });
     engine.play(0);
     let mut out = vec![0.0f32; 24_000 * 2];
     for block in out.chunks_mut(512) {
@@ -448,7 +457,7 @@ fn volume_keyframes_move_the_level_along_the_clip() {
         gain_keys: vec![(12_000, 0.0), (24_000, -20.0)],
         warp: Vec::new(),
     };
-    let out = rendered(Mix { tracks: vec![track(vec![span])], master_gain: 1.0 }, 36_000);
+    let out = rendered(Mix { tracks: vec![track(vec![span])], master_gain: 1.0, ..Mix::default() }, 36_000);
     let at = |sample: usize| out[sample * 2];
     assert!((at(6_000) - 0.5).abs() < 1e-4);
     // Half way down the slope: -10 dB.
@@ -475,6 +484,7 @@ fn a_grain_is_heard_at_the_playhead_and_the_clock_stays() {
             gain_keys: Vec::new(),
             warp: Vec::new(),
         }])],
+        ..Mix::default()
     });
     engine.grain(10_000);
     engine.settle();
@@ -517,6 +527,7 @@ fn a_changing_speed_reads_the_source_along_its_curve() {
                 gain_keys: Vec::new(),
                 warp,
             }])],
+            ..Mix::default()
         },
         5000,
     );
@@ -555,6 +566,7 @@ fn a_track_that_ducks_goes_down_while_the_voice_sounds() {
             TrackMix { tone: tone(true, 0.0), mute: voice_muted, ..track(vec![span(&voice)]) },
         ],
         master_gain: 1.0,
+        ..Mix::default()
     };
     // What the beat contributes at a frame: the sum less the voice (0.3 while it sounds).
     let beat_at = |v: &[f32], frame: usize| v[frame * 2] - if (24_000..57_600).contains(&frame) { 0.3 } else { 0.0 };
@@ -595,8 +607,11 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     let spec = sg_audio::PluginSpec { key: 1, path: plugin, state_file: state_file.clone() };
     // One note from 0.5 s to 1.0 s.
     let note = sg_audio::NoteSpan { start: 24_000, len: 24_000, pitch: 60, velocity: 100 };
-    let mix =
-        Mix { tracks: vec![TrackMix { plugin: Some(spec), notes: vec![note], ..track(Vec::new()) }], master_gain: 1.0 };
+    let mix = Mix {
+        tracks: vec![TrackMix { plugin: Some(spec), notes: vec![note], ..track(Vec::new()) }],
+        master_gain: 1.0,
+        ..Mix::default()
+    };
     let engine = Engine::start(Backend::Manual).unwrap();
     engine.set_mix(mix.clone());
     engine.play(0);
@@ -626,6 +641,7 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     engine.set_mix(Mix {
         tracks: vec![TrackMix { plugin: Some(missing), notes: vec![note], ..track(Vec::new()) }],
         master_gain: 1.0,
+        ..Mix::default()
     });
     engine.settle();
     let news = engine.plugin_news();
@@ -663,7 +679,7 @@ fn a_take_lands_on_the_timeline_where_it_was_heard() {
         };
         let engine =
             Engine::start(Backend::PipeWire { target: Some("shotgun-test-record".into()), quantum: 256 }).unwrap();
-        engine.set_mix(Mix { tracks: vec![track(vec![span])], master_gain: 1.0 });
+        engine.set_mix(Mix { tracks: vec![track(vec![span])], master_gain: 1.0, ..Mix::default() });
         engine.play(0);
         // What the sink plays is recorded: a loop without air in it.
         let recording = engine.record(dir.path().join("take.wav"), Some("shotgun-test-record.monitor".into())).unwrap();
@@ -687,4 +703,45 @@ fn a_take_lands_on_the_timeline_where_it_was_heard() {
     });
     pactl(&["unload-module", &module]);
     result.unwrap();
+}
+
+#[test]
+fn sends_add_a_room_and_repeats_and_the_click_is_heard_only_when_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    // A tenth of a second of tone, then silence.
+    let path =
+        wav(dir.path(), "burst.wav", 1, 96_000, |n, _| if n < 4800 { 0.5 * (n as f32 * 0.1).sin() } else { 0.0 });
+    let span = ClipSpan {
+        start: 0,
+        len: 96_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+        warp: Vec::new(),
+    };
+    let rms = |samples: &[f32]| (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    let dry = rendered(Mix { tracks: vec![track(vec![span.clone()])], ..Mix::default() }, 96_000);
+    assert!(rms(&dry[20_000 * 2..]) < 1e-6);
+    // With the reverb, sound goes on after the burst; the burst itself is still there.
+    let room = TrackMix { reverb: 0.5, ..track(vec![span.clone()]) };
+    let wet = rendered(Mix { tracks: vec![room], ..Mix::default() }, 96_000);
+    assert!(rms(&wet[20_000 * 2..40_000 * 2]) > 0.001);
+    assert!((rms(&wet[..4800 * 2]) - rms(&dry[..4800 * 2])).abs() < 0.02);
+    // With the echo, the burst comes again after `echo_samples`.
+    let again = TrackMix { echo: 0.5, ..track(vec![span.clone()]) };
+    let echoed = rendered(Mix { tracks: vec![again.clone()], echo_samples: 24_000, ..Mix::default() }, 96_000);
+    assert!(rms(&echoed[12_000 * 2..22_000 * 2]) < 1e-4);
+    assert!(rms(&echoed[24_000 * 2..28_800 * 2]) > 0.02);
+    // A muted track sends nothing.
+    let muted = TrackMix { mute: true, ..again };
+    let silent = rendered(Mix { tracks: vec![muted], echo_samples: 24_000, ..Mix::default() }, 96_000);
+    assert!(rms(&silent) < 1e-6);
+    // The metronome: a click at the start of every beat, here every 12 000 samples.
+    let click = sg_audio::space::Click { beat: (12_000, 1), beats_per_bar: 4 };
+    let clicked = rendered(Mix { tracks: vec![track(vec![span])], click: Some(click), ..Mix::default() }, 96_000);
+    assert!(rms(&clicked[36_000 * 2..36_500 * 2]) > 0.05 && rms(&clicked[40_000 * 2..47_000 * 2]) < 1e-4);
 }

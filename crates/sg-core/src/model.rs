@@ -243,6 +243,10 @@ pub struct TrackSettings {
     pub voice: bool,
     /// How far this track goes down under the voice tracks, in decibels.
     pub duck_db: f32,
+    /// How much of the track is sent to the sequence's reverb and to its
+    /// echo (repeats in time with the tempo), 0 (none) to 1.
+    pub reverb: f32,
+    pub echo: f32,
 }
 
 impl Default for TrackSettings {
@@ -270,6 +274,8 @@ impl Default for TrackSettings {
             drive: 0.0,
             voice: false,
             duck_db: 0.0,
+            reverb: 0.0,
+            echo: 0.0,
         }
     }
 }
@@ -301,6 +307,8 @@ impl TrackSettings {
             level: finite(self.level, 0.0, 1.0),
             drive: finite(self.drive, 0.0, 1.0),
             duck_db: finite(self.duck_db, 0.0, 24.0),
+            reverb: finite(self.reverb, 0.0, 1.0),
+            echo: finite(self.echo, 0.0, 1.0),
             ..self
         }
     }

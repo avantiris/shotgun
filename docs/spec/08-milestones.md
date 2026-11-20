@@ -305,7 +305,11 @@ chain second version, M16 mixing and mastering.
     With one, the ruler counts bars, the lanes show beats and bars, and
     moving and trimming snap to quarter beats, beats or bars, whichever
     is far enough apart on screen to aim at.
-  - Still to do: the metronome; the tempo shown and set at the timeline
+  - Metronome (2026-11-20): Shift+K or "Metronome" above the timeline;
+    clicks on the beats while playing (the first of a bar higher), placed
+    by whole-number arithmetic so that they do not drift; never in an
+    export.
+  - Still to do: the tempo shown and set at the timeline
     itself, not only in the inspector; a choice of grid (1/2 to 1/32,
     triplets); a time display in bars and beats under the viewer.
 - [ ] M12 Vocal chain, first version
@@ -380,9 +384,13 @@ chain second version, M16 mixing and mastering.
   - Not checked: a real microphone and real speakers (the measured loop
     has no converters and no air in it; a device that reports its delay
     wrongly would shift takes by that error), anything by ear.
-  - Still to do: count-in and metronome, choosing the input in the
-    program, monitoring the input through the engine, takes stacked on
-    one track (a new take goes to a free track instead), punch in and out.
+  - Count-in (2026-11-20): with the metronome on, a recording starts one
+    bar before the playhead, with clicks. Checked on the same loop: the
+    recorded clicks lie 5 frames from their beats, also before the start
+    of the timeline.
+  - Still to do: choosing the input in the program, monitoring the input
+    through the engine, takes stacked on one track (a new take goes to a
+    free track instead), punch in and out.
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
   - Built 2026-11-20:
     - `sg-plug`: every plugin runs in a process of its own
@@ -417,4 +425,14 @@ chain second version, M16 mixing and mastering.
     keyframes; more than one plugin per track; a plugin that hangs (not
     crashes) stalls the sound of all tracks until it answers.
 - [ ] M15 Vocal chain, second version
+  - Built 2026-11-20: a reverb and an echo shared by all tracks, with a
+    "Reverb" and an "Echo" amount on every mixer strip (after the fader).
+    The echo repeats on the beat of the sequence's tempo (every 3/8 s
+    without one). Both run in the realtime graph, so preview and export
+    are the same sound. `PROPOSED`: one room and one echo with fixed
+    character (about 1.8 s of tail; repeats 38 % of the one before,
+    between 300 Hz and 4 kHz); nothing of them can be set yet.
+  - Still to do: the styles do not set the sends; more styles; settings
+    for the room and the echo; the tail after the last clip is cut off at
+    the end of the sequence in an export.
 - [ ] M16 Mixing and mastering

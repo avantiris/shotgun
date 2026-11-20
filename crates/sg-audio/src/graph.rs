@@ -45,6 +45,8 @@ pub struct Live {
     gain: AtomicU32,
     pan: AtomicU32,
     mute: AtomicBool,
+    /// Shares sent to the reverb and to the echo.
+    sends: [AtomicU32; 2],
 }
 
 impl Live {
@@ -58,6 +60,15 @@ impl Live {
         self.gain.store(gain.to_bits(), Ordering::Relaxed);
         self.pan.store(pan.to_bits(), Ordering::Relaxed);
         self.mute.store(mute, Ordering::Relaxed);
+    }
+
+    pub fn set_sends(&self, reverb: f32, echo: f32) {
+        self.sends[0].store(reverb.to_bits(), Ordering::Relaxed);
+        self.sends[1].store(echo.to_bits(), Ordering::Relaxed);
+    }
+
+    fn sends(&self) -> [f32; 2] {
+        [0, 1].map(|n| f32::from_bits(self.sends[n].load(Ordering::Relaxed)))
     }
 
     /// The fader as a factor, and whether the track is muted (for the disk
@@ -162,11 +173,17 @@ pub struct Track {
     /// position onwards.
     pub ring: rtrb::Consumer<f32>,
     pub chain: Vec<Box<dyn Processor>>,
+    /// The track's live settings: its sends are read from them.
+    pub live: Arc<Live>,
 }
 
 pub struct Graph {
     pub tracks: Vec<Track>,
     pub master: Vec<Box<dyn Processor>>,
+    /// The shared reverb and echo, if any track sends to them.
+    pub space: Option<crate::space::Space>,
+    /// The metronome.
+    pub click: Option<crate::space::Click>,
     /// Timeline sample the rings start at.
     pub start: i64,
     pub playing: bool,
@@ -296,6 +313,10 @@ impl Rt {
             let len = out.len();
             for chunk_start in (0..len).step_by(MAX_BLOCK * 2) {
                 let block = &mut out[chunk_start..(chunk_start + MAX_BLOCK * 2).min(len)];
+                if let Some(space) = &mut graph.space {
+                    space.to_reverb[..block.len()].fill(0.0);
+                    space.to_echo[..block.len()].fill(0.0);
+                }
                 for (index, track) in graph.tracks.iter_mut().enumerate() {
                     let scratch = &mut self.scratch[..block.len()];
                     let available = track.ring.slots().min(block.len());
@@ -320,12 +341,38 @@ impl Rt {
                     if let Some(meter) = self.shared.meters.get(index) {
                         meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
                     }
+                    // After the fader: a track that is turned down or muted sends less or nothing.
+                    if let Some(space) = &mut graph.space {
+                        let [reverb, echo] = track.live.sends();
+                        for (bus, share) in [(&mut space.to_reverb, reverb), (&mut space.to_echo, echo)] {
+                            if share > 0.0 {
+                                for (b, s) in bus.iter_mut().zip(scratch.iter()) {
+                                    *b += *s * share;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(space) = &mut graph.space {
+                    let (reverb, echo) = (&mut space.to_reverb[..block.len()], &mut space.to_echo[..block.len()]);
+                    space.reverb.process(reverb);
+                    space.echo.process(echo);
+                    for ((o, r), e) in block.iter_mut().zip(reverb.iter()).zip(echo.iter()) {
+                        *o += *r + *e;
+                    }
                 }
                 for processor in &mut graph.master {
                     processor.process(block, transport);
                 }
                 let peak = block.iter().fold(0.0f32, |m, s| m.max(s.abs()));
                 self.shared.master_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
+                // The click is not part of the mix: after the master, and not when scrubbing.
+                if let (Some(click), None) = (&graph.click, grain) {
+                    click.add(block, self.position + (chunk_start / 2) as i64);
+                    for sample in block.iter_mut() {
+                        *sample = sample.clamp(-1.0, 1.0);
+                    }
+                }
             }
             if let Some(len) = grain {
                 for (i, frame) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {

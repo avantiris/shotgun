@@ -353,7 +353,7 @@ fn bench_audio(target: Option<&str>, secs: u64, dir: &Path) -> anyhow::Result<()
         gain_keys: Vec::new(),
         warp: Vec::new(),
     };
-    engine.set_mix(Mix { tracks: vec![TrackMix::plain(vec![clip])], master_gain: 1.0 });
+    engine.set_mix(Mix { tracks: vec![TrackMix::plain(vec![clip])], master_gain: 1.0, ..Mix::default() });
 
     // Play start: from the call until the realtime thread renders the first block.
     let mut starts = Vec::new();

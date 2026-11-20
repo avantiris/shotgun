@@ -144,6 +144,7 @@ Animation and creation
 |-----|--------|
 | F | add / update keyframe for the selected layer at the playhead |
 | Shift + F | remove keyframe at playhead |
+| Shift + K | metronome on or off: clicks on the beats while playing (needs a tempo), and one bar of them before a recording (stage 3, M11) |
 | Shift + R | record sound: plays from the playhead and records the microphone; again, or pause, ends the take, which is laid on the timeline where it was played (stage 3, M13) |
 | R | live record: plays; drag the selected clip's picture in the viewer and the motion is recorded as keyframes. R again or pause ends it |
 | T | add a 3 s title at the playhead, on the topmost video track that is free there (a new track if none is) |

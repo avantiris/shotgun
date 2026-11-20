@@ -178,6 +178,8 @@ pub enum Command {
     },
     /// End the recording (and the playback it runs with).
     StopRecording,
+    /// The metronome on or off.
+    Metronome(bool),
     /// Show the window of the plugin on this track.
     PluginEditor {
         track: sg_core::TrackId,
@@ -717,6 +719,18 @@ impl Shell {
                     self.timeline_action(action, commands);
                 } else if let Some(id) = self.editor.assets.selected {
                     self.remove_asset(id);
+                }
+            }
+            Action::Metronome => {
+                let tempo = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.project().sequences.first().is_some_and(|q| q.tempo.is_some()));
+                if tempo || self.editor.metronome {
+                    self.editor.metronome = !self.editor.metronome;
+                    commands.push(Command::Metronome(self.editor.metronome));
+                } else {
+                    self.error = Some("The metronome needs a tempo: set one under Sequence, on the right.".to_owned());
                 }
             }
             Action::RecordSound => {

@@ -75,6 +75,8 @@ pub enum Action {
     LiveRecord,
     /// Play and record sound from the input onto the timeline; again: stop.
     RecordSound,
+    /// The metronome on or off.
+    Metronome,
     /// Put the selected asset on the timeline.
     InsertAsset,
     /// Import what the clipboard holds.
@@ -169,6 +171,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::Num9, Action::Angle(9)),
     bind(Scope::Editor, false, false, Key::R, Action::LiveRecord),
     bind(Scope::Editor, false, true, Key::R, Action::RecordSound),
+    bind(Scope::Editor, false, true, Key::K, Action::Metronome),
     bind(Scope::Editor, false, false, Key::H, Action::FitTimeline),
     bind(Scope::Editor, false, false, Key::ArrowLeft, Action::Nudge(-1)),
     bind(Scope::Editor, false, false, Key::ArrowRight, Action::Nudge(1)),
@@ -404,6 +407,9 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::KeyframeSet => ("Making", "keyframe for the selected clip at the playhead"),
         Action::KeyframeRemove => ("Making", "remove that keyframe"),
         Action::LiveRecord => ("Making", "record the picture's movement while playing"),
+        Action::Metronome => {
+            ("Making", "metronome: clicks on the beats while playing, and a bar of them before a recording")
+        }
         Action::RecordSound => ("Making", "record sound (a microphone) while playing; again, or pause, ends the take"),
         Action::Angle(1) => ("Making", "cut to camera angle 1 (2 to 9 likewise)"),
         Action::Angle(_) => return None,

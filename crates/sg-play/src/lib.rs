@@ -55,6 +55,8 @@ enum Command {
     PluginEditor(u64),
     /// Have the plugins' states written to their files, then reply.
     SavePlugins(crossbeam_channel::Sender<()>),
+    /// The metronome on or off.
+    Click(bool),
     /// Record from a sound input into this file while playing; ends when playback does.
     Record {
         path: PathBuf,
@@ -135,6 +137,7 @@ impl Player {
         let pool = Pool::new(result_tx)?;
         let mut state = State {
             recording: None,
+            click: false,
             device,
             queue,
             compositor,
@@ -271,6 +274,12 @@ impl Player {
         let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
     }
 
+    /// Turns the metronome on or off: clicks on the beats of a sequence
+    /// that has a tempo while it plays, and a bar of them before a recording.
+    pub fn set_click(&self, on: bool) {
+        self.send(Command::Click(on));
+    }
+
     /// Starts playing and recording from `source` (`None`: the default
     /// input) into the file at `path`. The recording ends when playback
     /// is stopped; the take is then found with [`Player::take_recordings`].
@@ -312,6 +321,8 @@ impl Open {
 struct State {
     /// The recording in progress.
     recording: Option<sg_audio::record::Recording>,
+    /// The metronome is on.
+    click: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
     compositor: Compositor,
@@ -362,9 +373,18 @@ impl State {
     /// The audio mix of the open sequence.
     fn mix(&self) -> Mix {
         match self.project.as_ref().and_then(|o| o.sequence().map(|s| (o, s))) {
-            Some((open, sequence)) => audio_mix(&open.root, sequence),
+            Some((open, sequence)) => Mix { click: self.click(sequence), ..audio_mix(&open.root, sequence) },
             None => Mix::default(),
         }
+    }
+
+    /// The metronome's beats, if it is on and the sequence has a tempo.
+    fn click(&self, sequence: &Sequence) -> Option<sg_audio::space::Click> {
+        let tempo = sequence.tempo.filter(|_| self.click)?;
+        Some(sg_audio::space::Click {
+            beat: (SAMPLE_RATE as u64 * 60_000, tempo.milli_bpm.max(1) as u64),
+            beats_per_bar: tempo.beats_per_bar.max(1) as u32,
+        })
     }
 
     fn samples_of(&self, frame: i64) -> i64 {
@@ -381,6 +401,11 @@ impl State {
     }
 
     fn start_playing(&mut self) {
+        self.start_playing_after(0);
+    }
+
+    /// Starts playing `lead` samples before the playhead (a count-in).
+    fn start_playing_after(&mut self, lead: i64) {
         if self.project.is_none() || self.playing {
             return;
         }
@@ -391,7 +416,7 @@ impl State {
         self.playing = true;
         self.last_played = None;
         self.play_started = Some(Instant::now());
-        self.audio.play(self.samples_of(self.frame));
+        self.audio.play(self.samples_of(self.frame) - lead);
         self.shared.playing.store(true, Ordering::Relaxed);
     }
 
@@ -499,7 +524,12 @@ impl State {
                     match self.audio.record(path, source) {
                         Ok(recording) => {
                             self.recording = Some(recording);
-                            self.start_playing();
+                            // With the metronome on, a bar of clicks comes first.
+                            let bar = self.project.as_ref().and_then(|o| o.sequence()).and_then(|s| {
+                                let click = self.click(s)?;
+                                Some((click.beat.0 * click.beats_per_bar as u64 / click.beat.1) as i64)
+                            });
+                            self.start_playing_after(bar.unwrap_or(0));
                         }
                         Err(e) => {
                             self.stats(|s| s.plugin_news.push(format!("Cannot record: {e}")));
@@ -507,6 +537,10 @@ impl State {
                         }
                     }
                 }
+            }
+            Command::Click(on) => {
+                self.click = on;
+                self.audio.set_mix(self.mix());
             }
             Command::PluginEditor(key) => self.audio.open_plugin_editor(key),
             Command::SavePlugins(reply) => {
@@ -921,9 +955,16 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 state_file: root.join("plugins").join(format!("{}.state", track.id)),
             }),
             notes: track_notes(sequence, track),
+            // (Squared: the lower half of the control is the useful, quiet part.)
+            reverb: track.mix.reverb * track.mix.reverb,
+            echo: track.mix.echo * track.mix.echo,
         })
         .collect();
-    Mix { tracks, master_gain: db(sequence.master_db) }
+    // The echo repeats on the beat; without a tempo, every 3/8 of a second.
+    let echo_samples = sequence
+        .tempo
+        .map_or(SAMPLE_RATE * 3 / 8, |t| (SAMPLE_RATE as u64 * 60_000 / t.milli_bpm.max(1) as u64) as u32);
+    Mix { tracks, master_gain: db(sequence.master_db), echo_samples, click: None }
 }
 
 /// The notes of a track's note clips in timeline samples, in order. A

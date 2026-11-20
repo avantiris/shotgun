@@ -51,6 +51,8 @@ pub struct Editor {
     pub actions: Vec<Action>,
     /// Undo group while a tempo field is being dragged: one drag, one step.
     tempo_group: Option<u64>,
+    /// The metronome is on.
+    pub metronome: bool,
     /// A take is being recorded: the button says so.
     pub recording_sound: bool,
     /// The notes of a note clip, shown in place of the viewer while open.
@@ -313,6 +315,7 @@ impl Editor {
                     (selected, Action::KeyframeRemove, "Remove keyframe"),
                     (selected, Action::LiveRecord, "Record movement"),
                     (true, Action::RecordSound, if self.recording_sound { "Stop recording" } else { "Record sound" }),
+                    (true, Action::Metronome, if self.metronome { "Metronome on" } else { "Metronome" }),
                     (true, Action::Transition, "Whip-pan"),
                     (true, Action::Blackout, "Black cut"),
                     (true, Action::AddTitle, "Title"),

@@ -541,6 +541,11 @@ impl App {
                     }
                     None => self.shell.recording_failed("There is no sound engine to record with.".to_owned()),
                 },
+                Command::Metronome(on) => {
+                    if let Some(player) = &self.player {
+                        player.set_click(on);
+                    }
+                }
                 Command::StopRecording => {
                     if let Some(player) = &self.player {
                         player.pause();

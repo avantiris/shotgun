@@ -184,11 +184,15 @@ const DUCK_SLOTS: usize = 8192;
 /// ahead) on the same tracks. Faders and amounts may differ.
 fn same_structure(a: &Mix, b: &Mix) -> bool {
     a.tracks.len() == b.tracks.len()
+        && a.click == b.click
+        && a.echo_samples == b.echo_samples
         && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
             // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
             x.clips == y.clips
                 && x.plugin == y.plugin
                 && x.notes == y.notes
+                // (The reverb and echo exist only while some track sends to them.)
+                && (x.reverb > 0.0 || x.echo > 0.0) == (y.reverb > 0.0 || y.echo > 0.0)
                 && (x.denoise > 0.0) == (y.denoise > 0.0)
                 && (x.tone.tune.amount > 0.0) == (y.tone.tune.amount > 0.0)
         })
@@ -422,9 +426,10 @@ impl Disk {
         for track in &self.mix.tracks {
             let (producer, ring) = rtrb::RingBuffer::new(RING_FRAMES * 2);
             let live = Live::new(track.gain, track.pan, track.mute);
+            live.set_sends(track.reverb, track.echo);
             let mut fader: Box<dyn Processor> = Box::new(Fader::new(live.clone()));
             fader.prepare(SAMPLE_RATE, MAX_BLOCK);
-            tracks.push(Track { ring, chain: vec![fader] });
+            tracks.push(Track { ring, chain: vec![fader], live: live.clone() });
             self.feeds.push(Feed {
                 producer,
                 clips: track.clips.clone(),
@@ -463,7 +468,10 @@ impl Disk {
         master.prepare(SAMPLE_RATE, MAX_BLOCK);
         let mut limiter: Box<dyn Processor> = Box::new(Limiter::new(self.shared.clone()));
         limiter.prepare(SAMPLE_RATE, MAX_BLOCK);
-        let graph = Box::new(Graph { tracks, master: vec![master, limiter], start: pos, playing, grain });
+        let sends = self.mix.tracks.iter().any(|t| t.reverb > 0.0 || t.echo > 0.0);
+        let space = sends.then(|| crate::space::Space::new(self.mix.echo_samples as usize));
+        let click = self.mix.click;
+        let graph = Box::new(Graph { tracks, master: vec![master, limiter], space, click, start: pos, playing, grain });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
         self.offered += 1;
@@ -507,6 +515,7 @@ impl Disk {
                     // and nothing can click.
                     for (feed, track) in self.feeds.iter_mut().zip(&self.mix.tracks) {
                         feed.live.set(track.gain, track.pan, track.mute);
+                        feed.live.set_sends(track.reverb, track.echo);
                         (feed.low_cut_hz, feed.denoise, feed.tone) = (track.low_cut_hz, track.denoise, track.tone);
                     }
                     self.master.set(self.mix.master_gain, 0.0, false);
