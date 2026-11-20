@@ -985,3 +985,44 @@ fn a_finished_export_offers_the_way_to_its_file() {
         |c| matches!(c, Command::Reveal { path } if path.to_str() == Some("/library/flows/exports/flows-master-1.mp4"))
     ));
 }
+
+#[test]
+fn an_asset_is_made_global_and_taken_into_a_project_from_the_global_tab() {
+    let mut harness = editor();
+    // From an asset's menu: the application is asked to copy it to the global folder.
+    right_click(&mut harness, "first take");
+    click(&mut harness, "Make global");
+    assert!(
+        harness
+            .state()
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::MakeGlobal { asset, .. } if asset.id == AssetId(1)))
+    );
+    // The folder as the application reads it afterwards: that copy and a meme from another project.
+    let entry = |name: &str, bytes: u64| sg_project::global::GlobalEntry {
+        path: std::path::PathBuf::from(format!("/somewhere/_global/video/{name}.mp4")),
+        kind: AssetKind::Video,
+        label: name.to_owned(),
+        bytes,
+    };
+    let listed = vec![entry("first take", 1), entry("meme", 5_000_000)];
+    harness.state_mut().shell.global_listed(Ok(listed), Some("\"first take\" is global now.".to_owned()));
+    harness.run_steps(3);
+    // The Global tab shows both; the project's own assets are not in it.
+    click(&mut harness, "Global");
+    assert!(harness.query_by_label("meme").is_some() && harness.query_by_label("second take").is_none());
+    // Taking the meme imports its file, as a copy, like a dropped file; the tab goes back to the project.
+    right_click(&mut harness, "meme");
+    click(&mut harness, "Add to this project");
+    let imported = harness.state().commands.iter().any(|c| {
+        matches!(c, Command::Import { source: sg_project::ImportSource::Path(path), .. } if path.ends_with("video/meme.mp4"))
+    });
+    assert!(imported);
+    assert!(harness.query_by_label("second take").is_some());
+    // Removing one from Global is asked of the application too.
+    click(&mut harness, "Global");
+    right_click(&mut harness, "meme");
+    click(&mut harness, "Remove from Global");
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::RemoveGlobal { .. })));
+}

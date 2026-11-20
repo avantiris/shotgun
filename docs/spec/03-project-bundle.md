@@ -222,3 +222,22 @@ fades, keyframes, title text) are stored per track as lines
 `props <clip id> <one-line JSON>` after the track's clips, sorted by clip id.
 A title is a clip whose asset id is all zeros and whose properties carry the
 text.
+
+## Global assets (feedback F7.3, 2026-11-20)
+
+Asked for by the user: assets that can be used in every project (memes,
+jingles), always by copying, never by linking.
+
+- One folder per library, `_global` (`PROPOSED`; the user said a folder
+  under the home directory, but that disk is nearly full and the library is
+  on the large one). `SHOTGUN_GLOBAL` overrides it. The library scan skips
+  it: it has no `project.toml`.
+- Layout: `video/`, `audio/`, `image/`; a file is named by the asset's
+  label, with its poster beside it as `<file>.rgba`. No index: the folder
+  is the list, so files can be put there or removed by hand too.
+- "Make global" copies the asset's file out of the project. Using a global
+  asset imports that file into the open project through the normal import
+  (hash, proxy, poster; an asset already in the project is recognised by
+  its hash). Rule 4 of CLAUDE.md holds: the timeline never references the
+  global folder.
+- Removing from Global deletes the file there and nothing else.

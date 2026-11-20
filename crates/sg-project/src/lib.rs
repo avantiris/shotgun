@@ -6,6 +6,7 @@ pub mod analysis;
 mod bundle;
 pub mod fetch;
 mod git;
+pub mod global;
 pub mod import;
 mod journal;
 mod layout;

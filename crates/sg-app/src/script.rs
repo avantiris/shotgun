@@ -41,6 +41,8 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "xdel" => Step::Dev(DevStep::Act(Action::RippleDelete)),
         "select" => Step::Dev(DevStep::Act(Action::SelectUnder)),
         "copy" => Step::Dev(DevStep::Act(Action::Copy)),
+        // global:make (the selected asset), global:tab, global:use:<n>
+        "global" => Step::Dev(DevStep::Global(need()?)),
         "cut" => Step::Dev(DevStep::Act(Action::Cut)),
         "ctrlv" => Step::Dev(DevStep::Act(Action::Paste)),
         "paste" => Step::Dev(DevStep::Act(Action::PasteClips)),

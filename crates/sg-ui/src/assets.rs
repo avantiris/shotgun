@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use sg_core::{Asset, AssetId, AssetKind, Project};
+use sg_project::global::{self, GlobalEntry};
 
 use crate::theme;
 
@@ -43,6 +44,14 @@ pub enum AssetRequest {
     Scenario(crate::session::ScenarioChoice),
     /// Remove the selected asset from the project.
     Remove,
+    /// Read what is in the global folder.
+    ListGlobal,
+    /// Copy the selected asset to the global folder, for use in every project.
+    MakeGlobal,
+    /// Import this global asset into the project (a copy, like a dropped file).
+    UseGlobal(std::path::PathBuf),
+    RemoveGlobal(std::path::PathBuf),
+    LoadGlobalPoster(std::path::PathBuf),
 }
 
 #[derive(Default)]
@@ -60,6 +69,14 @@ pub struct AssetsPanel {
     sound_only: bool,
     /// A drag from another application is over the window.
     pub drag_hover: bool,
+    /// The "Global" tab is shown instead of the project's assets.
+    global_tab: bool,
+    /// What the global folder holds, as last read.
+    global: Vec<GlobalEntry>,
+    /// (file name, size) of each, to mark the project's assets that are global.
+    global_names: HashSet<(String, u64)>,
+    global_asked: bool,
+    global_posters: HashMap<std::path::PathBuf, Poster>,
 }
 
 /// `m:ss` or `h:mm:ss`, for display.
@@ -107,6 +124,44 @@ impl AssetsPanel {
         self.posters.insert(id, poster);
     }
 
+    /// The global folder was read (again).
+    pub fn set_global(&mut self, entries: Vec<GlobalEntry>) {
+        self.global_names = entries
+            .iter()
+            .filter_map(|e| Some((e.path.file_name()?.to_string_lossy().into_owned(), e.bytes)))
+            .collect();
+        // A replaced entry may have a new picture.
+        self.global_posters.retain(|path, _| entries.iter().any(|e| e.path == *path));
+        self.global = entries;
+    }
+
+    pub fn set_global_poster(&mut self, ctx: &egui::Context, file: std::path::PathBuf, rgba: Option<Vec<u8>>) {
+        let poster = match rgba.filter(|b| b.len() == POSTER_SIZE[0] * POSTER_SIZE[1] * 4) {
+            Some(bytes) => {
+                let image = egui::ColorImage::from_rgba_unmultiplied(POSTER_SIZE, &bytes);
+                let name = format!("global-{}", file.display());
+                Poster::Ready(ctx.load_texture(name, image, egui::TextureOptions::LINEAR))
+            }
+            None => Poster::Absent,
+        };
+        self.global_posters.insert(file, poster);
+    }
+
+    /// Shows the Global tab (scripted runs).
+    pub fn show_global(&mut self) {
+        self.global_tab = true;
+    }
+
+    /// The file of the n-th global asset as listed (scripted runs).
+    pub fn global_entry(&self, n: usize) -> Option<std::path::PathBuf> {
+        self.global.get(n).map(|e| e.path.clone())
+    }
+
+    /// Whether a copy of this asset is in the global folder (by name and size).
+    fn is_global(&self, asset: &Asset) -> bool {
+        self.global_names.contains(&(global::file_name(asset), asset.size))
+    }
+
     /// The poster file was (re)written: load it when the tile is next shown.
     pub fn poster_changed(&mut self, id: AssetId) {
         self.posters.remove(&id);
@@ -151,11 +206,23 @@ impl AssetsPanel {
                 ("Audio", Some(AssetKind::Audio)),
                 ("Image", Some(AssetKind::Image)),
             ] {
-                if ui.selectable_label(self.tab == kind, label).clicked() {
-                    self.tab = kind;
+                if ui.selectable_label(!self.global_tab && self.tab == kind, label).clicked() {
+                    (self.tab, self.global_tab) = (kind, false);
                 }
             }
+            let tab = ui.selectable_label(self.global_tab, "Global").on_hover_text(
+                "Assets kept for every project. Right click an asset and choose \"Make global\" to put it here; \
+                 double-click one here to copy it into this project.",
+            );
+            if tab.clicked() {
+                self.global_tab = true;
+                out.push(AssetRequest::ListGlobal);
+            }
         });
+        // Read once per session, so that the project's assets can show which of them are global.
+        if !std::mem::replace(&mut self.global_asked, true) {
+            out.push(AssetRequest::ListGlobal);
+        }
         ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search").desired_width(f32::INFINITY));
         ui.add_space(4.0);
 
@@ -177,6 +244,9 @@ impl AssetsPanel {
             out.push(AssetRequest::CancelJob(job));
         }
 
+        if self.global_tab {
+            return self.global_ui(ui, out);
+        }
         let assets = self.visible(project);
         if assets.is_empty() {
             let text = if project.assets.is_empty() {
@@ -289,6 +359,13 @@ impl AssetsPanel {
                             ui.close();
                         }
                         ui.separator();
+                        let label = if self.is_global(asset) { "Global: copy it there again" } else { "Make global" };
+                        let hint = "Copies it to the Global tab, where every project can take it from. \
+                                    Nothing is linked: each project gets its own copy.";
+                        if ui.button(label).on_hover_text(hint).clicked() {
+                            out.push(AssetRequest::MakeGlobal);
+                            ui.close();
+                        }
                         if ui.button("Remove from project (Del)").clicked() {
                             out.push(AssetRequest::Remove);
                             ui.close();
@@ -305,6 +382,111 @@ impl AssetsPanel {
             });
         });
         Self::paint_dragged(ui, project);
+    }
+
+    /// The "Global" tab: what the global folder holds, as tiles.
+    fn global_ui(&mut self, ui: &mut egui::Ui, out: &mut Vec<AssetRequest>) {
+        let needle = self.search.trim().to_lowercase();
+        let shown: Vec<GlobalEntry> = self
+            .global
+            .iter()
+            .filter(|e| needle.is_empty() || e.label.to_lowercase().contains(&needle))
+            .cloned()
+            .collect();
+        if shown.is_empty() {
+            let text = if self.global.is_empty() {
+                "Nothing is global yet. Right click an asset of a project and choose \"Make global\": it is copied here \
+                 and can be taken into any project."
+            } else {
+                "Nothing matches."
+            };
+            ui.add_space(8.0);
+            ui.label(RichText::new(text).color(theme::DIM));
+            return;
+        }
+        let mut used = false;
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            const GAP: f32 = 8.0;
+            let width = ui.available_width();
+            let columns = (((width + GAP) / (140.0 + GAP)).floor() as usize).max(1);
+            let tile_w = ((width - GAP * (columns - 1) as f32) / columns as f32).floor();
+            let tile = vec2(tile_w, tile_w * 9.0 / 16.0 + 34.0);
+            ui.spacing_mut().item_spacing = vec2(GAP, GAP);
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                for entry in &shown {
+                    let (rect, response) = ui.allocate_exact_size(tile, Sense::click());
+                    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &entry.label));
+                    if response.double_clicked() {
+                        out.push(AssetRequest::UseGlobal(entry.path.clone()));
+                        used = true;
+                    }
+                    response.context_menu(|ui| {
+                        if ui.button("Add to this project").clicked() {
+                            out.push(AssetRequest::UseGlobal(entry.path.clone()));
+                            used = true;
+                            ui.close();
+                        }
+                        let remove = ui.button("Remove from Global");
+                        if remove.on_hover_text("Projects that took it keep their copies.").clicked() {
+                            out.push(AssetRequest::RemoveGlobal(entry.path.clone()));
+                            ui.close();
+                        }
+                    });
+                    if !ui.is_rect_visible(rect) {
+                        continue;
+                    }
+                    if let std::collections::hash_map::Entry::Vacant(e) = self.global_posters.entry(entry.path.clone())
+                    {
+                        e.insert(Poster::Requested);
+                        out.push(AssetRequest::LoadGlobalPoster(entry.path.clone()));
+                    }
+                    let painter = ui.painter().with_clip_rect(rect);
+                    let poster = Rect::from_min_size(rect.min, vec2(rect.width(), rect.width() * 9.0 / 16.0));
+                    painter.rect_filled(poster, 4.0, Color32::BLACK);
+                    match self.global_posters.get(&entry.path) {
+                        Some(Poster::Ready(texture)) => {
+                            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                            painter.image(texture.id(), poster, uv, Color32::WHITE);
+                        }
+                        _ => {
+                            let at = poster.center();
+                            painter.text(
+                                at,
+                                Align2::CENTER_CENTER,
+                                entry.kind.dir(),
+                                FontId::proportional(12.0),
+                                theme::DIM,
+                            );
+                        }
+                    }
+                    let accent = match entry.kind {
+                        AssetKind::Video => theme::VIDEO,
+                        AssetKind::Audio => theme::AUDIO,
+                        AssetKind::Image => theme::ACCENT,
+                    };
+                    let line = Rect::from_min_size(poster.left_bottom() - vec2(0.0, 2.0), vec2(poster.width(), 2.0));
+                    painter.rect_filled(line, 0.0, accent);
+                    let below = pos2(rect.left() + 1.0, poster.bottom() + 4.0);
+                    painter.text(below, Align2::LEFT_TOP, &entry.label, FontId::proportional(12.0), theme::TEXT);
+                    let size = format!("{:.1} MB", entry.bytes as f64 / 1e6);
+                    painter.text(
+                        below + vec2(0.0, 15.0),
+                        Align2::LEFT_TOP,
+                        size,
+                        FontId::proportional(10.0),
+                        theme::DIM,
+                    );
+                    if response.hovered() {
+                        painter.rect_stroke(poster, 4.0, Stroke::new(1.0, theme::DIM), StrokeKind::Inside);
+                    }
+                }
+            });
+        });
+        // Back to the project's assets, where the copy arrives.
+        if used {
+            (self.global_tab, self.tab) = (false, None);
+        }
     }
 
     /// A small tag at the pointer naming the asset being dragged.
@@ -359,6 +541,12 @@ impl AssetsPanel {
             FontId::proportional(10.0),
             theme::DIM,
         );
+        // A copy of it is in the Global tab.
+        if self.is_global(asset) {
+            let tag = Rect::from_min_size(poster.right_top() + vec2(-46.0, 4.0), vec2(42.0, 16.0));
+            painter.rect_filled(tag, 3.0, theme::BG.gamma_multiply(0.85));
+            painter.text(tag.center(), Align2::CENTER_CENTER, "global", FontId::proportional(10.0), theme::TEXT);
+        }
         let stroke = if self.selected == Some(asset.id) {
             Some(Stroke::new(2.0, theme::ACCENT))
         } else if hovered {

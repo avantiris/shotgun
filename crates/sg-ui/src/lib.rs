@@ -160,6 +160,21 @@ pub enum Command {
     Transport(Transport),
     /// Read the clipboard; the content comes back through [`Shell::incoming`].
     ReadClipboard,
+    /// Read the global folder; answered with [`Shell::global_listed`].
+    ListGlobal,
+    /// Copy an asset of the project into the global folder, then read the folder again.
+    MakeGlobal {
+        root: PathBuf,
+        asset: Arc<Asset>,
+    },
+    /// Delete a file of the global folder, then read the folder again.
+    RemoveGlobal {
+        file: PathBuf,
+    },
+    /// Read the poster of a global asset; answered with [`Shell::global_poster_loaded`].
+    LoadGlobalPoster {
+        file: PathBuf,
+    },
     /// Clips were copied in the timeline: put [`CLIPS_ON_CLIPBOARD`] on the
     /// clipboard, so that a later paste can tell them from something copied
     /// elsewhere since. Answered with [`Shell::clips_offered`].
@@ -207,6 +222,9 @@ pub enum DevStep {
     Programme(bool),
     /// Make the selected asset the song.
     Song,
+    /// Global assets: `make` copies the selected asset there, `tab` shows
+    /// the tab, `use:<n>` takes the n-th entry into the project.
+    Global(String),
     /// Synchronise the selected asset (or, with `true`, every video) to the song.
     Sync(bool),
     /// Set the tempo choice of the song (-2 to 2).
@@ -442,6 +460,20 @@ impl Shell {
                         self.remove_asset(id);
                     }
                 }
+                AssetRequest::ListGlobal => commands.push(Command::ListGlobal),
+                AssetRequest::MakeGlobal => {
+                    let asset = self
+                        .editor
+                        .assets
+                        .selected
+                        .and_then(|id| self.session.as_ref().and_then(|s| s.project().assets.get(&id).cloned()));
+                    if let Some(asset) = asset {
+                        commands.push(Command::MakeGlobal { root, asset });
+                    }
+                }
+                AssetRequest::UseGlobal(path) => commands.extend(self.incoming(Incoming::Paths(vec![path]))),
+                AssetRequest::RemoveGlobal(file) => commands.push(Command::RemoveGlobal { file }),
+                AssetRequest::LoadGlobalPoster(file) => commands.push(Command::LoadGlobalPoster { file }),
             }
         }
         commands.extend(transport.into_iter().map(Command::Transport));
@@ -784,6 +816,25 @@ impl Shell {
             DevStep::Programme(beats) => self.programme_action(beats),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
+            DevStep::Global(what) => {
+                let selected = self.editor.assets.selected;
+                let session = self.session.as_ref();
+                let asset = selected.and_then(|id| session.and_then(|s| s.project().assets.get(&id).cloned()));
+                match (what.as_str(), asset, session.map(|s| s.root.clone())) {
+                    ("make", Some(asset), Some(root)) => commands.push(Command::MakeGlobal { root, asset }),
+                    ("tab", ..) => {
+                        self.editor.assets.show_global();
+                        commands.push(Command::ListGlobal);
+                    }
+                    (other, ..) => {
+                        match other.strip_prefix("use:").and_then(|n| self.editor.assets.global_entry(n.parse().ok()?))
+                        {
+                            Some(path) => commands.extend(self.incoming(Incoming::Paths(vec![path]))),
+                            None => self.error = Some(format!("global: cannot {what}")),
+                        }
+                    }
+                }
+            }
             DevStep::Size(width, height) => {
                 if let Some(session) = &mut self.session {
                     self.editor.set_size(session, width, height, &mut self.error);
@@ -861,6 +912,28 @@ impl Shell {
             }
             Err(e) => self.error = Some(format!("Cannot remove: {e}")),
         }
+    }
+
+    /// What the global folder holds, or why it could not be read. `news`
+    /// is what just happened there, for the notice line.
+    pub fn global_listed(
+        &mut self,
+        result: Result<Vec<sg_project::global::GlobalEntry>, String>,
+        news: Option<String>,
+    ) {
+        match result {
+            Ok(entries) => {
+                self.editor.assets.set_global(entries);
+                if let (Some(news), Some(session)) = (news, &mut self.session) {
+                    session.notice = Some(news);
+                }
+            }
+            Err(e) => self.error = Some(format!("Global assets: {e}")),
+        }
+    }
+
+    pub fn global_poster_loaded(&mut self, ctx: &egui::Context, file: PathBuf, rgba: Option<Vec<u8>>) {
+        self.editor.assets.set_global_poster(ctx, file, rgba);
     }
 
     /// Whether the mark of copied clips could be put on the clipboard.

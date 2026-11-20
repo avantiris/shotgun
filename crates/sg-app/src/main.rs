@@ -74,6 +74,12 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 enum UserEvent {
+    /// The global folder as read, and what was just done there.
+    Global(Result<Vec<sg_project::global::GlobalEntry>, String>, Option<String>),
+    GlobalPoster {
+        file: PathBuf,
+        rgba: Option<Vec<u8>>,
+    },
     /// Whether the mark of copied clips is on the clipboard now.
     ClipsOffered(bool),
     /// egui wants a repaint after this delay.
@@ -495,6 +501,42 @@ impl App {
                             Transport::Step(frames) => player.step(frames),
                         }
                     }
+                }
+                Command::ListGlobal | Command::MakeGlobal { .. } | Command::RemoveGlobal { .. } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let dir = sg_project::global::dir(&library);
+                        // What was asked for first, then the folder as it is after it.
+                        let done = match &command {
+                            Command::MakeGlobal { root, asset } => {
+                                sg_project::global::add(&dir, root, asset).map(|_| {
+                                    Some(format!(
+                                        "\"{}\" is global now: every project finds it in the Global tab.",
+                                        asset.label
+                                    ))
+                                })
+                            }
+                            Command::RemoveGlobal { file } => {
+                                sg_project::global::remove(&dir, file).map(|()| Some("Removed from Global.".to_owned()))
+                            }
+                            _ => Ok(None),
+                        };
+                        let result = done
+                            .and_then(|news| Ok((sg_project::global::list(&dir)?, news)))
+                            .map_err(|e| format!("{e} ({})", dir.display()));
+                        let event = match result {
+                            Ok((entries, news)) => UserEvent::Global(Ok(entries), news),
+                            Err(e) => UserEvent::Global(Err(e), None),
+                        };
+                        let _ = proxy.send_event(event);
+                    });
+                }
+                Command::LoadGlobalPoster { file } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let rgba = sg_project::global::read_poster(&file).ok();
+                        let _ = proxy.send_event(UserEvent::GlobalPoster { file, rgba });
+                    });
                 }
                 Command::OfferClips => {
                     // Automated runs must never touch the user's clipboard.
@@ -924,6 +966,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Problem(message) => self.shell.report_error(message),
             UserEvent::ClipsOffered(offered) => self.shell.clips_offered(offered),
+            UserEvent::Global(result, news) => {
+                self.shell.global_listed(result, news);
+                self.job_done();
+            }
+            UserEvent::GlobalPoster { file, rgba } => {
+                self.shell.global_poster_loaded(&self.ctx, file, rgba);
+                self.job_done();
+            }
             UserEvent::ProjectPoster { path, rgba } => {
                 self.shell.project_poster_loaded(&self.ctx, path, rgba);
                 self.job_done();
