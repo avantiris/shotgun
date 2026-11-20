@@ -114,6 +114,12 @@ enum Drag {
         edge: Edge,
         group: u64,
     },
+    /// A box pulled open over empty timeline: the clips it touches are
+    /// selected (with Shift: added to what was selected before, kept here).
+    Marquee {
+        from: egui::Pos2,
+        before: Vec<Sel>,
+    },
     /// Pulling the volume line of a sound clip up or down; the other
     /// selected sound clips change by as much. One undo step.
     Gain {
@@ -187,6 +193,8 @@ pub struct Timeline {
     pub edit_title: bool,
     /// The volume being pulled or pointed at: where to write it, and its decibels.
     gain_label: Option<(egui::Pos2, f32)>,
+    /// The selection box being pulled open, to draw it.
+    marquee: Option<Rect>,
     /// Quads drawn in the last frame, for the performance overlay.
     pub quads: usize,
 }
@@ -215,6 +223,7 @@ impl Default for Timeline {
             actions: Vec::new(),
             edit_title: false,
             gain_label: None,
+            marquee: None,
             menu_clip: None,
             scenario_request: None,
             waves: HashMap::new(),
@@ -260,6 +269,11 @@ fn gain_at(y: f32, y0: f32, y1: f32) -> f32 {
     let down = ((y - y0 - 3.0) / (y1 - y0 - 6.0).max(1.0)).clamp(0.0, 1.0);
     if down >= 1.0 { *GAIN_RANGE.start() } else { GAIN_TOP_DB - down * GAIN_SPAN_DB }
 }
+
+/// The most clips a box or "select all" takes. Each drawn clip is looked
+/// up in the selection, so an unbounded one would cost time every frame
+/// in very large projects.
+const SELECT_MOST: usize = 2000;
 
 /// Waveform colour: dark on the clip's fill, like ink on the track colour.
 const WAVE: Color32 = Color32::from_rgb(10, 38, 30);
@@ -506,11 +520,17 @@ impl Timeline {
         let x_of = move |frame: f64| lanes.left() + ((frame - left) / fpp) as f32;
 
         self.gain_label = None;
+        self.marquee = None;
         self.pointer(ui, &response, session, &sequence, view, transport, error, rect, lanes, &frame_at, &row_at);
         self.rect = rect;
         self.asset_drop(ui, &response, session, &project, &sequence, view, error);
         self.paint(ui, rect, lanes, &project, &sequence, view, &x_of);
         self.track_controls(ui, &response, session, &sequence, rect, &row_at, error);
+        if let Some(area) = self.marquee {
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(area, 0.0, theme::ACCENT.gamma_multiply(0.12));
+            painter.rect_stroke(area, 0.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
+        }
         // The volume under the pointer, in figures, beside it.
         if let Some((at, db)) = self.gain_label {
             let text = if db <= *GAIN_RANGE.start() { "silent".to_owned() } else { format!("{db:+.1} dB") };
@@ -1049,7 +1069,12 @@ impl Timeline {
                         None => Drag::Move { grab_frame: frame_at(origin.x), grab_row: row, primary: sel },
                     }
                 }
-                None => Drag::Scrub,
+                // On the ruler the playhead follows; on empty lanes a box opens.
+                None if on_ruler => Drag::Scrub,
+                None => {
+                    let before = if modifiers.shift { self.selection.clone() } else { Vec::new() };
+                    Drag::Marquee { from: origin, before }
+                }
             };
         } else if response.drag_started_by(PointerButton::Middle) {
             self.drag = Drag::Pan;
@@ -1085,6 +1110,25 @@ impl Timeline {
         {
             match &self.drag {
                 Drag::Scrub => seek(pos.x, transport),
+                Drag::Marquee { from, before } => {
+                    let (from, mut picked) = (*from, before.clone());
+                    let (f0, f1) = (frame_at(from.x.min(pos.x)), frame_at(from.x.max(pos.x)));
+                    let (r0, r1) = (row_at(from.y.min(pos.y)).max(0.0) as usize, row_at(from.y.max(pos.y)));
+                    if r1 >= 0.0 {
+                        for track in sequence.tracks.iter().take(r1 as usize + 1).skip(r0) {
+                            let per = Lane::of(track, sequence).per_frame();
+                            let touched = track.clips.range((f0 * per).floor() as i64, (f1 * per).ceil() as i64 + 1);
+                            for clip in touched.take(SELECT_MOST.saturating_sub(picked.len())) {
+                                let sel = Sel { track: track.id, start: clip.start, id: clip.id };
+                                if !picked.contains(&sel) {
+                                    picked.push(sel);
+                                }
+                            }
+                        }
+                    }
+                    self.selection = picked;
+                    self.marquee = Some(Rect::from_two_pos(from, pos).intersect(lanes));
+                }
                 Drag::Move { grab_frame, grab_row, primary } => {
                     let (grab_frame, grab_row, primary) = (*grab_frame, *grab_row, *primary);
                     let row_delta = (row_at(pos.y).max(0.0) as isize) - grab_row as isize;
@@ -1842,6 +1886,15 @@ impl Timeline {
                         self.select(&sequence, track, &clip, false, true);
                         self.w_row = row;
                     }
+                }
+            }
+            Action::SelectAll => {
+                let all = sequence.tracks.iter().flat_map(|track| {
+                    track.clips.iter().map(|clip| Sel { track: track.id, start: clip.start, id: clip.id })
+                });
+                self.selection = all.take(SELECT_MOST).collect();
+                if sequence.clip_count() > SELECT_MOST {
+                    *error = Some(format!("Selected the first {SELECT_MOST} clips: more cannot be selected at once."));
                 }
             }
             Action::Copy => self.copy(&sequence),

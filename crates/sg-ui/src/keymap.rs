@@ -28,6 +28,8 @@ pub enum Action {
     RippleDelete,
     /// Select the clip under the playhead; again for the next track up.
     SelectUnder,
+    /// Select every clip of the sequence.
+    SelectAll,
     Copy,
     /// Copy the selected clips and take them out, leaving the gap.
     Cut,
@@ -115,7 +117,10 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::Space, Action::PlayPause),
     bind(Scope::Editor, false, false, Key::A, Action::StepBack),
     bind(Scope::Editor, false, false, Key::D, Action::StepForward),
-    bind(Scope::Editor, true, false, Key::A, Action::ToStart),
+    // (Ctrl+A was "to the start" until the user asked for select all, F8.1.)
+    bind(Scope::Editor, true, false, Key::A, Action::SelectAll),
+    bind(Scope::Editor, false, false, Key::Home, Action::ToStart),
+    bind(Scope::Editor, false, false, Key::End, Action::ToEnd),
     bind(Scope::Editor, true, false, Key::D, Action::ToEnd),
     bind(Scope::Editor, false, false, Key::Enter, Action::InsertAsset),
     bind(Scope::Editor, false, false, Key::S, Action::Split),
@@ -161,6 +166,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, true, Key::ArrowLeft, Action::Nudge(-10)),
     bind(Scope::Editor, false, true, Key::ArrowRight, Action::Nudge(10)),
     bind(Scope::Editor, true, false, Key::V, Action::Paste),
+    bind(Scope::Editor, false, false, Key::Backspace, Action::Delete),
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
 ];
 
@@ -370,6 +376,7 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::RippleDelete => ("Cutting", "delete the selection and close the gap"),
         Action::Delete => ("Cutting", "delete, leave the gap (or remove the selected asset)"),
         Action::SelectUnder => ("Cutting", "select the clip under the playhead (again: next track)"),
+        Action::SelectAll => ("Cutting", "select every clip (or drag a box over empty timeline)"),
         Action::Copy => ("Cutting", "copy the selected clips"),
         Action::Cut => ("Cutting", "cut the selected clips: copy them and take them out"),
         Action::PasteClips => ("Cutting", "paste them at the playhead"),
@@ -418,6 +425,7 @@ pub fn cap(binding: &Binding) -> String {
         Key::Space => "Space".to_owned(),
         Key::Escape => "Esc".to_owned(),
         Key::Delete => "Del".to_owned(),
+        Key::Backspace => "Backspace".to_owned(),
         Key::ArrowLeft => "Left".to_owned(),
         Key::ArrowRight => "Right".to_owned(),
         other => other.name().to_owned(),

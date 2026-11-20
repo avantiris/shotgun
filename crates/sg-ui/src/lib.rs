@@ -624,6 +624,7 @@ impl Shell {
             | Action::RippleEnd
             | Action::RippleDelete
             | Action::SelectUnder
+            | Action::SelectAll
             | Action::PasteClips
             | Action::Marker
             | Action::Nudge(_)
@@ -1546,7 +1547,7 @@ fn help_panel(ctx: &egui::Context) {
                     ui.label(RichText::new(format!("Not understood in that file, {problem}")).color(theme::ACCENT));
                 }
             }
-            ui.label(RichText::new("Mouse: the wheel moves along the timeline, Ctrl + wheel zooms it; pull the line across a sound clip to change its volume; drag clips to move (with Ctrl: over what is in the way), their edges to trim, the mark at a selected clip's top corner to fade; right click for menus; drag assets onto the timeline (Shift: only picture or only sound).").color(theme::DIM));
+            ui.label(RichText::new("Mouse: the wheel moves along the timeline, Ctrl + wheel zooms it; pull the line across a sound clip to change its volume; drag over empty timeline to select with a box; drag clips to move (with Ctrl: over what is in the way), their edges to trim, the mark at a selected clip's top corner to fade; right click for menus; drag assets onto the timeline (Shift: only picture or only sound).").color(theme::DIM));
         });
     });
 }

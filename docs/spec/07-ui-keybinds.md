@@ -40,7 +40,8 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Ctrl + wheel, or a pinch | zoom around the pointer (F4.5); H shows the whole sequence |
 | Drag the line across a sound clip up or down | that clip's volume (F4.2), from +12 dB at the top to silence at the bottom, 0 dB a quarter down; in whole decibels, with Shift a tenth per point. All selected sound clips change by as much. One undo step per pull. The same is in the clip's menu (`Clip volume`) and the inspector |
 | Middle drag | pan timeline / viewer |
-| Click or drag on the ruler or on empty timeline | set / scrub playhead |
+| Click on the ruler or on empty timeline; drag along the ruler | set / scrub playhead |
+| Drag over empty timeline | a box: the clips it touches are selected, with Shift added to the selection (feedback F8.1; this drag scrubbed before). At most 2000 clips at once |
 | Click clip | select it with its partner (picture + sound of one take); Shift adds, Alt selects it alone |
 | Drag clip | move (snaps; hold Alt to disable snapping; hold Ctrl to put it over what is in the way, `PROPOSED`, added 2026-11-19) |
 | Left / Right arrow | move the selected clips one frame earlier / later; with Shift ten frames (`PROPOSED`, added 2026-11-19) |
@@ -107,7 +108,7 @@ Transport
 | Enter, or double-click an asset | put the selected asset at the end of the timeline (M3; placing at the playhead comes with M4) |
 | A / D | step one frame back / forward (hold to shuttle) |
 | Shift + A / D | jump to previous / next cut or marker |
-| Ctrl + A / D | jump to sequence start / end |
+| Home / End (also Ctrl + D for the end) | jump to sequence start / end (Ctrl + A was the start until F8.1 made it select all) |
 | Tab | toggle viewer full window |
 
 Cutting
@@ -118,7 +119,8 @@ Cutting
 | Q | ripple-trim: remove from clip start to playhead |
 | E | ripple-trim: remove from playhead to clip end |
 | X | ripple delete selection |
-| Shift + X | delete, leave gap |
+| Shift + X, Backspace, Del | delete, leave gap (Backspace asked for in F8.1) |
+| Ctrl + A | select every clip |
 | W | select clip under playhead (repeat: next track up) |
 | C / V | copy selected clips / paste them at the playhead, on the same tracks, with what they were given (volume, fades, placement). A paste covers nothing (feedback F7.2): clips copied from one track go to that track if they fit at the playhead, otherwise to the nearest track of the kind with room there, otherwise to a new track. The copies stay selected |
 | Ctrl + C / Ctrl + X | copy / cut (copy and take out, leaving the gap) the selected clips (feedback F4.4) |

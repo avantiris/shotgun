@@ -1026,3 +1026,38 @@ fn an_asset_is_made_global_and_taken_into_a_project_from_the_global_tab() {
     click(&mut harness, "Remove from Global");
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::RemoveGlobal { .. })));
 }
+
+#[test]
+fn a_box_or_ctrl_a_selects_clips_and_backspace_deletes_them() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    playhead(&mut harness, 600);
+    place(&mut harness, "second take");
+    assert_eq!((clips(&harness, 0), clips(&harness, 1).len()), (vec![(0, 600), (600, 600)], 2));
+    // A box pulled open from the empty space under the tracks up over the
+    // start of the first take: its picture and its sound are inside.
+    let (from, to) = (on_timeline(&harness, 20.0, 3), on_timeline(&harness, 4.0, 0));
+    let sent = transport(&harness).len();
+    drag(&mut harness, from, to);
+    // The playhead did not follow (it does on the ruler only).
+    assert_eq!(transport(&harness).len(), sent);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!((clips(&harness, 0), clips(&harness, 1).len()), (vec![(600, 600)], 1));
+    // Undo, then everything at once.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::A);
+    harness.run_steps(3);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!((clips(&harness, 0), clips(&harness, 1)), (vec![], vec![]));
+    // Pulling along the ruler still moves the playhead.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    let rect = harness.get_by_label("Timeline").rect();
+    let ruler = egui::pos2(rect.left() + 130.0, rect.top() + 8.0);
+    let sent = transport(&harness).len();
+    drag(&mut harness, ruler, ruler + vec2(120.0, 0.0));
+    assert!(transport(&harness).len() > sent);
+}
