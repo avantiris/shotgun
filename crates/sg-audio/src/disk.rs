@@ -8,6 +8,7 @@ use std::io::Read;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,10 @@ pub enum Control {
     Grain(i64),
     /// Reply once everything sent before is in place and buffered.
     Settle(Sender<()>),
+    /// Show the window of the plugin with this key.
+    Editor(u64),
+    /// Write every plugin's state to its file, then reply.
+    SaveStates(Sender<()>),
     Quit,
 }
 
@@ -134,6 +139,11 @@ struct Feed {
     live: Arc<Live>,
     /// How far this feed is ducked right now, in decibels (0 or below).
     ducked_db: f32,
+    /// The key of the track's plugin, if it runs.
+    plugin: Option<u64>,
+    /// Note starts (sorted by time) and note ends (sorted by time): (sample, pitch, velocity).
+    note_ons: Vec<(i64, u8, u8)>,
+    note_offs: Vec<(i64, u8)>,
 }
 
 struct Disk {
@@ -157,6 +167,10 @@ struct Disk {
     /// frames, and which stretch the slot holds (a slot is reused every
     /// eleven seconds).
     voice_level: Vec<(i64, f32)>,
+    /// The plugins that run, by their track's key: where each came from,
+    /// where its state is kept, and its process.
+    plugins: HashMap<u64, (crate::PluginSpec, sg_plug::Client)>,
+    events: Vec<sg_plug::NoteEvent>,
 }
 
 /// Frames per entry of the voice level.
@@ -171,6 +185,8 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
         && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
             // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
             x.clips == y.clips
+                && x.plugin == y.plugin
+                && x.notes == y.notes
                 && (x.denoise > 0.0) == (y.denoise > 0.0)
                 && (x.tone.tune.amount > 0.0) == (y.tone.tune.amount > 0.0)
         })
@@ -192,9 +208,85 @@ impl Disk {
         opened
     }
 
+    /// Starts the plugins the mix asks for and ends those it no longer
+    /// names. A plugin that is new gets its state from its file.
+    fn sync_plugins(&mut self) {
+        let wanted: Vec<crate::PluginSpec> = self.mix.tracks.iter().filter_map(|t| t.plugin.clone()).collect();
+        self.plugins.retain(|key, (spec, _)| wanted.iter().any(|w| w.key == *key && w.path == spec.path));
+        for spec in wanted {
+            if self.plugins.contains_key(&spec.key) {
+                continue;
+            }
+            let mut news = self.shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner);
+            match sg_plug::Client::start(&spec.path) {
+                Ok(mut client) => {
+                    if let Ok(state) = std::fs::read(&spec.state_file)
+                        && !client.set_state(&state)
+                    {
+                        news.push(format!("{} did not take its saved settings.", client.loaded.name));
+                    }
+                    drop(news);
+                    self.plugins.insert(spec.key, (spec, client));
+                }
+                Err(e) => news.push(format!("{}: {e}", spec.path.display())),
+            }
+        }
+    }
+
+    /// Writes the state of every running plugin to its file.
+    fn save_plugin_states(&mut self) {
+        for (spec, client) in self.plugins.values_mut() {
+            let Some(state) = client.state() else { continue };
+            let written = spec
+                .state_file
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(spec.state_file.with_extension("tmp"), &state))
+                .and_then(|()| std::fs::rename(spec.state_file.with_extension("tmp"), &spec.state_file));
+            if let Err(e) = written {
+                let mut news = self.shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner);
+                news.push(format!("The settings of {} could not be saved: {e}", client.loaded.name));
+            }
+        }
+    }
+
+    /// Runs feed `index`'s plugin over `block`, which starts at timeline
+    /// sample `start`, with the notes that begin or end inside it.
+    fn run_plugin(&mut self, index: usize, start: i64, block: &mut [f32]) {
+        let feed = &self.feeds[index];
+        let Some((_, client)) = feed.plugin.and_then(|key| self.plugins.get_mut(&key)) else { return };
+        let end = start + (block.len() / 2) as i64;
+        self.events.clear();
+        let from = feed.note_offs.partition_point(|(at, _)| *at < start);
+        for &(at, pitch) in feed.note_offs[from..].iter().take_while(|(at, _)| *at < end) {
+            self.events.push(sg_plug::NoteEvent { offset: (at - start) as u32, on: false, pitch, velocity: 0 });
+        }
+        let from = feed.note_ons.partition_point(|(at, ..)| *at < start);
+        for &(at, pitch, velocity) in feed.note_ons[from..].iter().take_while(|(at, ..)| *at < end) {
+            self.events.push(sg_plug::NoteEvent { offset: (at - start) as u32, on: true, pitch, velocity });
+        }
+        // (A note that ends where the next of its pitch begins: the end first.)
+        self.events.sort_by_key(|e| (e.offset, e.on));
+        let was_dead = client.is_dead();
+        if !client.process(block, &self.events) && !was_dead {
+            let mut news = self.shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner);
+            news.push(format!(
+                "{} stopped working. Its track plays without it; take it off the track and put it on again to restart it.",
+                client.loaded.name
+            ));
+        }
+    }
+
+    fn is_instrument(&self, index: usize) -> bool {
+        let key = self.feeds[index].plugin;
+        key.and_then(|key| self.plugins.get(&key)).is_some_and(|(_, client)| client.loaded.instrument)
+    }
+
     /// Lays the clips of feed `index` into `block` (interleaved stereo)
     /// from timeline sample `start` and runs the track's clean-up over it.
-    fn render(&mut self, index: usize, start: i64, block: &mut Vec<f32>, frames: usize) {
+    /// An instrument plays before the clean-up, an effect plugin after it;
+    /// `warm` (running the clean-up in before playback) leaves plugins out.
+    fn render(&mut self, index: usize, start: i64, block: &mut Vec<f32>, frames: usize, warm: bool) {
         let end = start + frames as i64;
         let mut raw = std::mem::take(&mut self.raw);
         block.clear();
@@ -214,8 +306,15 @@ impl Disk {
             }
             i += 1;
         }
+        let instrument = self.is_instrument(index);
+        if instrument && !warm {
+            self.run_plugin(index, start, block);
+        }
         let feed = &mut self.feeds[index];
         feed.fx.process(block, feed.low_cut_hz, feed.denoise, &feed.tone);
+        if !instrument && !warm {
+            self.run_plugin(index, start, block);
+        }
         self.raw = raw;
     }
 
@@ -237,7 +336,7 @@ impl Disk {
         // it where it belongs.
         let start = self.feeds[index].next + self.feeds[index].fx.delay() as i64;
         let mut block = std::mem::take(&mut self.block);
-        self.render(index, start, &mut block, frames);
+        self.render(index, start, &mut block, frames, false);
         let at = self.feeds[index].next;
         if self.feeds[index].tone.voice && !self.feeds[index].live.is_muted() {
             // What the voice sounds like here, fader included, for the tracks that duck.
@@ -298,6 +397,10 @@ impl Disk {
         self.files.retain(|_, wav| wav.is_some());
         let mut tracks = Vec::with_capacity(self.mix.tracks.len());
         self.feeds.clear();
+        // What the plugins were sounding belongs to the place playback left.
+        for (_, client) in self.plugins.values_mut() {
+            client.reset();
+        }
         // (Positions start anew: what was heard of the voices before does not apply.)
         self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
         for track in &self.mix.tracks {
@@ -316,6 +419,13 @@ impl Disk {
                 tone: track.tone,
                 live,
                 ducked_db: 0.0,
+                plugin: track.plugin.as_ref().map(|p| p.key).filter(|key| self.plugins.contains_key(key)),
+                note_ons: track.notes.iter().map(|n| (n.start, n.pitch, n.velocity)).collect(),
+                note_offs: {
+                    let mut ends: Vec<(i64, u8)> = track.notes.iter().map(|n| (n.start + n.len, n.pitch)).collect();
+                    ends.sort_unstable();
+                    ends
+                },
             });
         }
         if playing {
@@ -325,7 +435,7 @@ impl Disk {
             for index in 0..self.feeds.len() {
                 let delay = self.feeds[index].fx.delay();
                 if delay > 0 {
-                    self.render(index, pos, &mut block, delay);
+                    self.render(index, pos, &mut block, delay, true);
                 }
             }
             self.block = block;
@@ -355,9 +465,26 @@ impl Disk {
 
     fn handle(&mut self, control: Control) -> bool {
         match control {
+            Control::Editor(key) => {
+                let opened =
+                    self.plugins.get_mut(&key).map(|(_, client)| (client.open_editor(), client.loaded.name.clone()));
+                let said = match opened {
+                    Some((true, _)) => None,
+                    Some((false, name)) => Some(format!("{name} has no window of its own.")),
+                    None => Some("The plugin is not running.".to_owned()),
+                };
+                if let Some(said) = said {
+                    self.shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner).push(said);
+                }
+            }
+            Control::SaveStates(reply) => {
+                self.save_plugin_states();
+                let _ = reply.send(());
+            }
             Control::Mix(mix) => {
                 let live_only = self.playing && same_structure(&self.mix, &mix);
                 self.mix = mix;
+                self.sync_plugins();
                 if live_only {
                     // A fader moved: no new graph, so nothing is refilled
                     // and nothing can click.
@@ -403,6 +530,8 @@ impl Disk {
                     activate(false);
                 }
                 self.shared.running.store(false, Ordering::Relaxed);
+                // A good moment: nothing is heard that this could disturb.
+                self.save_plugin_states();
             }
             Control::Settle(reply) => {
                 self.fill_all(usize::MAX);
@@ -417,7 +546,10 @@ impl Disk {
                 }
                 let _ = reply.send(());
             }
-            Control::Quit => return false,
+            Control::Quit => {
+                self.save_plugin_states();
+                return false;
+            }
         }
         true
     }
@@ -444,6 +576,8 @@ pub fn run(
         segment: Vec::new(),
         offered: 0,
         voice_level: vec![(i64::MIN, 0.0); DUCK_SLOTS],
+        plugins: HashMap::new(),
+        events: Vec::new(),
     };
     loop {
         // Idle costs nothing: without playback the thread sleeps until told otherwise.

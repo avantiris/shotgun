@@ -57,6 +57,37 @@ pub struct Track {
     pub props: Arc<BTreeMap<ClipId, Arc<ClipProps>>>,
     /// Mixer settings (audio tracks).
     pub mix: TrackSettings,
+    /// The plugin on this track (audio tracks): an effect its sound runs
+    /// through, or an instrument that plays the track's note clips.
+    pub plugin: Option<Arc<PluginRef>>,
+    /// The notes of the note clips (clips without an asset on an audio
+    /// track), by clip id; like `props`, an entry may outlive its clip.
+    pub notes: Arc<BTreeMap<ClipId, Arc<Vec<Note>>>>,
+}
+
+/// A plugin installed on the machine. Not media: the one thing a project
+/// names that is not inside its bundle (09-daw.md). Found again by its
+/// path, and by its name if it has moved.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginRef {
+    pub name: String,
+    pub path: String,
+}
+
+/// Ticks to a beat: note positions are whole numbers of these, so that
+/// they follow the tempo.
+pub const TICKS_PER_BEAT: i64 = 960;
+
+/// A note in a note clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    /// Ticks from the start of the clip, and how long it sounds.
+    pub start: i64,
+    pub len: i64,
+    /// MIDI note number: 60 is middle C.
+    pub pitch: u8,
+    /// 1 (softest) to 127.
+    pub velocity: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +175,8 @@ impl From<TrackHeader> for Track {
             clips: ClipStore::new(),
             props: Arc::default(),
             mix: TrackSettings::default(),
+            plugin: None,
+            notes: Arc::default(),
         }
     }
 }

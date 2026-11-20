@@ -51,6 +51,10 @@ enum Command {
     AssetChanged(AssetId),
     /// A font file was added or replaced: read fonts again.
     ForgetFonts,
+    /// Show the window of the plugin on the track with this key.
+    PluginEditor(u64),
+    /// Have the plugins' states written to their files, then reply.
+    SavePlugins(crossbeam_channel::Sender<()>),
     Quit,
 }
 
@@ -69,6 +73,8 @@ pub struct PlayStats {
     pub cache_bytes: u64,
     pub audio: AudioStats,
     pub decode_error: Option<String>,
+    /// Messages about plugins not yet shown to the user.
+    pub plugin_news: Vec<String>,
 }
 
 struct Shared {
@@ -242,6 +248,24 @@ impl Player {
 
     pub fn stats(&self) -> PlayStats {
         self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Shows the window of the plugin on the track with this key.
+    pub fn open_plugin_editor(&self, key: u64) {
+        self.send(Command::PluginEditor(key));
+    }
+
+    /// Has the plugins' states written to the project and waits for it,
+    /// two seconds at most: before an export, which runs plugins of its own.
+    pub fn save_plugins(&self) {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.send(Command::SavePlugins(tx));
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
+    }
+
+    /// Messages about plugins since the last call (one that did not load or stopped working).
+    pub fn take_plugin_news(&self) -> Vec<String> {
+        std::mem::take(&mut self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).plugin_news)
     }
 }
 
@@ -439,6 +463,11 @@ impl State {
                 self.compositor.clear_luts();
                 self.rendered = None;
             }
+            Command::PluginEditor(key) => self.audio.open_plugin_editor(key),
+            Command::SavePlugins(reply) => {
+                self.audio.save_plugin_states();
+                let _ = reply.send(());
+            }
             Command::Quit => return false,
         }
         true
@@ -448,6 +477,12 @@ impl State {
     /// possible and asks for what is missing. Returns whether something is
     /// still being decoded for it.
     fn update(&mut self) -> bool {
+        // What the audio engine has to say about plugins goes on to the application.
+        let news = self.audio.plugin_news();
+        if !news.is_empty() {
+            self.stats(|s| s.plugin_news.extend(news));
+            (self.notify)();
+        }
         let Some(open) = &self.project else { return false };
         let Some(sequence) = open.sequence() else { return false };
         let (root, project) = (open.root.clone(), open.project.clone());
@@ -787,6 +822,8 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
             clips: track
                 .clips
                 .iter()
+                // (A clip without an asset is a note clip: it has notes, not a file.)
+                .filter(|c| c.asset != sg_core::AssetId(0))
                 .map(|c| {
                     let default = ClipProps::default();
                     let props = track.props_of(c.id).map_or(&default, |p| &**p);
@@ -831,9 +868,42 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 voice: track.mix.voice,
                 duck_db: track.mix.duck_db,
             },
+            plugin: track.plugin.as_ref().map(|plugin| sg_audio::PluginSpec {
+                key: track.id.0,
+                path: std::path::PathBuf::from(&plugin.path),
+                // In the bundle: a plugin's settings travel with the project.
+                state_file: root.join("plugins").join(format!("{}.state", track.id)),
+            }),
+            notes: track_notes(sequence, track),
         })
         .collect();
     Mix { tracks, master_gain: db(sequence.master_db) }
+}
+
+/// The notes of a track's note clips in timeline samples, in order. A
+/// tick is a 960th of a beat at the sequence's tempo (120 a minute
+/// without one); a note that reaches past its clip is cut there.
+fn track_notes(sequence: &Sequence, track: &sg_core::Track) -> Vec<sg_audio::NoteSpan> {
+    let bpm = sequence.tempo.map_or(120.0, sg_core::Tempo::bpm);
+    let per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * sg_core::TICKS_PER_BEAT as f64);
+    let mut notes = Vec::new();
+    for clip in track.clips.iter().filter(|c| c.asset == sg_core::AssetId(0)) {
+        let Some(list) = track.notes.get(&clip.id) else { continue };
+        for note in list.iter() {
+            let start = (note.start as f64 * per_tick).round() as i64;
+            let len = ((note.len as f64 * per_tick).round() as i64).min(clip.len - start);
+            if start < clip.len && len > 0 {
+                notes.push(sg_audio::NoteSpan {
+                    start: clip.start + start,
+                    len,
+                    pitch: note.pitch,
+                    velocity: note.velocity,
+                });
+            }
+        }
+    }
+    notes.sort_by_key(|n| (n.start, n.pitch));
+    notes
 }
 
 /// Volume keyframes as the engine wants them: points with straight lines

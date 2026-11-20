@@ -94,6 +94,19 @@ pub enum Op {
         id: SequenceId,
         db: f32,
     },
+    /// Puts a plugin on a track, changes it or takes it off.
+    SetTrackPlugin {
+        seq: SequenceId,
+        track: TrackId,
+        plugin: Option<crate::model::PluginRef>,
+    },
+    /// Sets the notes of a note clip as a whole (`None`: none recorded).
+    SetClipNotes {
+        seq: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        notes: Option<Vec<crate::model::Note>>,
+    },
     /// Gives a sequence a tempo (bars and beats), changes it or takes it away.
     SetTempo {
         id: SequenceId,
@@ -181,6 +194,8 @@ impl Op {
             Op::SetSong { .. } => "set song",
             Op::SetMasterGain { .. } => "adjust master",
             Op::SetTempo { .. } => "set tempo",
+            Op::SetTrackPlugin { .. } => "change plugin",
+            Op::SetClipNotes { .. } => "edit notes",
             Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
             Op::AddMarker { .. } => "add marker",
@@ -358,12 +373,15 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             }
             let track = s.tracks.remove(index);
             let add = Op::AddTrack { seq: *seq, index, track: track.header() };
-            // A track's header carries no mixer settings: put them back separately.
-            Ok(if track.mix.is_default() {
-                add
-            } else {
-                Op::Batch(vec![add, Op::SetTrackMix { seq: *seq, track: track.id, mix: track.mix }])
-            })
+            // A track's header carries neither mixer settings nor plugin: put them back separately.
+            let mut restore = vec![add];
+            if !track.mix.is_default() {
+                restore.push(Op::SetTrackMix { seq: *seq, track: track.id, mix: track.mix });
+            }
+            if let Some(plugin) = &track.plugin {
+                restore.push(Op::SetTrackPlugin { seq: *seq, track: track.id, plugin: Some((**plugin).clone()) });
+            }
+            Ok(if restore.len() == 1 { restore.remove(0) } else { Op::Batch(restore) })
         }),
         Op::InsertClip { seq, track, clip } => with_clips(p, *seq, *track, |clips| {
             let inverse = Op::RemoveClip { seq: *seq, track: *track, start: clip.start };
@@ -430,6 +448,31 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             let inverse = Op::SetSequenceSize { id: *id, width: s.width, height: s.height };
             (s.width, s.height) = (*width, *height);
             Ok(inverse)
+        }),
+        Op::SetTrackPlugin { seq, track, plugin } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let before = old.plugin.as_ref().map(|p| (**p).clone());
+            s.tracks[index] = Arc::new(Track { plugin: plugin.clone().map(Arc::new), ..Track::clone(old) });
+            Ok(Op::SetTrackPlugin { seq: *seq, track: *track, plugin: before })
+        }),
+        Op::SetClipNotes { seq, track, clip, notes } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let before = old.notes.get(clip).map(|n| Vec::clone(n));
+            let mut map = BTreeMap::clone(&old.notes);
+            match notes {
+                // Kept in order of time, so that playing them is a walk through the list.
+                Some(new) => {
+                    let mut sorted = new.clone();
+                    sorted.retain(|n| n.len > 0 && n.start >= 0 && n.pitch < 128);
+                    sorted.sort_by_key(|n| (n.start, n.pitch));
+                    map.insert(*clip, Arc::new(sorted))
+                }
+                None => map.remove(clip),
+            };
+            s.tracks[index] = Arc::new(Track { notes: Arc::new(map), ..Track::clone(old) });
+            Ok(Op::SetClipNotes { seq: *seq, track: *track, clip: *clip, notes: before })
         }),
         Op::SetClipProps { seq, track, clip, props } => with_sequence(p, *seq, |s| {
             let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
@@ -542,6 +585,8 @@ fn with_clips(
             clips,
             props: old.props.clone(),
             mix: old.mix,
+            plugin: old.plugin.clone(),
+            notes: old.notes.clone(),
         });
         Ok(inverse)
     })
@@ -993,6 +1038,20 @@ mod mix_tests {
         let (p2, undo) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
         assert_eq!(p2.sequences[0].track(A1).unwrap().mix, mix);
         assert_eq!(apply(&p2, &undo).unwrap().0, p);
+        // A plugin and the notes of a clip come and go the same way.
+        let surge = crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge XT.vst3".into() };
+        let (plugged, unplug) =
+            apply(&p2, &Op::SetTrackPlugin { seq: SEQ, track: A1, plugin: Some(surge.clone()) }).unwrap();
+        let a1 = |p: &Project| p.sequences[0].tracks.iter().find(|t| t.id == A1).unwrap().clone();
+        assert_eq!(a1(&plugged).plugin.as_deref(), Some(&surge));
+        assert_eq!(apply(&plugged, &unplug).unwrap().0, p2);
+        let note = |start, pitch| crate::model::Note { start, len: 480, pitch, velocity: 100 };
+        let played = vec![note(960, 64), note(0, 60), note(0, 55), note(-5, 60)];
+        let set = Op::SetClipNotes { seq: SEQ, track: A1, clip: ClipId(77), notes: Some(played) };
+        let (noted, unnote) = apply(&p2, &set).unwrap();
+        // Sorted by time, and what cannot be a note is left out.
+        assert_eq!(**a1(&noted).notes.get(&ClipId(77)).unwrap(), vec![note(0, 55), note(0, 60), note(960, 64)]);
+        assert_eq!(apply(&noted, &unnote).unwrap().0, p2);
         // A tempo comes and goes like any other setting.
         let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
         let (timed, untime) = apply(&p2, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();

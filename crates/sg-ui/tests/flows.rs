@@ -1362,3 +1362,45 @@ fn the_plugins_popover_lists_plugins_and_walks_through_the_native_instruments_se
     harness.run_steps(3);
     assert!(harness.query_by_label("PLUGINS").is_none());
 }
+
+#[test]
+fn a_plugin_is_put_on_a_track_from_its_mixer_strip() {
+    use sg_project::plugins::{Format, NiState, Plugin};
+    let mut harness = editor();
+    click(&mut harness, "Mixer");
+    let plugin_of = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        (track.id, track.plugin.as_ref().map(|p| p.name.clone()))
+    };
+    // The strip's menu has the folders searched the first time it is opened.
+    click(&mut harness, "Add plugin");
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Plugins(sg_ui::PluginRequest::Scan))));
+    let found = vec![Plugin {
+        name: "Surge XT Effects".to_owned(),
+        path: "/lib/vst3/Surge XT Effects.vst3".into(),
+        format: Format::Vst3,
+        bridged: false,
+    }];
+    let ni = NiState {
+        tools: true,
+        prefix: "/x".into(),
+        prefix_ready: false,
+        access: false,
+        installed: vec![],
+        bridged: vec![],
+    };
+    harness.state_mut().shell.plugins_update(sg_ui::PluginUpdate::Found { plugins: found, ni });
+    harness.run_steps(3);
+    click(&mut harness, "Surge XT Effects");
+    let (track, name) = plugin_of(&harness);
+    assert_eq!(name.as_deref(), Some("Surge XT Effects"));
+    // Its window is asked for by the track it is on; "Off" takes it off again; undo brings it back.
+    click(&mut harness, "Window");
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::PluginEditor { track: t } if *t == track)));
+    click(&mut harness, "Off");
+    assert_eq!(plugin_of(&harness).1, None);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(plugin_of(&harness).1.as_deref(), Some("Surge XT Effects"));
+}

@@ -85,6 +85,31 @@ pub struct TrackMix {
     pub tone: Tone,
     /// Noise reduction: the share of the treated sound, 0 (off) to 1.
     pub denoise: f32,
+    /// The plugin on the track: an effect after the track's own stages,
+    /// or an instrument before them, playing `notes`.
+    pub plugin: Option<PluginSpec>,
+    /// Sorted by start.
+    pub notes: Vec<NoteSpan>,
+}
+
+/// A plugin to run for a track, in a process of its own (crate `sg-plug`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginSpec {
+    /// Which track it belongs to: the same key keeps the same running plugin.
+    pub key: u64,
+    /// The plugin's bundle on this machine.
+    pub path: PathBuf,
+    /// Where its state is kept between sessions.
+    pub state_file: PathBuf,
+}
+
+/// A note of an instrument track, in timeline samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteSpan {
+    pub start: i64,
+    pub len: i64,
+    pub pitch: u8,
+    pub velocity: u8,
 }
 
 /// What to play: derived from the project snapshot by the caller.
@@ -133,6 +158,9 @@ pub struct Stats {
 /// State shared between the realtime thread and everyone else, all atomics.
 #[derive(Default)]
 pub(crate) struct Shared {
+    /// Messages about plugins, from the disk thread to whoever shows them.
+    /// (Never touched by the realtime thread.)
+    pub(crate) plugin_news: std::sync::Mutex<Vec<String>>,
     /// Sequence lock around the clock triple below: odd while being written.
     seq: AtomicU64,
     /// Timeline sample at the start of the last callback.
@@ -201,6 +229,25 @@ impl Engine {
     fn send(&self, control: disk::Control) {
         // The disk thread lives as long as the engine.
         let _ = self.control.send(control);
+    }
+
+    /// Shows the window of the plugin with this key, if it has one.
+    pub fn open_plugin_editor(&self, key: u64) {
+        self.send(disk::Control::Editor(key));
+    }
+
+    /// Has every plugin's state written to its file and waits for that
+    /// (at most two seconds): before an export, which runs plugins of its own.
+    pub fn save_plugin_states(&self) {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.send(disk::Control::SaveStates(tx));
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
+    }
+
+    /// What happened to plugins since the last call (one that did not
+    /// load, one whose process died): messages for the user.
+    pub fn plugin_news(&self) -> Vec<String> {
+        std::mem::take(&mut *self.shared.plugin_news.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     /// Replaces what is played. Position and play state stay as they are.
@@ -322,7 +369,17 @@ impl Engine {
 impl TrackMix {
     /// A track at unity gain, centred, with no clean-up.
     pub fn plain(clips: Vec<ClipSpan>) -> TrackMix {
-        TrackMix { clips, gain: 1.0, pan: 0.0, mute: false, low_cut_hz: 0.0, denoise: 0.0, tone: Tone::default() }
+        TrackMix {
+            clips,
+            gain: 1.0,
+            pan: 0.0,
+            mute: false,
+            low_cut_hz: 0.0,
+            denoise: 0.0,
+            tone: Tone::default(),
+            plugin: None,
+            notes: Vec::new(),
+        }
     }
 }
 

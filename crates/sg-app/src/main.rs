@@ -270,6 +270,12 @@ impl App {
                 }
                 Command::Export { root, project, request } => {
                     let Some(gfx) = &self.gfx else { continue };
+                    // The export runs plugins of its own, set as the ones that are heard now.
+                    let plugged =
+                        project.sequences.first().is_some_and(|s| s.tracks.iter().any(|t| t.plugin.is_some()));
+                    if let (true, Some(player)) = (plugged, &self.player) {
+                        player.save_plugins();
+                    }
                     let (device, queue) = gfx.device();
                     let cancel = sg_media::Cancel::new();
                     self.export_cancel = Some(cancel.clone());
@@ -524,6 +530,11 @@ impl App {
                         }
                     }
                 }
+                Command::PluginEditor { track } => {
+                    if let Some(player) = &self.player {
+                        player.open_plugin_editor(track.0);
+                    }
+                }
                 Command::Plugins(request) => {
                     use sg_project::plugins;
                     use sg_ui::{NiStep, PluginRequest, PluginUpdate};
@@ -722,6 +733,9 @@ impl App {
     /// comparison; called after every batch of events.
     fn sync_player(&mut self) {
         let Some(player) = &self.player else { return };
+        for news in player.take_plugin_news() {
+            self.shell.report_error(news);
+        }
         let current = self.shell.session().map(|s| (s.root.clone(), s.project().clone()));
         let same = match (&self.synced, &current) {
             (Some((root, project)), Some((new_root, new_project))) => {

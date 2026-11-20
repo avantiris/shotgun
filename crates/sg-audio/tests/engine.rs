@@ -572,3 +572,62 @@ fn a_track_that_ducks_goes_down_while_the_voice_sounds() {
     let muted = rendered(mix(6.0, true), 96_000);
     assert!((muted[48_000 * 2] - 0.25).abs() < 0.003, "{}", muted[48_000 * 2]);
 }
+
+/// Where the dev shell keeps a native plugin to test with, and the host
+/// program built beside the tests. `None`: nothing to test with here.
+fn test_plugin(name: &str) -> Option<PathBuf> {
+    let host = std::env::current_exe().ok()?.parent()?.parent()?.join("shotgun-plugin");
+    let folder = std::env::var_os("SHOTGUN_TEST_VST3")?;
+    if !host.is_file() {
+        eprintln!("{} is not built: no plugin host to test with", host.display());
+        return None;
+    }
+    // SAFETY: every test of this file that sets it sets the same value.
+    unsafe { std::env::set_var("SHOTGUN_PLUGIN_HOST", host) };
+    Some(PathBuf::from(folder).join(name))
+}
+
+#[test]
+fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
+    let Some(plugin) = test_plugin("Surge XT.vst3") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let state_file = dir.path().join("plugins/1.state");
+    let spec = sg_audio::PluginSpec { key: 1, path: plugin, state_file: state_file.clone() };
+    // One note from 0.5 s to 1.0 s.
+    let note = sg_audio::NoteSpan { start: 24_000, len: 24_000, pitch: 60, velocity: 100 };
+    let mix =
+        Mix { tracks: vec![TrackMix { plugin: Some(spec), notes: vec![note], ..track(Vec::new()) }], master_gain: 1.0 };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(mix.clone());
+    engine.play(0);
+    let mut out = vec![0.0f32; 96_000 * 2];
+    for block in out.chunks_mut(512) {
+        engine.settle();
+        engine.pull(block);
+    }
+    let level = |from: usize, to: usize| {
+        let part = &out[from * 2..to * 2];
+        10.0 * (part.iter().map(|s| s * s).sum::<f32>() / part.len() as f32).max(1e-12).log10()
+    };
+    // Silent before the note, sounding during it, and it starts where the note starts.
+    assert!(level(0, 23_900) < -100.0, "{}", level(0, 23_900));
+    assert!(level(26_000, 46_000) > -45.0, "{}", level(26_000, 46_000));
+    let first = out.iter().step_by(2).position(|s| s.abs() > 1e-4).unwrap();
+    assert!((24_000..24_600).contains(&first), "{first}");
+    // After the note has ended it dies away.
+    assert!(level(90_000, 96_000) < level(26_000, 46_000) - 20.0);
+    // Pausing writes the plugin's state where the project keeps it.
+    engine.pause();
+    engine.settle();
+    assert!(std::fs::metadata(&state_file).is_ok_and(|m| m.len() > 1000));
+    assert!(engine.plugin_news().is_empty());
+    // A plugin that is not there is said so, and the track is silent rather than broken.
+    let missing = sg_audio::PluginSpec { key: 2, path: dir.path().join("nothing.vst3"), state_file };
+    engine.set_mix(Mix {
+        tracks: vec![TrackMix { plugin: Some(missing), notes: vec![note], ..track(Vec::new()) }],
+        master_gain: 1.0,
+    });
+    engine.settle();
+    let news = engine.plugin_news();
+    assert!(news.len() == 1 && news[0].contains("nothing.vst3"), "{news:?}");
+}

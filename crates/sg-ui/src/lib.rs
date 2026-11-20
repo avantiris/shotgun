@@ -170,6 +170,10 @@ pub enum Command {
         style: Option<sg_media::voice::VoiceStyle>,
         parts: Vec<(AssetId, i64, i64)>,
     },
+    /// Show the window of the plugin on this track.
+    PluginEditor {
+        track: sg_core::TrackId,
+    },
     /// Look for plugins, or run or stop a step of the Native Instruments
     /// set-up; answered with [`Shell::plugins_update`].
     Plugins(PluginRequest),
@@ -237,6 +241,9 @@ pub enum DevStep {
     Song,
     /// Give the sequence a tempo in beats per minute (0: none), four to the bar.
     Bars(f32),
+    /// Put the plugin at this path on the n-th audio track (empty path:
+    /// take it off), or with `window` as the path show its window.
+    Plugin(usize, String),
     /// The plugins popover: `open`, or a step of the Native Instruments
     /// set-up (`setup`, `launch`, `bridge`).
     Plugins(String),
@@ -391,6 +398,16 @@ impl Shell {
                     scenario_choice = Some((asset, choice));
                 }
                 colour_requests = std::mem::take(&mut self.editor.colour_requests);
+                if std::mem::take(&mut self.editor.mixer.scan_request) {
+                    commands.push(Command::Plugins(PluginRequest::Scan));
+                }
+                if std::mem::take(&mut self.editor.mixer.popover_request) {
+                    self.plugins.open();
+                    commands.push(Command::Plugins(PluginRequest::Scan));
+                }
+                if let Some(track) = self.editor.mixer.editor_request.take() {
+                    commands.push(Command::PluginEditor { track });
+                }
                 if let Some((track, style)) = self.editor.mixer.voice_request.take() {
                     commands.extend(Shell::measure_voice(
                         session,
@@ -867,6 +884,28 @@ impl Shell {
             DevStep::Programme(beats) => self.programme_action(beats),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
+            DevStep::Plugin(n, path) => {
+                if let Some(session) = &mut self.session {
+                    let project = session.project().clone();
+                    let found = project.sequences.first().and_then(|s| {
+                        let track = s.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n)?;
+                        Some((s.id, track.id))
+                    });
+                    match found {
+                        Some((_, track)) if path == "window" => commands.push(Command::PluginEditor { track }),
+                        Some((seq, track)) => {
+                            let name =
+                                std::path::Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned());
+                            let plugin =
+                                name.filter(|_| !path.is_empty()).map(|name| sg_core::PluginRef { name, path });
+                            if let Err(e) = session.apply(Op::SetTrackPlugin { seq, track, plugin }, None) {
+                                self.error = Some(e.to_string());
+                            }
+                        }
+                        None => self.error = Some(format!("plugin: no audio track {n}")),
+                    }
+                }
+            }
             DevStep::Plugins(what) => {
                 let request = match what.as_str() {
                     "setup" => PluginRequest::Run(NiStep::Setup),
@@ -1109,6 +1148,11 @@ impl Shell {
 
     /// News from the plugin jobs: a line of a running step, what was found, the end of a step.
     pub fn plugins_update(&mut self, update: PluginUpdate) {
+        if let PluginUpdate::Found { plugins, .. } = &update {
+            // The mixer offers them on its strips.
+            let listed = plugins.iter().map(|p| (p.name.clone(), p.path.display().to_string())).collect();
+            self.editor.mixer.available = Some(listed);
+        }
         self.plugins.update(update);
     }
 

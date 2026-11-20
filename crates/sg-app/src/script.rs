@@ -84,6 +84,11 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "bars" => Step::Dev(DevStep::Bars(need()?.parse()?)),
         "voice" => Step::Dev(DevStep::Voice(need()?.parse()?)),
         "plugins" => Step::Dev(DevStep::Plugins(need()?)),
+        // plugin:<audio track>:<path of the bundle | window | (empty)>
+        "plugin" => {
+            let (track, path) = arg.split_once(':').ok_or_else(|| anyhow!("plugin needs <track>:<path>"))?;
+            Step::Dev(DevStep::Plugin(track.parse()?, path.to_owned()))
+        }
         "angle" => Step::Dev(DevStep::Act(Action::Angle(need()?.parse()?))),
         "mix" => {
             // mix:<audio track number or master>:<field>=<value>

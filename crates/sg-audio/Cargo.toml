@@ -12,6 +12,7 @@ log.workspace = true
 pipewire = { version = "0.10.1", features = ["v1_2_0"] }
 nnnoiseless = { version = "0.5", default-features = false }
 rtrb = "0.4.1"
+sg-plug = { path = "../sg-plug" }
 thiserror.workspace = true
 
 [dev-dependencies]

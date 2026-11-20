@@ -213,8 +213,17 @@ fn write_sequence(seq: &Sequence) -> String {
         if !track.mix.is_default() {
             let _ = writeln!(out, "mix {}", serde_json::to_string(&track.mix).unwrap_or_default());
         }
+        if let Some(plugin) = &track.plugin {
+            let _ = writeln!(out, "plugin {}", serde_json::to_string(&**plugin).unwrap_or_default());
+        }
         for c in track.clips.iter() {
             let _ = writeln!(out, "clip {} {} {} {} {}", c.id, c.asset, c.start, c.len, c.src_in);
+        }
+        // One line per note clip: its notes as start, length, pitch, velocity.
+        for (id, notes) in track.notes.iter() {
+            let list: Vec<String> =
+                notes.iter().map(|n| format!("{}:{}:{}:{}", n.start, n.len, n.pitch, n.velocity)).collect();
+            let _ = writeln!(out, "notes {id} {}", list.join(" "));
         }
         // One line per clip that has properties, sorted by clip id.
         for (id, props) in track.props.iter() {
@@ -264,6 +273,35 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
             "clip" => {
                 let (_, clips) = current.as_mut().ok_or_else(|| err(n, "clip before any track"))?;
                 clips.push(parse_clip(rest).ok_or_else(|| err(n, "malformed clip line"))?);
+            }
+            "plugin" => {
+                let (track, _) = current.as_mut().ok_or_else(|| err(n, "plugin before any track"))?;
+                let plugin: crate::model::PluginRef =
+                    serde_json::from_str(rest).map_err(|e| err(n, &format!("bad plugin: {e}")))?;
+                track.plugin = Some(Arc::new(plugin));
+            }
+            "notes" => {
+                let (track, _) = current.as_mut().ok_or_else(|| err(n, "notes before any track"))?;
+                let (id, list) = rest.split_once(' ').unwrap_or((rest, ""));
+                let id = id.parse().map_err(|_| err(n, "bad clip id"))?;
+                let mut notes = Vec::new();
+                for item in list.split_whitespace() {
+                    let mut parts = item.split(':').map(str::parse::<i64>);
+                    let (Some(Ok(start)), Some(Ok(len)), Some(Ok(pitch)), Some(Ok(velocity))) =
+                        (parts.next(), parts.next(), parts.next(), parts.next())
+                    else {
+                        return Err(err(n, "malformed note"));
+                    };
+                    notes.push(crate::model::Note {
+                        start,
+                        len,
+                        pitch: pitch.clamp(0, 127) as u8,
+                        velocity: velocity.clamp(1, 127) as u8,
+                    });
+                }
+                let mut map = BTreeMap::clone(&track.notes);
+                map.insert(id, Arc::new(notes));
+                track.notes = Arc::new(map);
             }
             "props" => {
                 let (track, _) = current.as_mut().ok_or_else(|| err(n, "props before any track"))?;
@@ -447,6 +485,14 @@ mod tests {
         let (p, _) = apply(&p, &Op::SetMasterGain { id: SEQ, db: -2.0 }).unwrap();
         let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
         let (p, _) = apply(&p, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();
+        let surge = crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge \"XT\".vst3".into() };
+        let (p, _) = apply(&p, &Op::SetTrackPlugin { seq: SEQ, track: A1, plugin: Some(surge) }).unwrap();
+        let notes = vec![
+            crate::model::Note { start: 0, len: 480, pitch: 60, velocity: 100 },
+            crate::model::Note { start: 960, len: 240, pitch: 67, velocity: 64 },
+        ];
+        let (p, _) =
+            apply(&p, &Op::SetClipNotes { seq: SEQ, track: A1, clip: crate::ClipId(5), notes: Some(notes) }).unwrap();
         let song = crate::model::Song { asset: crate::ids::AssetId(0xABC), tempo: -1 };
         let (p, _) = apply(&p, &Op::SetSong { id: SEQ, song: Some(song) }).unwrap();
         let files = to_files(&p);
