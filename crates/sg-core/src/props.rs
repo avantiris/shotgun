@@ -427,8 +427,10 @@ pub enum TransitionKind {
     Slide,
     /// As the whip, but into and out of the picture instead of across it.
     Zoom,
-    /// A dip to black: the outgoing picture goes dark into the cut, the
-    /// incoming one comes up out of it. Nothing moves.
+    /// Black between the two pictures. By default a hard one: the picture
+    /// cuts to black and black cuts to the next picture. `amount` is the
+    /// share of the time spent fading instead (1: a dip to black with no
+    /// full black but at the cut). Nothing moves.
     Black,
 }
 
@@ -437,7 +439,7 @@ pub enum TransitionKind {
 #[serde(default)]
 pub struct Transition {
     pub kind: TransitionKind,
-    /// Length in sequence frames: 2 to 16, even.
+    /// Length in sequence frames: 2 to 60, even.
     pub frames: u8,
     /// Direction the picture moves in, degrees: 0 to the left (the camera
     /// whips right), 90 up, 180 to the right, 270 down.
@@ -473,12 +475,15 @@ impl Shift {
 }
 
 impl Transition {
+    /// The longest a transition can be, in frames (a second at 60 a second).
+    pub const LONGEST: u8 = 60;
+
     /// The values a file or a script may hold, brought into range.
     pub fn clamped(self) -> Transition {
         let finite = |v: f32, low: f32, high: f32, or: f32| if v.is_finite() { v.clamp(low, high) } else { or };
         Transition {
             kind: self.kind,
-            frames: (self.frames.clamp(2, 16) / 2) * 2,
+            frames: (self.frames.clamp(2, Transition::LONGEST) / 2) * 2,
             angle: finite(self.angle, -360.0, 360.0, 0.0),
             blur: finite(self.blur, 0.0, 2.0, 1.0),
             amount: finite(self.amount, 0.0, 4.0, 1.5),
@@ -494,21 +499,30 @@ impl Transition {
                 Transition { kind, frames: 8, blur: 0.0, amount: 1.0, ease: 2.0, ..Transition::default() }
             }
             TransitionKind::Zoom => Transition { kind, amount: 0.6, ..Transition::default() },
+            // Hard: six frames of black, three on each side of the cut.
             TransitionKind::Black => {
-                Transition { kind, frames: 8, blur: 0.0, amount: 0.0, ease: 1.5, ..Transition::default() }
+                Transition { kind, frames: 6, blur: 0.0, amount: 0.0, ease: 1.5, ..Transition::default() }
             }
         }
     }
 
     /// How bright the picture is at `progress` through the transition
     /// (0 at its first instant, 1 at its last; the cut is at 0.5): 1
-    /// except in a dip to black, which is dark at the cut. `ease` above 1
-    /// makes it go dark sooner and stay dark a little longer.
+    /// except in a black one. That is black all the way if `amount` (the
+    /// share of it that fades) is 0; otherwise the outer `amount` of each
+    /// half fades and the rest, around the cut, is black. `ease` above 1
+    /// makes a fade go dark sooner.
     pub fn light(&self, progress: f32) -> f32 {
         if self.kind != TransitionKind::Black {
             return 1.0;
         }
-        (2.0 * progress.clamp(0.0, 1.0) - 1.0).abs().powf(self.ease)
+        let fade = self.amount.clamp(0.0, 1.0);
+        if fade <= 0.0 {
+            return 0.0;
+        }
+        // 0 at the cut, 1 at either end.
+        let from_cut = (2.0 * progress.clamp(0.0, 1.0) - 1.0).abs();
+        ((from_cut - (1.0 - fade)) / fade).clamp(0.0, 1.0).powf(self.ease)
     }
 
     /// Displacement of the outgoing (`incoming == false`) or incoming
@@ -552,10 +566,21 @@ mod transition_tests {
 
     #[test]
     fn a_dip_to_black_is_dark_at_the_cut_and_moves_nothing() {
-        let black = Transition::of(TransitionKind::Black);
+        // As it comes: hard. Black from its first instant to its last.
+        let hard = Transition::of(TransitionKind::Black);
+        assert_eq!([0.0, 0.1, 0.5, 0.9, 1.0].map(|p| hard.light(p)), [0.0; 5]);
+        // All of it fading: a dip, dark at the cut only.
+        let black = Transition { amount: 1.0, ..hard };
         assert_eq!((black.light(0.0), black.light(0.5), black.light(1.0)), (1.0, 0.0, 1.0));
         assert!(black.light(0.25) < 0.5 && black.light(0.25) == black.light(0.75));
         assert_eq!((black.shift(0.3, false), black.shift(0.8, true)), (Shift::REST, Shift::REST));
+        // Half of it fading: the inner half is black, the outer half fades.
+        let half = Transition { amount: 0.5, ..hard };
+        assert_eq!((half.light(0.3), half.light(0.5), half.light(0.7)), (0.0, 0.0, 0.0));
+        assert!(half.light(0.1) > 0.0 && half.light(0.1) < 1.0 && half.light(0.0) == 1.0);
+        // Lengths up to a second are kept, and kept even.
+        assert_eq!(Transition { frames: 45, ..hard }.clamped().frames, 44);
+        assert_eq!(Transition { frames: 200, ..hard }.clamped().frames, 60);
         // The others leave the light alone.
         assert_eq!(Transition::default().light(0.5), 1.0);
     }

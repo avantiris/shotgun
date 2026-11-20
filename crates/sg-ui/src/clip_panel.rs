@@ -52,6 +52,8 @@ pub struct ClipPanel {
     pub seek_request: Option<i64>,
     /// The inspector shows the clip's keyframes instead of its settings.
     keys_tab: bool,
+    /// ... or the transition into the clip, with all its settings.
+    transition_tab: bool,
 }
 
 /// Writes changed properties back as an op.
@@ -74,12 +76,17 @@ fn commit(
 impl ClipPanel {
     /// Shows the settings page with the cursor in the title's text.
     pub fn show_title_text(&mut self) {
-        (self.keys_tab, self.focus_title) = (false, true);
+        (self.keys_tab, self.transition_tab, self.focus_title) = (false, false, true);
     }
 
     /// Shows the keyframes page (or the settings).
     pub fn show_keyframes(&mut self, shown: bool) {
-        self.keys_tab = shown;
+        (self.keys_tab, self.transition_tab) = (shown, false);
+    }
+
+    /// Shows the transition page: one was just put on the clip's cut.
+    pub fn show_transition(&mut self) {
+        (self.keys_tab, self.transition_tab) = (false, true);
     }
 
     /// The undo group for an edit made now. While a pointer button is held
@@ -113,16 +120,31 @@ impl ClipPanel {
             frames.len()
         };
         ui.horizontal(|ui| {
-            if ui.selectable_label(!self.keys_tab, "Settings").clicked() {
-                self.keys_tab = false;
+            let video = target.track.kind == TrackKind::Video;
+            // (A sound clip has no transition page.)
+            self.transition_tab &= video;
+            if ui.selectable_label(!self.keys_tab && !self.transition_tab, "Settings").clicked() {
+                (self.keys_tab, self.transition_tab) = (false, false);
+            }
+            if video {
+                let name = if props.transition.is_some() { "Transition (1)" } else { "Transition" };
+                let tab = ui.selectable_label(self.transition_tab, name);
+                tab.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Transition"));
+                if tab.on_hover_text("How the picture arrives from the clip before this one").clicked() {
+                    (self.keys_tab, self.transition_tab) = (false, true);
+                }
             }
             let tab = ui.selectable_label(self.keys_tab, format!("Keyframes ({keyframes})"));
             tab.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Keyframes"));
             if tab.on_hover_text("Every keyframe of this clip: when, which values, and how they travel on").clicked() {
-                self.keys_tab = true;
+                (self.keys_tab, self.transition_tab) = (true, false);
             }
         });
         ui.add_space(4.0);
+        if self.transition_tab {
+            let changed = transition_rows(ui, &mut props.transition, target);
+            return self.finish(ui, changed, session, sequence, target, props, error);
+        }
         if self.keys_tab {
             let start = match target.track.kind {
                 TrackKind::Video => target.clip.start,
@@ -346,9 +368,6 @@ impl ClipPanel {
                 }
             }
         });
-        if video {
-            changed |= transition_rows(ui, &mut props.transition, target);
-        }
         self.finish(ui, changed, session, sequence, target, props, error);
     }
 
@@ -582,13 +601,23 @@ fn transition_rows(ui: &mut egui::Ui, transition: &mut Option<sg_core::Transitio
     let before = *transition;
     // A transition needs a clip to come from, ending where this one starts.
     let follows = target.clip.start > 0 && target.track.clips.at(target.clip.start - 1).is_some();
-    ui.add_space(6.0);
     ui.label(RichText::new("TRANSITION INTO THIS CLIP").size(11.0).strong().color(theme::DIM));
     let Some(t) = transition else {
-        let button = ui.add_enabled(follows, egui::Button::new("Add whip-pan (B)"));
-        if button.on_disabled_hover_text("There is no clip directly before this one.").clicked() {
-            *transition = Some(Transition::default());
+        if !follows {
+            ui.label(RichText::new("There is no clip directly before this one to come from.").color(theme::DIM));
         }
+        ui.horizontal_wrapped(|ui| {
+            for (kind, name) in [
+                (TransitionKind::Whip, "Add whip-pan (B)"),
+                (TransitionKind::Black, "Add black (Shift+B)"),
+                (TransitionKind::Slide, "Add slide"),
+                (TransitionKind::Zoom, "Add zoom"),
+            ] {
+                if ui.add_enabled(follows, egui::Button::new(name)).clicked() {
+                    *transition = Some(Transition::of(kind));
+                }
+            }
+        });
         return *transition != before;
     };
     let label = |ui: &mut egui::Ui, text: &str| {
@@ -611,17 +640,42 @@ fn transition_rows(ui: &mut egui::Ui, transition: &mut Option<sg_core::Transitio
     ui.horizontal(|ui| {
         label(ui, "Length");
         let mut frames = t.frames as i32;
-        if ui.add(egui::DragValue::new(&mut frames).range(2..=16).speed(0.1).suffix(" frames")).changed() {
-            t.frames = ((frames.clamp(2, 16) + 1) / 2 * 2) as u8;
+        let longest = Transition::LONGEST as i32;
+        let field = egui::DragValue::new(&mut frames).range(2..=longest).speed(0.1).suffix(" frames");
+        if ui.add(field).on_hover_text("Half of it lies before the cut, half after. Even numbers, up to 60.").changed()
+        {
+            t.frames = ((frames.clamp(2, longest) + 1) / 2 * 2) as u8;
         }
     });
     if t.kind == TransitionKind::Black {
-        // Nothing moves in a dip to black: only how soon it goes dark.
+        // Nothing moves: black for the length above, hard or with a fade at its ends.
         ui.horizontal(|ui| {
-            label(ui, "Darkens");
-            ui.add(egui::DragValue::new(&mut t.ease).range(1.0..=6.0).speed(0.02).max_decimals(2))
-                .on_hover_text("1 darkens evenly; larger goes dark sooner and stays dark longer around the cut");
+            label(ui, "Fade");
+            let mut percent = t.amount.clamp(0.0, 1.0) * 100.0;
+            let field = egui::DragValue::new(&mut percent).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %");
+            if ui
+                .add(field)
+                .on_hover_text(
+                    "0: hard. The picture cuts to black and black cuts to the next picture. \
+                     Above 0 that share of the time fades in and out of the black; 100 is a dip with no full black but at the cut.",
+                )
+                .changed()
+            {
+                t.amount = percent / 100.0;
+            }
+            for (name, share) in [("Hard", 0.0f32), ("Half", 0.5), ("Dip", 1.0)] {
+                if ui.selectable_label((t.amount - share).abs() < 0.005, name).clicked() {
+                    t.amount = share;
+                }
+            }
         });
+        if t.amount > 0.0 {
+            ui.horizontal(|ui| {
+                label(ui, "Darkens");
+                ui.add(egui::DragValue::new(&mut t.ease).range(1.0..=6.0).speed(0.02).max_decimals(2))
+                    .on_hover_text("1 fades evenly; larger goes dark sooner and comes back later");
+            });
+        }
         if ui.button("Remove transition").clicked() {
             *transition = None;
         }

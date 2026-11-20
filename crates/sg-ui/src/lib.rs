@@ -695,7 +695,11 @@ impl Shell {
                         Action::Blackout => sg_core::TransitionKind::Black,
                         _ => sg_core::TransitionKind::Whip,
                     };
-                    self.editor.timeline.toggle_transition(session, self.playhead, kind, &mut self.error);
+                    if self.editor.timeline.toggle_transition(session, self.playhead, kind, &mut self.error).is_some() {
+                        // Its settings, where they can all be seen.
+                        self.editor.colour.open = false;
+                        self.editor.clip_panel.show_transition();
+                    }
                 }
             }
             Action::Angle(n) => self.switch_angle(n as usize),

@@ -395,7 +395,9 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::InsertAsset => ("Making", "put the selected asset on the timeline"),
         Action::AddTitle => ("Making", "add a title"),
         Action::Transition => ("Making", "whip-pan on the cuts of the selected clips (again: remove it)"),
-        Action::Blackout => ("Making", "dip to black on the cuts of the selected clips (again: remove it)"),
+        Action::Blackout => {
+            ("Making", "black between the selected clips: a hard cut to black and back (again: remove it)")
+        }
         Action::KeyframeSet => ("Making", "keyframe for the selected clip at the playhead"),
         Action::KeyframeRemove => ("Making", "remove that keyframe"),
         Action::LiveRecord => ("Making", "record the picture's movement while playing"),

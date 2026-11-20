@@ -77,13 +77,14 @@ Buttons and menu entries run the same action as the key (`Shell::act`), so
 they cannot drift apart. The key shown is the one in force, the user's key
 file included.
 
-## Inspector of a clip: two pages (feedback F6.1, F6.3; `PROPOSED`)
+## Inspector of a clip: three pages (feedback F6.1, F6.3; `PROPOSED`)
 
 - **Settings**: what the clip is given. For a title, headed TITLE: its
   text first, then size, colour, shadow, font, then placement like any
   picture. `T` adds a title and puts the cursor into its text with
   everything selected; Esc leaves the field. A double click on a title in
   the timeline or "Edit text" in its menu does the same.
+- **Transition**: the transition into the clip, all its settings on one page (kind, length up to 60 frames, and per kind: direction, blur, travel, speed-up, or the fade of a black one); shown by itself when B or Shift+B puts one on. Without one, buttons to add each kind.
 - **Keyframes (n)**: every keyframe of the clip, in order: its time (click:
   the playhead goes there), the values it fixes, changeable in place, how
   they travel to the next keyframe (linear, smooth, hold; this replaced the
@@ -138,7 +139,7 @@ Animation and creation
 | R | live record: plays; drag the selected clip's picture in the viewer and the motion is recorded as keyframes. R again or pause ends it |
 | T | add a 3 s title at the playhead, on the topmost video track that is free there (a new track if none is) |
 | B | whip-pan on the cuts of the selected clips (feedback F12.1): the cuts between two selected clips; if no two of them touch, the cut at the start of each, or at its end if nothing touches its start. If they all have it already, it is taken off. Another kind there is replaced. With nothing selected: the cut nearest the playhead |
-| Shift + B | a dip to black on the same cuts as B; again removes it (feedback F11.1). Eight frames by default (2 to 16): the picture before goes dark into the cut, the one after comes up out of it. Dark, not transparent: tracks underneath do not show through. Also a button above the timeline, an entry in the clip's menu and the kind "Black" in the inspector |
+| Shift + B | black on the same cuts as B; again removes it (feedback F11.1, F13.1). Hard by default: the picture cuts to black, six frames of it (three on each side of the cut), and black cuts to the next picture. "Fade" in the inspector sets the share of that time that fades instead (0 hard, 100 % a dip to black); the length goes from 2 to 60 frames. Dark, not transparent: tracks underneath do not show through |
 
 Panels and output
 

@@ -376,7 +376,9 @@ mod tests {
 
     #[test]
     fn a_dip_to_black_darkens_one_picture_at_a_time_around_the_cut() {
-        let black = cut(Some(Transition::of(TransitionKind::Black)));
+        // (Eight frames, all of them fading: a dip.)
+        let dip = Transition { frames: 8, amount: 1.0, ..Transition::of(TransitionKind::Black) };
+        let black = cut(Some(dip));
         let seq = &black.sequences[0];
         // How bright the one layer of a frame is (1 where nothing is done to it).
         let light = |frame: i64| {
@@ -392,6 +394,11 @@ mod tests {
         assert_eq!(light(100), 0.0);
         assert!(light(101) > 0.0 && light(103) > light(101) && light(103) < 1.0);
         assert_eq!((sources(&black, 99), sources(&black, 100)), (vec![(1, 99)], vec![(2, 50)]));
+        // As it comes it is hard: six frames of black, 97..103, the pictures untouched outside them.
+        let hard = cut(Some(Transition::of(TransitionKind::Black)));
+        let light =
+            |frame: i64| plan(&hard, &hard.sequences[0], frame)[0].grade.as_ref().map_or(1.0, |g| g.correction.gain[0]);
+        assert_eq!([96, 97, 99, 100, 102, 103].map(light), [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

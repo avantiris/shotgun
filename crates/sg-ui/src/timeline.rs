@@ -802,7 +802,7 @@ impl Timeline {
                     (Action::KeyframeSet, "Keyframe at the playhead"),
                     (Action::KeyframeRemove, "Remove the keyframe here"),
                     (Action::Transition, "Whip-pan on this clip's cut"),
-                    (Action::Blackout, "Dip to black on this clip's cut"),
+                    (Action::Blackout, "Black on this clip's cut"),
                     (Action::Group, "Group the selected clips, or ungroup"),
                     (Action::Delete, "Delete clip"),
                 ] {
