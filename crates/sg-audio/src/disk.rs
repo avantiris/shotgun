@@ -144,6 +144,8 @@ struct Feed {
     /// Note starts (sorted by time) and note ends (sorted by time): (sample, pitch, velocity).
     note_ons: Vec<(i64, u8, u8)>,
     note_offs: Vec<(i64, u8)>,
+    /// The built-in instrument, for notes on a track without a plugin.
+    synth: crate::synth::Synth,
 }
 
 struct Disk {
@@ -251,11 +253,15 @@ impl Disk {
     }
 
     /// Runs feed `index`'s plugin over `block`, which starts at timeline
-    /// sample `start`, with the notes that begin or end inside it.
+    /// sample `start`, with the notes that begin or end inside it. Without
+    /// a plugin the built-in instrument plays them.
     fn run_plugin(&mut self, index: usize, start: i64, block: &mut [f32]) {
-        let feed = &self.feeds[index];
-        let Some((_, client)) = feed.plugin.and_then(|key| self.plugins.get_mut(&key)) else { return };
+        let feed = &mut self.feeds[index];
         let end = start + (block.len() / 2) as i64;
+        let plugin = feed.plugin.and_then(|key| self.plugins.get_mut(&key));
+        if plugin.is_none() && feed.note_ons.is_empty() {
+            return;
+        }
         self.events.clear();
         let from = feed.note_offs.partition_point(|(at, _)| *at < start);
         for &(at, pitch) in feed.note_offs[from..].iter().take_while(|(at, _)| *at < end) {
@@ -267,6 +273,12 @@ impl Disk {
         }
         // (A note that ends where the next of its pitch begins: the end first.)
         self.events.sort_by_key(|e| (e.offset, e.on));
+        let Some((_, client)) = plugin else {
+            let events: Vec<(u32, bool, u8, u8)> =
+                self.events.iter().map(|e| (e.offset, e.on, e.pitch, e.velocity)).collect();
+            feed.synth.process(block, &events);
+            return;
+        };
         let was_dead = client.is_dead();
         if !client.process(block, &self.events) && !was_dead {
             let mut news = self.shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner);
@@ -277,9 +289,13 @@ impl Disk {
         }
     }
 
+    /// Whether the feed's notes are played before its own stages: by an
+    /// instrument plugin, or by the built-in instrument when it has no plugin.
     fn is_instrument(&self, index: usize) -> bool {
-        let key = self.feeds[index].plugin;
-        key.and_then(|key| self.plugins.get(&key)).is_some_and(|(_, client)| client.loaded.instrument)
+        match self.feeds[index].plugin.and_then(|key| self.plugins.get(&key)) {
+            Some((_, client)) => client.loaded.instrument,
+            None => !self.feeds[index].note_ons.is_empty(),
+        }
     }
 
     /// Lays the clips of feed `index` into `block` (interleaved stereo)
@@ -426,6 +442,7 @@ impl Disk {
                     ends.sort_unstable();
                     ends
                 },
+                synth: crate::synth::Synth::default(),
             });
         }
         if playing {

@@ -84,6 +84,18 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "bars" => Step::Dev(DevStep::Bars(need()?.parse()?)),
         "voice" => Step::Dev(DevStep::Voice(need()?.parse()?)),
         "plugins" => Step::Dev(DevStep::Plugins(need()?)),
+        // noteclip:<audio track>:<frame>   note:<audio track>:<pitch>:<start ticks>:<length ticks>
+        "noteclip" => {
+            let (track, frame) = arg.split_once(':').ok_or_else(|| anyhow!("noteclip needs <track>:<frame>"))?;
+            Step::Dev(DevStep::NoteClip(track.parse()?, frame.parse()?))
+        }
+        "note" => {
+            let parts: Vec<&str> = arg.split(':').collect();
+            let [track, pitch, start, len] = parts.as_slice() else {
+                bail!("note needs <track>:<pitch>:<start>:<length>")
+            };
+            Step::Dev(DevStep::Note(track.parse()?, pitch.parse()?, start.parse()?, len.parse()?))
+        }
         // plugin:<audio track>:<path of the bundle | window | (empty)>
         "plugin" => {
             let (track, path) = arg.split_once(':').ok_or_else(|| anyhow!("plugin needs <track>:<path>"))?;

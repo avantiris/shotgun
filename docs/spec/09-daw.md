@@ -174,6 +174,11 @@ is saved in the bundle. A spike comes before the build: loading a
 yabridge-bridged VST3 from Rust, its editor window under Wayland, and
 state save and restore.
 
+As built (2026-11-20): see M14 in 08-milestones.md. A project names a
+plugin by its path on the machine and its name: the one thing in a project
+that is not inside its bundle (plugins are installed software, not media).
+Its settings are in the bundle.
+
 ### Kontakt (Native Instruments)
 
 Found on his machine on 2026-11-20: `ni`, `native-access`, `yabridgectl`,

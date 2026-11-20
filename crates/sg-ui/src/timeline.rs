@@ -191,6 +191,10 @@ pub struct Timeline {
     pub actions: Vec<Action>,
     /// The selected title's text was asked for (double click, or its menu); taken by the editor.
     pub edit_title: bool,
+    /// A note clip was asked for its notes (double click, or just made); taken by the editor.
+    pub edit_notes: Option<(TrackId, ClipId)>,
+    /// The sequence frame the context menu was opened at.
+    menu_frame: f64,
     /// The volume being pulled or pointed at: where to write it, and its decibels.
     gain_label: Option<(egui::Pos2, f32)>,
     /// The selection box being pulled open, to draw it.
@@ -222,6 +226,8 @@ impl Default for Timeline {
             menu_group: None,
             actions: Vec::new(),
             edit_title: false,
+            edit_notes: None,
+            menu_frame: 0.0,
             gain_label: None,
             marquee: None,
             menu_clip: None,
@@ -714,6 +720,7 @@ impl Timeline {
             self.menu_row = (row >= 0.0 && (row as usize) < sequence.tracks.len()).then_some(row as usize);
             let frame = pos.map_or(0.0, |p| self.left + (p.x - rect.left() - HEADER_W) as f64 * self.frames_per_point);
             let on_lanes = pos.is_some_and(|p| p.x >= rect.left() + HEADER_W);
+            self.menu_frame = frame;
             self.menu_clip = self.hit(sequence, row, frame).filter(|_| on_lanes).map(|(row, clip, _)| (row, clip));
             // The menu acts on what is shown as selected.
             if let Some((row, clip)) = self.menu_clip {
@@ -820,6 +827,19 @@ impl Timeline {
             ui.separator();
             if ui.button("Add video track").clicked() {
                 add = Some(TrackKind::Video);
+                ui.close();
+            }
+            // Notes: on an audio track, where nothing lies yet. Played by the
+            // track's plugin, or by the built-in instrument if it has none.
+            if let Some(track) = self.menu_row.and_then(|row| sequence.tracks.get(row)).filter(|t| t.kind == TrackKind::Audio)
+                && self.menu_clip.is_none()
+                && ui
+                    .button("Add note clip here")
+                    .on_hover_text("Two bars to write notes into (double-click it). An instrument plugin on the track plays them; without one, a built-in instrument.")
+                    .clicked()
+            {
+                let (track, frame) = (track.clone(), self.menu_frame);
+                self.add_note_clip(session, sequence, &track, frame, error);
                 ui.close();
             }
             if ui.button("Add audio track").clicked() {
@@ -1100,13 +1120,17 @@ impl Timeline {
             self.drag = Drag::Pan;
         }
 
-        // A double click on a title goes to its text.
+        // A double click on a title goes to its text, on a note clip to its notes.
         if response.double_clicked_by(PointerButton::Primary)
             && let Some(pos) = pointer
             && let Some((row, clip, _)) = self.hit(sequence, row_at(pos.y), frame_at(pos.x))
-            && sequence.tracks[row].props_of(clip.id).is_some_and(|p| p.title.is_some())
         {
-            self.edit_title = true;
+            let track = &sequence.tracks[row];
+            if track.props_of(clip.id).is_some_and(|p| p.title.is_some()) {
+                self.edit_title = true;
+            } else if track.kind == TrackKind::Audio && clip.asset == AssetId(0) {
+                self.edit_notes = Some((track.id, clip.id));
+            }
         }
         if response.clicked_by(PointerButton::Primary)
             && let Some(pos) = pointer
@@ -1456,7 +1480,30 @@ impl Timeline {
                         px(3.0),
                         if selected { 0.0 } else { 1.0 },
                     ));
-                    if track.kind == TrackKind::Audio && row_h >= 14.0 && x1 - x0 >= 4.0 {
+                    if track.kind == TrackKind::Audio && clip.asset == AssetId(0) {
+                        // A note clip: its notes as small bars, high ones above low ones.
+                        if let Some(notes) = track.notes.get(&clip.id).filter(|n| !n.is_empty()) {
+                            let (low, high) =
+                                notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
+                            let span = (high - low).max(11) as f32 + 1.0;
+                            let bpm = sequence.tempo.map_or(120.0, sg_core::Tempo::bpm);
+                            let per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * sg_core::TICKS_PER_BEAT as f64);
+                            for note in notes.iter().take(256) {
+                                let a = x_of((clip.start as f64 + note.start as f64 * per_tick) / per);
+                                let b = x_of((clip.start as f64 + (note.start + note.len) as f64 * per_tick) / per);
+                                let y = y1 - 3.0 - (note.pitch - low) as f32 / span * (y1 - y0 - 8.0);
+                                let (a, b) = (a.max(x0), b.min(x1));
+                                if b > a {
+                                    instances.push(Instance::new(
+                                        quad(a, y - 2.0, b.max(a + 1.5), y),
+                                        theme::TEXT,
+                                        0.0,
+                                        0.0,
+                                    ));
+                                }
+                            }
+                        }
+                    } else if track.kind == TrackKind::Audio && row_h >= 14.0 && x1 - x0 >= 4.0 {
                         match self.waves.get(&clip.asset) {
                             Some(Wave::Ready(peaks)) => {
                                 let speed = track
@@ -1586,7 +1633,9 @@ impl Timeline {
                     if x1 - x0 >= LABEL_MIN && row_h >= 16.0 && labels.len() < 400 {
                         // A title shows its text, anything else its asset's label.
                         let title = track.props_of(clip.id).and_then(|p| p.title.as_ref()).map(|t| t.text.as_str());
+                        let notes = (track.kind == TrackKind::Audio && clip.asset == AssetId(0)).then_some("notes");
                         let name = title
+                            .or(notes)
                             .or(project.assets.get(&clip.asset).map(|a| a.label.as_str()))
                             .unwrap_or("missing asset");
                         labels.push((
@@ -2119,6 +2168,45 @@ impl Timeline {
             });
         }
         seek
+    }
+
+    /// Makes a note clip of two bars on an audio track at `frame` (on a
+    /// bar line if the sequence has a tempo; shorter if another clip
+    /// comes sooner) and asks for its notes to be shown.
+    pub fn add_note_clip(
+        &mut self,
+        session: &mut Session,
+        sequence: &Sequence,
+        track: &Arc<Track>,
+        frame: f64,
+        error: &mut Option<String>,
+    ) {
+        let lane = Lane::of(track, sequence);
+        let fps = sequence.rate.num() as f64 / sequence.rate.den() as f64;
+        let beat = sequence.tempo.map_or(fps / 2.0, |t| t.frames_per_beat(sequence.rate));
+        let per_bar = sequence.tempo.map_or(4.0, |t| t.beats_per_bar as f64);
+        let bar = beat * per_bar;
+        let from = if sequence.tempo.is_some() { (frame / bar).floor() * bar } else { frame };
+        let (start, mut len) = (lane.units(from.max(0.0).round() as i64), lane.units((bar * 2.0).round() as i64));
+        if let Some(next) = track.clips.first_at_or_after(start) {
+            len = len.min(next.start - start);
+        }
+        if len <= 0 || track.clips.at(start).is_some() {
+            *error = Some("There is no room for a note clip here.".to_owned());
+            return;
+        }
+        let clip = Clip { id: session.new_clip_id(), asset: AssetId(0), start, len, src_in: 0 };
+        let made = Op::Batch(vec![
+            Op::InsertClip { seq: sequence.id, track: track.id, clip },
+            Op::SetClipNotes { seq: sequence.id, track: track.id, clip: clip.id, notes: Some(Vec::new()) },
+        ]);
+        match session.apply(made, None) {
+            Ok(()) => {
+                self.selection = vec![Sel { track: track.id, start: clip.start, id: clip.id }];
+                self.edit_notes = Some((track.id, clip.id));
+            }
+            Err(e) => *error = Some(e.to_string()),
+        }
     }
 
     /// Puts the selected clips on the internal clipboard.

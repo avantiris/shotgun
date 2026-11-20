@@ -364,5 +364,37 @@ chain second version, M16 mixing and mastering.
     a meter that shows what each stage is doing.
 - [ ] M13 Recording
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
+  - Built 2026-11-20:
+    - `sg-plug`: every plugin runs in a process of its own
+      (`shotgun-plugin`), driven over a pipe: blocks with notes, reset,
+      state, its window (spike S7). VST3 only so far.
+    - Model: a plugin per audio track and the notes of note clips, as
+      operations with inverses (`SetTrackPlugin`, `SetClipNotes`), in the
+      sequence file. `PROPOSED`, differing from the first design: no third
+      kind of track. An instrument is an audio track with an instrument
+      plugin; a note clip is a clip without an asset on an audio track.
+    - Engine: plugins run on the disk thread (an instrument before the
+      track's own stages, an effect after them), survive seeks, and have
+      their state written into the bundle (`plugins/<track>.state`) when
+      playback pauses, before an export and at the end. A plugin that does
+      not load or dies is reported and its track goes on without it.
+    - A built-in instrument (a small synthesiser, not the sampler first
+      planned) plays the notes of a track that has no plugin.
+    - UI: "Plugins" in the top bar (what was found; the Native Instruments
+      set-up in three steps); "Add plugin", "Window" and "Off" on every
+      mixer strip; "Add note clip here" in the timeline's menu; the piano
+      roll in the viewer's place (click, draw, move, stretch, right click
+      to remove, a grid of 1/4 to 1/32, Esc to close).
+  - Checked with Surge XT (a native VST3 instrument and effect from the
+    dev shell): notes start within a block of where they are written, the
+    state round-trips, a killed plugin costs only its own sound, its
+    window opens (on the hidden workspace) and closes; in the app a melody
+    was written, exported with the built-in instrument and with Surge XT.
+  - Not checked: Kontakt or any bridged Windows plugin (needs the user's
+    login first), anything by ear, the piano roll with a real mouse.
+  - Still to do: CLAP and LV2; playing notes from the computer keyboard;
+    velocity editing; copy and paste of notes; plugin parameters as
+    keyframes; more than one plugin per track; a plugin that hangs (not
+    crashes) stalls the sound of all tracks until it answers.
 - [ ] M15 Vocal chain, second version
 - [ ] M16 Mixing and mastering

@@ -51,6 +51,8 @@ pub struct Editor {
     pub actions: Vec<Action>,
     /// Undo group while a tempo field is being dragged: one drag, one step.
     tempo_group: Option<u64>,
+    /// The notes of a note clip, shown in place of the viewer while open.
+    pub piano: crate::piano_roll::PianoRoll,
 }
 
 impl Editor {
@@ -62,7 +64,9 @@ impl Editor {
     /// Cancels what is in progress: popover first, then a rename. Returns
     /// whether there was something.
     pub fn cancel(&mut self) -> bool {
-        self.assets.close_add() || self.rename.take().is_some() || self.asset_label.take().is_some()
+        // (The label field of a selected asset is always there; it is not
+        // something in progress, and Esc must get past it.)
+        self.assets.close_add() || self.rename.take().is_some() || self.piano.close()
     }
 
     pub fn ui(
@@ -93,6 +97,9 @@ impl Editor {
                 // A title asked for its text: the inspector shows it with the cursor in the field.
                 if std::mem::take(&mut self.timeline.edit_title) {
                     self.show_title_text();
+                }
+                if let Some((track, clip)) = self.timeline.edit_notes.take() {
+                    self.piano.show(track, clip);
                 }
                 // Posters at the heads of clips: the asset panel holds the textures.
                 let painter = ui.painter().with_clip_rect(self.timeline.lanes);
@@ -183,6 +190,13 @@ impl Editor {
                     turn: t.props.rotation.at(t.at),
                 })
             });
+        // An open note clip takes the viewer's place.
+        if self.piano.is_open() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(theme::BG).inner_margin(6.0))
+                .show(ui, |ui| self.piano.ui(ui, session, view.frame, error));
+            return request;
+        }
         let events = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(12.0))
             .show(ui, |ui| stage::viewer(ui, sequence, view, recording, live, outline))

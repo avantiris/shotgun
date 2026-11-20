@@ -1404,3 +1404,53 @@ fn a_plugin_is_put_on_a_track_from_its_mixer_strip() {
     harness.run_steps(3);
     assert_eq!(plugin_of(&harness).1.as_deref(), Some("Surge XT Effects"));
 }
+
+#[test]
+fn a_note_clip_is_made_on_an_audio_track_and_its_notes_drawn_in_the_piano_roll() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> Option<Vec<sg_core::Note>> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio)?.clone();
+        let clip = track.clips.iter().next()?;
+        assert_eq!(clip.asset, AssetId(0));
+        track.notes.get(&clip.id).map(|n| Vec::clone(n))
+    };
+    // Right click on the empty audio track (row 1): a note clip, two bars long, and its piano roll opens.
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    assert_eq!(notes(&harness), Some(vec![]));
+    assert_eq!(clips(&harness, 1).len(), 1);
+    // Two bars at 120 a minute are four seconds of sound.
+    assert_eq!(clips(&harness, 1)[0].1, 4 * 48_000);
+    let roll = harness.get_by_label("Piano roll").rect();
+    // A click puts a note there: a sixteenth long, on the grid.
+    let spot = egui::pos2(roll.left() + 46.0 + 100.0, roll.top() + 90.0);
+    pointer(&mut harness, spot, egui::PointerButton::Primary);
+    let one = notes(&harness).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!((one[0].len, one[0].start % 240, one[0].velocity), (240, 0, 100));
+    // A drag on empty space draws one as long as the drag; it is higher up, so higher in pitch.
+    let from = egui::pos2(roll.left() + 46.0 + 300.0, roll.top() + 40.0);
+    drag(&mut harness, from, from + vec2(160.0, 0.0));
+    let two = notes(&harness).unwrap();
+    assert_eq!(two.len(), 2);
+    let drawn = two.iter().find(|n| n.pitch != one[0].pitch).unwrap();
+    assert!(drawn.len > 240 && drawn.pitch > one[0].pitch, "{drawn:?}");
+    // The delete key takes the note that was just drawn, not the clip.
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness).unwrap(), one);
+    assert_eq!(clips(&harness, 1).len(), 1);
+    // A right click on a note removes it; undo brings it back.
+    pointer(&mut harness, spot, egui::PointerButton::Secondary);
+    assert_eq!(notes(&harness), Some(vec![]));
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness).unwrap(), one);
+    // Esc closes the piano roll; a double click on the clip would open it again.
+    assert_eq!(harness.state().shell.error_shown(), None);
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Piano roll").is_none());
+}

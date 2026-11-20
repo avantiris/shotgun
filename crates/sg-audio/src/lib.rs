@@ -19,6 +19,7 @@ mod fx;
 pub mod graph;
 mod null;
 mod pw;
+mod synth;
 pub mod tune;
 
 use std::path::PathBuf;

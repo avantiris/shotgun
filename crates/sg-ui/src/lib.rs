@@ -16,6 +16,7 @@ pub mod keymap;
 mod library;
 mod mixer;
 mod perf;
+mod piano_roll;
 mod plugins_panel;
 mod session;
 mod stage;
@@ -241,6 +242,10 @@ pub enum DevStep {
     Song,
     /// Give the sequence a tempo in beats per minute (0: none), four to the bar.
     Bars(f32),
+    /// A note clip on the n-th audio track at a frame; its piano roll opens.
+    NoteClip(usize, i64),
+    /// A note in the newest note clip of the n-th audio track: pitch, start and length in ticks.
+    Note(usize, u8, i64, i64),
     /// Put the plugin at this path on the n-th audio track (empty path:
     /// take it off), or with `window` as the path show its window.
     Plugin(usize, String),
@@ -690,8 +695,15 @@ impl Shell {
             | Action::PrevCut
             | Action::NextCut => self.timeline_action(action, commands),
             Action::Delete => {
-                // Clips if any are selected, otherwise the selected asset.
-                if self.editor.timeline.has_selection() {
+                // While the piano roll is open: its selected note. Otherwise
+                // clips if any are selected, otherwise the selected asset.
+                let note = match &mut self.session {
+                    Some(session) => self.editor.piano.delete_selected(session, &mut self.error),
+                    None => false,
+                };
+                if note || self.editor.piano.is_open() {
+                    // (An open piano roll never lets the key reach the clip it shows.)
+                } else if self.editor.timeline.has_selection() {
                     self.timeline_action(action, commands);
                 } else if let Some(id) = self.editor.assets.selected {
                     self.remove_asset(id);
@@ -884,6 +896,49 @@ impl Shell {
             DevStep::Programme(beats) => self.programme_action(beats),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
+            DevStep::NoteClip(n, frame) => {
+                if let Some(session) = &mut self.session {
+                    let project = session.project().clone();
+                    let found = project.sequences.first().and_then(|s| {
+                        Some((s, s.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n)?))
+                    });
+                    match found {
+                        Some((sequence, track)) => {
+                            self.editor.timeline.add_note_clip(session, sequence, track, frame as f64, &mut self.error);
+                            if let Some((track, clip)) = self.editor.timeline.edit_notes.take() {
+                                self.editor.piano.show(track, clip);
+                            }
+                        }
+                        None => self.error = Some(format!("noteclip: no audio track {n}")),
+                    }
+                }
+            }
+            DevStep::Note(n, pitch, start, len) => {
+                if let Some(session) = &mut self.session {
+                    let project = session.project().clone();
+                    let found = project.sequences.first().and_then(|s| {
+                        let track = s.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n)?;
+                        let clip = track.clips.iter().filter(|c| c.asset == AssetId(0)).last()?;
+                        Some((
+                            s.id,
+                            track.id,
+                            clip.id,
+                            track.notes.get(&clip.id).map(|n| Vec::clone(n)).unwrap_or_default(),
+                        ))
+                    });
+                    match found {
+                        Some((seq, track, clip, mut notes)) => {
+                            notes.push(sg_core::Note { start, len, pitch, velocity: 100 });
+                            if let Err(e) =
+                                session.apply(Op::SetClipNotes { seq, track, clip, notes: Some(notes) }, None)
+                            {
+                                self.error = Some(e.to_string());
+                            }
+                        }
+                        None => self.error = Some(format!("note: no note clip on audio track {n}")),
+                    }
+                }
+            }
             DevStep::Plugin(n, path) => {
                 if let Some(session) = &mut self.session {
                     let project = session.project().clone();
