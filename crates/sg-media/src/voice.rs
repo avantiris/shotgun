@@ -2,8 +2,11 @@
 //! measuring half of the vocal chain (docs/spec/09-daw.md). Pure signal
 //! processing on mono 48 kHz samples; no files, no threads.
 //!
-//! The numbers a style aims for are starting points from common mixing
-//! practice (`PROPOSED`); they have not been tuned by ear against records.
+//! The numbers a style aims for were measured on the finished vocals of
+//! six German rap records on 2026-11-20 (docs/spec/09-daw.md, "Reference
+//! measurements"): how bright, how much body, how loud the S sounds, how
+//! far the loud phrases stand above the average. They have not been judged
+//! by ear (`PROPOSED`).
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
@@ -65,20 +68,30 @@ impl VoiceStyle {
     /// The style a recording most likely wants: sung if the pitch holds
     /// still most of the time, otherwise the lead of a rap.
     pub fn guess(stats: &VoiceStats) -> VoiceStyle {
-        if stats.pitch_hz.is_some() && stats.steadiness >= 0.6 { VoiceStyle::SungHook } else { VoiceStyle::RapLead }
+        // Measured: rapped verses hold their pitch at 17 to 28 % of the
+        // voiced moments, sung and pitch-corrected hooks at 40 to 51 %.
+        if stats.pitch_hz.is_some() && stats.steadiness >= 0.35 { VoiceStyle::SungHook } else { VoiceStyle::RapLead }
     }
 
     /// (air against the middle in dB, body or box allowed above the middle
-    /// in dB, gain reduction on loud phrases in dB, ratio, level after the
-    /// chain in dB, low cut as a share of the voice's pitch)
+    /// in dB, how far the loud phrases may stand above the average in dB,
+    /// ratio, level after the chain in dB, low cut as a share of the
+    /// voice's pitch)
     fn target(self) -> (f32, f32, f32, f32, f32, f32) {
         match self {
-            VoiceStyle::RapLead => (-17.0, 2.0, 7.0, 4.0, -18.0, 0.8),
-            VoiceStyle::Doubles => (-15.0, -1.0, 9.0, 6.0, -24.0, 1.1),
-            VoiceStyle::SungHook => (-19.0, 3.0, 5.0, 3.0, -19.0, 0.7),
+            // The references: air -10 to -2 (median -8.7), body and box
+            // around the middle (-2 and +0.6), loud phrases 12 dB above
+            // the average (10.9 to 13.4).
+            VoiceStyle::RapLead => (-8.5, 0.5, 12.0, 4.0, -17.0, 0.6),
+            VoiceStyle::Doubles => (-7.0, -2.0, 10.0, 6.0, -23.0, 0.85),
+            VoiceStyle::SungHook => (-9.5, 1.5, 12.5, 3.0, -17.0, 0.55),
         }
     }
 }
+
+/// How loud the S sounds of a finished vocal are against the voice, in
+/// decibels (the references: -5.1 to -0.1, four of six between -4.3 and -5.1).
+const SIBILANCE_TARGET_DB: f32 = -4.5;
 
 /// Settings of a track's strip proposed for a voice.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -235,12 +248,15 @@ fn pitch(samples: &[f32], sounding: &[usize]) -> (Option<f32>, f32) {
 
 /// The strip settings that bring a measured voice to a style.
 pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
-    let (air_target, body_allowed, reduction, ratio, level_target, cut_share) = style.target();
-    // Below the voice's own pitch there is only rumble.
-    let low_cut_hz = stats.pitch_hz.map_or(90.0, |hz| (hz * cut_share).clamp(70.0, 180.0)).round();
+    let (air_target, body_allowed, spread, ratio, level_target, cut_share) = style.target();
+    // Well below the voice's own pitch there is only rumble.
+    let low_cut_hz = stats.pitch_hz.map_or(90.0, |hz| (hz * cut_share).clamp(75.0, 140.0)).round();
+    // The loud phrases are brought down to where they stand on the records.
+    let reduction = (stats.loud_db - stats.loudness_db - spread).clamp(2.0, 14.0);
     // The quieter the pauses against the voice, the less there is to remove.
     let denoise = match stats.noise_db.map(|noise| stats.loudness_db - noise) {
-        Some(clear) if clear < 55.0 => ((55.0 - clear) / 30.0 * 0.8).clamp(0.15, 0.8),
+        // (Gently: the noise reduction is made for speech and costs a little of the voice.)
+        Some(clear) if clear < 45.0 => ((45.0 - clear) / 25.0 * 0.7).clamp(0.1, 0.7),
         _ => 0.0,
     };
     // Too much body (mud, about 200 Hz) or box (about 450 Hz) against the
@@ -249,7 +265,7 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
     let (excess, eq_mid_hz) = if body >= boxy { (body - body_allowed, 220.0) } else { (boxy - body_allowed, 450.0) };
     let eq_mid_db = -(excess / 2.0).clamp(0.0, 6.0);
     // Dull against the style: air is added, most of the difference. Sharp: a little is taken.
-    let eq_high_db = ((air_target - air) * 0.6).clamp(-3.0, 8.0);
+    let eq_high_db = ((air_target - air) * 0.6).clamp(-4.0, 9.0);
     let eq_low_db = if stats.bands_db[0] > -12.0 { -2.0 } else { 0.0 };
     // The threshold at which the loud phrases are turned down by `reduction`.
     let slope = 1.0 - 1.0 / ratio;
@@ -258,9 +274,10 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
     let average_loss = ((stats.loudness_db + 3.0 - comp_threshold_db).max(0.0) * slope).min(reduction);
     let gain_db = (level_target - (stats.loudness_db - average_loss)).clamp(-12.0, 12.0);
     let round = |v: f32| (v * 10.0).round() / 10.0;
-    // S sounds 14 dB under the voice are as they should be; as loud as the
-    // voice, the de-esser works at full depth. Added air makes them sharper.
-    let deess = stats.sibilance_db.map_or(0.0, |s| ((s + eq_high_db.max(0.0) + 14.0) / 12.0).clamp(0.0, 1.0));
+    // The S sounds are brought to where they are on the records. Added air
+    // makes them sharper by about as much; the de-esser takes off up to 12 dB.
+    let deess =
+        stats.sibilance_db.map_or(0.0, |s| ((s + eq_high_db.max(0.0) - SIBILANCE_TARGET_DB) / 12.0).clamp(0.0, 1.0));
     Suggestion {
         style,
         gain_db: round(gain_db),
@@ -333,10 +350,15 @@ mod tests {
         let set = suggest(&stats, VoiceStyle::RapLead);
         // Low cut under the voice, noise reduction because of the hiss, air because it is dull.
         assert!((70.0..=120.0).contains(&set.low_cut_hz), "{set:?}");
-        assert!(set.denoise >= 0.3, "{set:?}");
+        assert!(set.denoise >= 0.2, "{set:?}");
         assert!(set.eq_high_db > 2.0, "{set:?}");
-        // The loud phrases lose seven decibels: the threshold lies that far (through the ratio) under them.
-        assert!((stats.loud_db - set.comp_threshold_db - 7.0 / 0.75).abs() < 0.2, "{set:?} {stats:?}");
+        // This made-up voice is even already (its loud phrases 3 dB above its
+        // average, where a record has 12): the compressor only touches it, 2 dB.
+        assert!((stats.loud_db - set.comp_threshold_db - 2.0 / 0.75).abs() < 0.2, "{set:?} {stats:?}");
+        // A take that swings 20 dB is brought to the records' 12: 8 dB off its loud phrases.
+        let swinging = VoiceStats { loud_db: -6.0, loudness_db: -26.0, ..stats };
+        let squeezed = suggest(&swinging, VoiceStyle::RapLead);
+        assert!((-6.0 - squeezed.comp_threshold_db - 8.0 / 0.75).abs() < 0.2, "{squeezed:?}");
         assert_eq!(set.comp_ratio, 4.0);
         // Doubles sit further back and thinner than the lead.
         let doubles = suggest(&stats, VoiceStyle::Doubles);
@@ -368,7 +390,7 @@ mod tests {
         let (m, h) = (mild.sibilance_db.unwrap(), harsh.sibilance_db.unwrap());
         assert!(m < -8.0 && h > -3.0, "{m} {h}");
         let (little, much) = (suggest(&mild, VoiceStyle::RapLead).deess, suggest(&harsh, VoiceStyle::RapLead).deess);
-        assert!(little < much && much >= 0.9, "{little} {much}");
+        assert!(little < much && much >= 0.5, "{little} {much}");
     }
 
     #[test]

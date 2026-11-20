@@ -267,6 +267,24 @@ fn main() -> anyhow::Result<()> {
         }
         Some("open") => bench_open(Path::new(arg(1).context("open <project-dir>")?), number(2, 10)?),
         // sg-bench export <project-dir> master|vertical|gif|share:<MB> [from frame] [to frame]
+        // sg-bench voice <48 kHz wav>...: what listening to a voice measures, and what it would set.
+        Some("voice") => {
+            for path in std::env::args().skip(2) {
+                let (samples, rate) = sg_media::peaks::read_mono(Path::new(&path), &sg_media::Cancel::new())
+                    .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+                anyhow::ensure!(rate == 48_000, "{path}: {rate} Hz, expected 48000");
+                let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                match sg_media::voice::measure(&samples) {
+                    Some(stats) => {
+                        let style = sg_media::voice::VoiceStyle::guess(&stats);
+                        println!("{name}: {stats:?}");
+                        println!("  as {}: {:?}", style.name(), sg_media::voice::suggest(&stats, style));
+                    }
+                    None => println!("{name}: too little sound"),
+                }
+            }
+            Ok(())
+        }
         Some("export") => {
             let range = match (arg(3), arg(4)) {
                 (Some(a), Some(b)) => Some((a.parse()?, b.parse()?)),

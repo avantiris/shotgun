@@ -127,6 +127,38 @@ one amount control per stage; everything else is set by listening.
   records he likes. `OPEN`: two or three reference songs and a raw vocal
   recording of his to tune the styles against.
 
+#### Reference measurements (2026-11-20)
+
+He asked for the styles to be set from records ("search online for
+samples or use something from e.g. spongebozz or most other artists also
+work"). Six vocal-only versions found on YouTube were measured with
+`sg-bench voice` (kept in `/disk/shotgun-dev/media/refs`, not in the
+repository; most are separated from the finished mix by their uploaders,
+so they carry some artefacts):
+
+| Record | Air | Presence | Body | Box | S sounds | Loud above average | Pitch held |
+|---|---|---|---|---|---|---|---|
+| SpongeBOZZ, A.C.A.B. | -8.0 | -2.9 | -6.3 | -2.0 | -4.3 | 12.8 | 22 % |
+| Kollegah, Big Boss | -1.7 | -2.7 | -0.1 | +3.7 | -0.1 | 10.9 | 28 % |
+| SSIO, 0,9 | -10.4 | -7.2 | -4.0 | -1.1 | -4.4 | 13.4 | 17 % |
+| Kool Savas, Wie er | -1.6 | -1.5 | +3.5 | +0.5 | -0.7 | 12.0 | 22 % |
+| Capital Bra & Samra, Wieder lila (sung) | -9.4 | -9.1 | -4.4 | +2.3 | -5.1 | 12.4 | 40 % |
+| Apache 207, Wieso tust du dir das an (sung) | -9.5 | -10.4 | +1.7 | +0.7 | -4.6 | 12.3 | 51 % |
+
+Air, presence, body and box: energy of 6 to 11 kHz, 2.5 to 6 kHz, 110 to
+300 Hz and 300 to 700 Hz against 700 Hz to 2.5 kHz, in decibels. S sounds:
+their level against the whole voice. Loud above average: how far the loud
+phrases' peaks stand above the average level. Pitch held: share of voiced
+moments at which the pitch stands still.
+
+What the styles took from it: finished rap vocals are far brighter than I
+had assumed (air around -8.5 dB, I had -17), their S sounds sit about
+4.5 dB under the voice (I had assumed 14), the loud phrases stand 12 dB
+above the average on every one of them, and sung, pitch-corrected hooks
+hold their pitch at 40 % and more of the time against under 30 % for rap,
+which is what tells the two apart. Fed through "listen and set up", the
+six finished vocals now come out nearly untouched, as they should.
+
 ### Plugins
 
 Kontakt 8 is a VST3 plugin, so VST3 hosting comes first:
@@ -198,7 +230,7 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
 
 ## Open
 
-- `OPEN` Reference songs and a raw vocal take for tuning the vocal chain.
+- `OPEN` A raw, untreated vocal take of his: the references are finished vocals; what the chain does to a raw one has only been tried on made-up signals.
 - `OPEN` Which plugins he owns or wants first: decides what the spikes for
   M15 and M16 test against.
 - `OPEN` Whether a music project should hide the video parts of the screen.
