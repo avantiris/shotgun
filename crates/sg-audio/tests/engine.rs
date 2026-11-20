@@ -756,3 +756,51 @@ fn the_inputs_of_this_machine_are_listed() {
     }
     assert!(inputs.iter().all(|i| !i.name.is_empty() && !i.label.is_empty()));
 }
+
+#[test]
+fn a_track_played_by_hand_sounds_within_milliseconds_playing_or_not() {
+    let hand = TrackMix { by_hand: true, ..track(Vec::new()) };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(Mix { tracks: vec![hand.clone()], ..Mix::default() });
+    engine.settle();
+    // Pulls `blocks` device blocks and returns them, the buffer being topped up as while idling.
+    let pull = |blocks: usize| {
+        let mut out = vec![0.0f32; blocks * 256 * 2];
+        for block in out.chunks_mut(512) {
+            engine.settle();
+            engine.pull(block);
+        }
+        out
+    };
+    let first = |out: &[f32]| out.iter().step_by(2).position(|s| s.abs() > 1e-4);
+    // Nothing plays and no key is down: silence, and the clock stands still.
+    assert_eq!(first(&pull(8)), None);
+    assert!(!engine.is_playing());
+    // A key: heard after what was already buffered, which is less than 20 ms.
+    engine.note(0, true, 60, 100);
+    let out = pull(40);
+    let after = first(&out).unwrap();
+    assert!(after <= 960, "{after}");
+    // Let go, it dies away.
+    engine.note(0, false, 60, 0);
+    let out = pull(80);
+    assert!(out[out.len() - 2048..].iter().all(|s| s.abs() < 1e-3));
+    assert!(!engine.is_playing());
+    // The same while the timeline plays, where the track also has a note of its own.
+    let written = sg_audio::NoteSpan { start: 48_000, len: 4_800, pitch: 72, velocity: 100 };
+    engine.set_mix(Mix { tracks: vec![TrackMix { notes: vec![written], ..hand }], ..Mix::default() });
+    engine.play(0);
+    assert_eq!(first(&pull(8)), None);
+    engine.note(0, true, 64, 100);
+    let after = first(&pull(8)).unwrap();
+    assert!(after <= 960, "{after}");
+    engine.note(0, false, 64, 0);
+    // (4096 frames into the timeline by now; the written note starts at one second.)
+    let out = pull(190);
+    assert!(out[(40_000 - 4096) * 2..(46_000 - 4096) * 2].iter().all(|s| s.abs() < 1e-3));
+    let written_at = out[(46_000 - 4096) * 2..].iter().step_by(2).position(|s| s.abs() > 1e-3).unwrap() + 46_000;
+    assert!((48_000..48_200).contains(&written_at), "{written_at}");
+    // A track that is not played by hand takes no keys.
+    engine.note(1, true, 60, 100);
+    engine.settle();
+}

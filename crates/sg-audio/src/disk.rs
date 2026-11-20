@@ -32,11 +32,25 @@ pub enum Control {
     SaveStates(Sender<()>),
     /// From a loader thread: the plugin for this track has started, or has not (`None`).
     Loaded(crate::PluginSpec, Option<Box<sg_plug::Client>>),
+    /// A key played by hand on the instrument of a track.
+    Note {
+        track: usize,
+        on: bool,
+        pitch: u8,
+        velocity: u8,
+    },
     Quit,
 }
 
 /// Frames buffered ahead per track: half a second.
 const RING_FRAMES: usize = SAMPLE_RATE as usize / 2;
+/// Frames buffered ahead for a track played by hand: what is in the ring
+/// is how late a key is heard. Three device blocks, so that one late
+/// wake-up of this thread does not leave the callback without sound, and
+/// never less than 16 ms.
+fn hand_frames(quantum: u32) -> usize {
+    (quantum as usize * 3).clamp(768, MAX_BLOCK)
+}
 /// Frames written before a graph is offered, so playback starts with data.
 const PREFILL_FRAMES: usize = 4096;
 /// How often the rings are topped up while playing.
@@ -145,6 +159,9 @@ struct Feed {
     plugin: Option<u64>,
     /// The track has a plugin that is still starting.
     awaiting: bool,
+    /// Played by hand: a short ring, and keys that wait for the next block.
+    by_hand: bool,
+    pending: Vec<sg_plug::NoteEvent>,
     /// Note starts (sorted by time) and note ends (sorted by time): (sample, pitch, velocity).
     note_ons: Vec<(i64, u8, u8)>,
     note_offs: Vec<(i64, u8)>,
@@ -161,6 +178,11 @@ struct Disk {
     master: Arc<Live>,
     files: HashMap<PathBuf, Option<Arc<Wav>>>,
     playing: bool,
+    /// Nothing plays, but a track is played by hand: its ring is kept
+    /// filled and the device stays awake.
+    idle_hand: bool,
+    /// Where the graph in use was built for.
+    built_at: i64,
     /// A grain is (or was just) sounding; when to let the device rest.
     grain_until: Option<Instant>,
     block: Vec<f32>,
@@ -206,6 +228,7 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
                 && x.plugin == y.plugin
                 && x.notes == y.notes
                 && x.unheard == y.unheard
+                && x.by_hand == y.by_hand
                 // (The reverb and echo exist only while some track sends to them.)
                 && (x.reverb > 0.0 || x.echo > 0.0) == (y.reverb > 0.0 || y.echo > 0.0)
                 && (x.denoise > 0.0) == (y.denoise > 0.0)
@@ -291,14 +314,17 @@ impl Disk {
     /// Runs feed `index`'s plugin over `block`, which starts at timeline
     /// sample `start`, with the notes that begin or end inside it. Without
     /// a plugin the built-in instrument plays them.
-    fn run_plugin(&mut self, index: usize, start: i64, block: &mut [f32]) {
+    fn run_plugin(&mut self, index: usize, start: i64, block: &mut [f32], timeline: bool) {
         let feed = &mut self.feeds[index];
-        let end = start + (block.len() / 2) as i64;
+        // (Without the timeline, while nothing plays, only the keys played by hand sound.)
+        let end = if timeline { start + (block.len() / 2) as i64 } else { start };
         let plugin = feed.plugin.and_then(|key| self.plugins.get_mut(&key));
-        if plugin.is_none() && feed.note_ons.is_empty() {
+        if plugin.is_none() && feed.note_ons.is_empty() && !feed.by_hand {
             return;
         }
         self.events.clear();
+        // Keys played by hand since the last block: now.
+        self.events.append(&mut feed.pending);
         let from = feed.note_offs.partition_point(|(at, _)| *at < start);
         for &(at, pitch) in feed.note_offs[from..].iter().take_while(|(at, _)| *at < end) {
             self.events.push(sg_plug::NoteEvent { offset: (at - start) as u32, on: false, pitch, velocity: 0 });
@@ -334,7 +360,7 @@ impl Disk {
     fn is_instrument(&self, index: usize) -> bool {
         match self.feeds[index].plugin.and_then(|key| self.plugins.get(&key)) {
             Some((_, client)) => client.loaded.instrument,
-            None => !self.feeds[index].note_ons.is_empty(),
+            None => !self.feeds[index].note_ons.is_empty() || self.feeds[index].by_hand,
         }
     }
 
@@ -364,12 +390,12 @@ impl Disk {
         }
         let instrument = self.is_instrument(index);
         if instrument && !warm {
-            self.run_plugin(index, start, block);
+            self.run_plugin(index, start, block, true);
         }
         let feed = &mut self.feeds[index];
         feed.fx.process(block, feed.low_cut_hz, feed.denoise, &feed.tone);
         if !instrument && !warm {
-            self.run_plugin(index, start, block);
+            self.run_plugin(index, start, block, true);
         }
         self.raw = raw;
     }
@@ -435,6 +461,36 @@ impl Disk {
         self.block = block;
     }
 
+    /// While nothing plays: keeps the rings of the tracks played by hand
+    /// filled with what their instruments sound, without moving along the timeline.
+    fn fill_idle(&mut self) {
+        for index in 0..self.feeds.len() {
+            if !self.feeds[index].by_hand {
+                continue;
+            }
+            let frames = (self.feeds[index].producer.slots() / 2).min(MAX_BLOCK);
+            if frames == 0 {
+                continue;
+            }
+            let mut block = std::mem::take(&mut self.block);
+            block.clear();
+            block.resize(frames * 2, 0.0);
+            if self.is_instrument(index) {
+                let at = self.feeds[index].next;
+                self.run_plugin(index, at, &mut block, false);
+            }
+            let feed = &mut self.feeds[index];
+            feed.fx.process(&mut block, feed.low_cut_hz, feed.denoise, &feed.tone);
+            if let Ok(mut chunk) = feed.producer.write_chunk(frames * 2) {
+                let (a, b) = chunk.as_mut_slices();
+                a.copy_from_slice(&block[..a.len()]);
+                b.copy_from_slice(&block[a.len()..]);
+                chunk.commit_all();
+            }
+            self.block = block;
+        }
+    }
+
     fn fill_all(&mut self, limit: usize) {
         // The voices first: the tracks that duck under them follow.
         for voices in [true, false] {
@@ -459,8 +515,10 @@ impl Disk {
         }
         // (Positions start anew: what was heard of the voices before does not apply.)
         self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
+        let hand = hand_frames(self.shared.quantum.load(Ordering::Relaxed));
+        self.built_at = pos;
         for track in &self.mix.tracks {
-            let (producer, ring) = rtrb::RingBuffer::new(RING_FRAMES * 2);
+            let (producer, ring) = rtrb::RingBuffer::new(if track.by_hand { hand } else { RING_FRAMES } * 2);
             let live = Live::new(track.gain, track.pan, track.mute);
             live.set_sends(track.reverb, track.echo);
             // An unheard track keeps its own fader for what it does to
@@ -468,7 +526,7 @@ impl Disk {
             let heard = if track.unheard { Live::new(0.0, 0.0, true) } else { live.clone() };
             let mut fader: Box<dyn Processor> = Box::new(Fader::new(heard.clone()));
             fader.prepare(SAMPLE_RATE, MAX_BLOCK);
-            tracks.push(Track { ring, chain: vec![fader], live: heard });
+            tracks.push(Track { ring, chain: vec![fader], live: heard, by_hand: track.by_hand });
             self.feeds.push(Feed {
                 producer,
                 clips: track.clips.clone(),
@@ -481,6 +539,8 @@ impl Disk {
                 ducked_db: 0.0,
                 plugin: track.plugin.as_ref().map(|p| p.key).filter(|key| self.plugins.contains_key(key)),
                 awaiting: track.plugin.as_ref().is_some_and(|p| self.loading.contains_key(&p.key)),
+                by_hand: track.by_hand,
+                pending: Vec::new(),
                 note_ons: track.notes.iter().map(|n| (n.start, n.pitch, n.velocity)).collect(),
                 note_offs: {
                     let mut ends: Vec<(i64, u8)> = track.notes.iter().map(|n| (n.start + n.len, n.pitch)).collect();
@@ -511,19 +571,33 @@ impl Disk {
         let sends = self.mix.tracks.iter().any(|t| t.reverb > 0.0 || t.echo > 0.0);
         let space = sends.then(|| crate::space::Space::new(self.mix.echo_samples as usize));
         let click = self.mix.click;
-        let graph = Box::new(Graph { tracks, master: vec![master, limiter], space, click, start: pos, playing, grain });
+        let by_hand = self.mix.tracks.iter().any(|t| t.by_hand);
+        let graph = Box::new(Graph {
+            tracks,
+            master: vec![master, limiter],
+            space,
+            click,
+            start: pos,
+            playing,
+            grain,
+            by_hand,
+        });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
         self.offered += 1;
         // A grain is filled once, before it is offered; it is not playback.
         self.playing = playing && grain.is_none();
+        self.idle_hand = !self.playing && by_hand;
+        if self.idle_hand {
+            self.fill_idle();
+        }
     }
 
     /// Lets the device rest once the last grain has had its time.
     fn end_grain(&mut self) {
         self.grain_until = None;
         // (The grain's graph stays where it is: it has gone quiet by itself.)
-        if let (false, Some(activate)) = (self.playing, &self.activate) {
+        if let (false, Some(activate)) = (self.playing || self.idle_hand, &self.activate) {
             activate(false);
         }
     }
@@ -565,6 +639,19 @@ impl Disk {
                     let pos = self.shared.clock_pos.load(Ordering::Relaxed)
                         + self.shared.quantum.load(Ordering::Relaxed) as i64;
                     self.rebuild(pos, true, None);
+                } else if self.idle_hand || self.mix.tracks.iter().any(|t| t.by_hand) {
+                    // Nothing plays, but a track is (or was) played by hand:
+                    // its ring and the device come and go with it.
+                    self.grain_until = None;
+                    self.rebuild(self.built_at, false, None);
+                    if let Some(activate) = &self.activate {
+                        activate(self.idle_hand);
+                    }
+                }
+            }
+            Control::Note { track, on, pitch, velocity } => {
+                if let Some(feed) = self.feeds.get_mut(track).filter(|f| f.by_hand) {
+                    feed.pending.push(sg_plug::NoteEvent { offset: 0, on, pitch, velocity });
                 }
             }
             Control::Play(pos) => {
@@ -594,7 +681,10 @@ impl Disk {
                     if let Some(policy) = realtime_policy() {
                         self.shared.sched_policy.store(policy, Ordering::Relaxed);
                     }
-                    activate(false);
+                    // (A track played by hand keeps the device awake.)
+                    if !self.idle_hand {
+                        activate(false);
+                    }
                 }
                 self.shared.running.store(false, Ordering::Relaxed);
                 // A good moment: nothing is heard that this could disturb.
@@ -629,6 +719,9 @@ impl Disk {
             Control::Settle(reply) if !self.loading.is_empty() => self.settles.push(reply),
             Control::Settle(reply) => {
                 self.fill_all(usize::MAX);
+                if self.idle_hand {
+                    self.fill_idle();
+                }
                 // With a live backend, wait until the callback has the newest graph.
                 let deadline = Instant::now() + Duration::from_millis(500);
                 while self.activate.is_some()
@@ -665,6 +758,8 @@ pub fn run(
         master: Live::new(1.0, 0.0, false),
         files: HashMap::new(),
         playing: false,
+        idle_hand: false,
+        built_at: 0,
         grain_until: None,
         block: Vec::new(),
         raw: Vec::new(),
@@ -689,7 +784,7 @@ pub fn run(
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-        } else if disk.playing {
+        } else if disk.playing || disk.idle_hand {
             match control.recv_timeout(FILL_INTERVAL) {
                 Ok(message) => Some(message),
                 Err(RecvTimeoutError::Timeout) => None,
@@ -708,6 +803,8 @@ pub fn run(
         }
         if disk.playing {
             disk.fill_all(usize::MAX);
+        } else if disk.idle_hand {
+            disk.fill_idle();
         }
         // Free graphs the callback has finished with.
         drop(disk.slot.collect());

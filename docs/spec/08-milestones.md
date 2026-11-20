@@ -436,12 +436,25 @@ chain second version, M16 mixing and mastering.
     window, its timers and descriptors). Checked with Surge XT's CLAP
     build: the tests that pass for VST3 pass for it, and in the app a
     note clip played through it into a sound export.
+  - Playing by hand (2026-11-21): the instrument of the open piano
+    roll's track is played with the computer keyboard ("Keyboard" in the
+    roll's head), with the mouse on the keys at its left, and a placed
+    note is heard. "Record" writes what is played while the timeline
+    plays into the clip; "Quantise" puts note starts on the grid; the
+    selected note's velocity is a field in the head. In the engine the
+    track is buffered three device blocks ahead instead of half a second
+    (`TrackMix::by_hand`) and sounds while nothing plays. Checked: an
+    engine test (a key is heard within 960 frames, playing or not, and
+    written notes still start where they belong), a headless flow, and
+    in the app through PipeWire into a null sink: a key while stopped and
+    one while playing were both in the recording of the sink, the second
+    written into the clip at tick 1910 for a key pressed one second
+    after the start (1920), 0 xruns and underruns. Not checked: how the
+    delay feels under the fingers, and a slow plugin on the short buffer.
   - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
-    as VST3 or CLAP too); playing notes from the computer keyboard (the
-    engine reads half a second ahead, so a note played by hand would
-    sound that late: it needs a live path of its own);
-    velocity editing; copy and paste of notes; plugin parameters as
-    keyframes; more than one plugin per track.
+    as VST3 or CLAP too); a MIDI keyboard as input; copy and paste of
+    notes; plugin parameters as keyframes; more than one plugin per
+    track.
   - Slow and hung plugins (2026-11-21): a plugin starts on a thread of
     its own and joins the sound when it is ready (a sample library takes
     its time; the other tracks play meanwhile, and an export waits for

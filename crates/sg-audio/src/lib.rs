@@ -101,6 +101,10 @@ pub struct TrackMix {
     /// and to the shared echo, as factors; 0 is none.
     pub reverb: f32,
     pub echo: f32,
+    /// Played by hand ([`Engine::note`]): the track is buffered only a few
+    /// milliseconds ahead instead of half a second, so that a note is
+    /// heard when its key is pressed, and it sounds while nothing plays.
+    pub by_hand: bool,
 }
 
 /// A plugin to run for a track, in a process of its own (crate `sg-plug`).
@@ -300,6 +304,13 @@ impl Engine {
         self.send(disk::Control::Play(pos));
     }
 
+    /// A key pressed or let go on the instrument of track `track` (its
+    /// place in the mix), which must be [`TrackMix::by_hand`]: heard a few
+    /// milliseconds later, playing or not.
+    pub fn note(&self, track: usize, on: bool, pitch: u8, velocity: u8) {
+        self.send(disk::Control::Note { track, on, pitch, velocity });
+    }
+
     /// Stops at the position being heard and returns it.
     pub fn pause(&self) -> i64 {
         let pos = self.position();
@@ -419,6 +430,7 @@ impl TrackMix {
             unheard: false,
             reverb: 0.0,
             echo: 0.0,
+            by_hand: false,
         }
     }
 }
@@ -427,6 +439,27 @@ impl TrackMix {
 #[derive(Clone)]
 pub struct Meters {
     shared: Arc<Shared>,
+}
+
+/// Plays the instruments of tracks by hand, from any thread, without
+/// going through whoever owns the [`Engine`].
+#[derive(Clone)]
+pub struct Keys {
+    control: crossbeam_channel::Sender<disk::Control>,
+    shared: Arc<Shared>,
+}
+
+impl Keys {
+    /// As [`Engine::note`].
+    pub fn note(&self, track: usize, on: bool, pitch: u8, velocity: u8) {
+        let _ = self.control.send(disk::Control::Note { track, on, pitch, velocity });
+    }
+
+    /// The timeline sample being heard right now, while something plays:
+    /// where a key pressed now belongs.
+    pub fn heard(&self) -> Option<i64> {
+        self.shared.running.load(Ordering::Relaxed).then(|| heard(&self.shared))
+    }
 }
 
 impl Meters {
@@ -455,5 +488,9 @@ impl Meters {
 impl Engine {
     pub fn meters(&self) -> Meters {
         Meters { shared: self.shared.clone() }
+    }
+
+    pub fn keys(&self) -> Keys {
+        Keys { control: self.control.clone(), shared: self.shared.clone() }
     }
 }

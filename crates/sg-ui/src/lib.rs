@@ -178,6 +178,15 @@ pub enum Command {
         /// The PipeWire node to record from; `None`: the system's default input.
         source: Option<String>,
     },
+    /// The audio track whose instrument is played by hand from now on, or none.
+    Hand(Option<sg_core::TrackId>),
+    /// A key going down or up on that instrument. If the timeline plays,
+    /// [`Shell::note_heard`] is told where it was heard.
+    Note {
+        on: bool,
+        pitch: u8,
+        velocity: u8,
+    },
     /// Find the inputs sound can be recorded from; answered with [`Shell::inputs_listed`].
     ListInputs,
     /// Remember the input for the next start of the program.
@@ -261,6 +270,10 @@ pub enum DevStep {
     NoteClip(usize, i64),
     /// A note in the newest note clip of the n-th audio track: pitch, start and length in ticks.
     Note(usize, u8, i64, i64),
+    /// A key of the open piano roll's instrument going down (true) or up, as if played by hand.
+    Hand(u8, bool),
+    /// Switch the piano roll's "Record" (what is played is written into the clip).
+    RecordNotes,
     /// Put the plugin at this path on the n-th audio track (empty path:
     /// take it off), or with `window` as the path show its window.
     Plugin(usize, String),
@@ -317,6 +330,8 @@ pub struct Shell {
     /// Recorded takes being imported: the file and the timeline sample it starts at.
     takes: Vec<(PathBuf, i64)>,
     spent_takes: Vec<PathBuf>,
+    /// The track the application was last told is played by hand.
+    hand: Option<sg_core::TrackId>,
     /// The key reference is showing.
     help: bool,
     /// Undo group of the angle switches of the playback pass in progress.
@@ -396,6 +411,8 @@ impl Shell {
     pub fn frame(&mut self, ui: &mut egui::Ui, now_unix: u64, view: &ViewerState) -> Vec<Command> {
         let ctx = ui.ctx().clone();
         let mut commands = Vec::new();
+        // Before the shortcuts: while the piano roll's "Keyboard" is on, the letter keys are a piano.
+        self.editor.piano.take_keys(&ctx);
         for action in keymap::take_actions(&ctx, self.scope()) {
             self.act(action, &mut commands);
         }
@@ -555,6 +572,7 @@ impl Shell {
             self.assign_scenario(asset, choice, &mut commands);
         }
         self.colour_requests(colour_requests, &mut commands);
+        self.hand_commands(&mut commands);
         for request in std::mem::take(&mut self.editor.input_requests) {
             commands.push(match request {
                 editor::InputRequest::List => Command::ListInputs,
@@ -834,6 +852,13 @@ impl Shell {
 
     /// Runs a scripted step through the same paths as keys and clicks.
     pub fn dev(&mut self, step: DevStep) -> Vec<Command> {
+        let mut commands = self.dev_step(step);
+        // (Scripted runs draw no frames: what a frame would pass on is passed on here.)
+        self.hand_commands(&mut commands);
+        commands
+    }
+
+    fn dev_step(&mut self, step: DevStep) -> Vec<Command> {
         let mut commands = Vec::new();
         match step {
             DevStep::Filter(text) => self.library.filter = text,
@@ -963,6 +988,8 @@ impl Shell {
                     }
                 }
             }
+            DevStep::Hand(pitch, on) => self.editor.piano.play(pitch, on),
+            DevStep::RecordNotes => self.editor.piano.toggle_record(),
             DevStep::Note(n, pitch, start, len) => {
                 if let Some(session) = &mut self.session {
                     let project = session.project().clone();
@@ -1552,6 +1579,30 @@ impl Shell {
         }
         self.takes.push((path.clone(), start));
         self.incoming(Incoming::Paths(vec![path]))
+    }
+
+    /// Tells the application which track's instrument is played by hand
+    /// (that of the open note clip) and passes on the keys played since
+    /// the last call.
+    fn hand_commands(&mut self, commands: &mut Vec<Command>) {
+        let hand = self.editor.piano.hand().filter(|_| self.session.is_some());
+        if hand != self.hand {
+            self.hand = hand;
+            commands.push(Command::Hand(hand));
+        }
+        for played in std::mem::take(&mut self.editor.piano.played) {
+            if self.hand.is_some() {
+                commands.push(Command::Note { on: played.on, pitch: played.pitch, velocity: played.velocity });
+            }
+        }
+    }
+
+    /// A key played by hand was heard at this timeline sample (the
+    /// timeline was playing): the piano roll writes it down if it records.
+    pub fn note_heard(&mut self, on: bool, pitch: u8, at: i64) {
+        if let Some(session) = &mut self.session {
+            self.editor.piano.heard(session, on, pitch, at, &mut self.error);
+        }
     }
 
     /// The inputs sound can be recorded from, (PipeWire name, label).

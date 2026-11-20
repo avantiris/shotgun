@@ -96,6 +96,12 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             };
             Step::Dev(DevStep::Note(track.parse()?, pitch.parse()?, start.parse()?, len.parse()?))
         }
+        // hand:<pitch>:<on|off> plays a key of the open piano roll's instrument; recordnotes switches its "Record".
+        "hand" => {
+            let (pitch, state) = arg.split_once(':').ok_or_else(|| anyhow!("hand needs <pitch>:<on|off>"))?;
+            Step::Dev(DevStep::Hand(pitch.parse()?, state == "on"))
+        }
+        "recordnotes" => Step::Dev(DevStep::RecordNotes),
         // plugin:<audio track>:<path of the bundle | window | (empty)>
         "plugin" => {
             let (track, path) = arg.split_once(':').ok_or_else(|| anyhow!("plugin needs <track>:<path>"))?;

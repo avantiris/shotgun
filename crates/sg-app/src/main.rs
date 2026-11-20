@@ -535,6 +535,16 @@ impl App {
                         }
                     }
                 }
+                Command::Hand(track) => {
+                    if let Some(player) = &self.player {
+                        player.set_hand(track.map(|t| t.0));
+                    }
+                }
+                Command::Note { on, pitch, velocity } => {
+                    if let Some(at) = self.player.as_ref().and_then(|p| p.note(on, pitch, velocity)) {
+                        self.shell.note_heard(on, pitch, at);
+                    }
+                }
                 Command::ListInputs => {
                     self.reads.run(move || {
                         let inputs = sg_play::inputs().unwrap_or_default();

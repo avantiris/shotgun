@@ -1599,3 +1599,101 @@ fn a_song_is_exported_as_sound_only_with_its_tracks_and_a_loudness() {
     harness.run_steps(2);
     assert!(harness.query_by_label_contains("Loudness -14.0 LUFS").is_some());
 }
+
+#[test]
+fn the_instrument_is_played_with_the_keyboard_and_what_is_played_is_recorded() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> Vec<sg_core::Note> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        let clip = track.clips.iter().next().unwrap();
+        track.notes.get(&clip.id).map(|n| Vec::clone(n)).unwrap_or_default()
+    };
+    let played = |harness: &Harness<'_, App>| -> Vec<(bool, u8)> {
+        let all = harness.state().commands.iter();
+        all.filter_map(|c| if let Command::Note { on, pitch, .. } = c { Some((*on, *pitch)) } else { None }).collect()
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    // With the piano roll open, its track's instrument is the one played by hand.
+    let track = harness.state().shell.session().unwrap().project().sequences[0].tracks[1].id;
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Hand(Some(t)) if *t == track)));
+    // Without "Keyboard", the letter keys stay shortcuts and play nothing.
+    harness.key_press(Key::A);
+    harness.run_steps(2);
+    assert_eq!(played(&harness), []);
+    // With it: the home row is the white keys from middle C, the row above the black ones.
+    click(&mut harness, "Keyboard");
+    harness.key_down(Key::A);
+    harness.run_steps(2);
+    harness.key_down(Key::W);
+    harness.run_steps(2);
+    harness.key_up(Key::A);
+    harness.key_up(Key::W);
+    harness.run_steps(2);
+    assert_eq!(played(&harness), [(true, 60), (true, 61), (false, 60), (false, 61)]);
+    // X moves the keyboard up an octave; S would split a clip otherwise, here it is a D.
+    harness.key_press(Key::X);
+    harness.key_press(Key::S);
+    harness.run_steps(2);
+    assert_eq!(played(&harness)[4..], [(true, 74), (false, 74)]);
+    assert_eq!(clips(&harness, 1).len(), 1);
+    // A key at the left of the roll plays its pitch while the button is down.
+    let roll = harness.get_by_label("Piano roll").rect();
+    let key = egui::pos2(roll.left() + 10.0, roll.top() + 90.0);
+    harness.hover_at(key);
+    harness.event(egui::Event::PointerButton {
+        pos: key,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    harness.run_steps(2);
+    assert_eq!(played(&harness).len(), 7);
+    harness.event(egui::Event::PointerButton {
+        pos: key,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    harness.run_steps(2);
+    let by_mouse = played(&harness)[6..].to_vec();
+    assert_eq!(by_mouse, [(true, by_mouse[0].1), (false, by_mouse[0].1)]);
+    // Nothing of this was written down: "Record" is off, and nothing plays.
+    assert_eq!(notes(&harness), []);
+    // Recording: the application says where each key was heard while the timeline played.
+    click(&mut harness, "Record");
+    harness.state_mut().view.playing = true;
+    harness.run_steps(2);
+    let start = clips(&harness, 1)[0].0;
+    // (At 120 a minute a tick is 25 samples.) Half a beat in, a little late, held for a quarter of a beat.
+    harness.state_mut().shell.note_heard(true, 62, start + 12_000 + 100);
+    harness.state_mut().shell.note_heard(false, 62, start + 18_000 + 100);
+    // One played before the clip begins is not part of it.
+    harness.state_mut().shell.note_heard(true, 64, start - 5_000);
+    harness.state_mut().shell.note_heard(false, 64, start - 1_000);
+    harness.run_steps(2);
+    assert_eq!(notes(&harness), [sg_core::Note { start: 484, len: 240, pitch: 62, velocity: 100 }]);
+    // "Quantise" puts it on the grid (sixteenths).
+    harness.state_mut().view.playing = false;
+    harness.run_steps(2);
+    click(&mut harness, "Quantise");
+    assert_eq!(notes(&harness), [sg_core::Note { start: 480, len: 240, pitch: 62, velocity: 100 }]);
+    // Undo: the quantising, then the whole pass.
+    click(&mut harness, "Keyboard");
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness)[0].start, 484);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness), []);
+    // Closing the roll gives the instrument back to the timeline alone.
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(matches!(
+        harness.state().commands.iter().rfind(|c| matches!(c, Command::Hand(_))),
+        Some(Command::Hand(None))
+    ));
+    assert_eq!(harness.state().shell.error_shown(), None);
+}

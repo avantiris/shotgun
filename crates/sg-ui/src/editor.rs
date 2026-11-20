@@ -213,7 +213,7 @@ impl Editor {
         if self.piano.is_open() {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(theme::BG).inner_margin(6.0))
-                .show(ui, |ui| self.piano.ui(ui, session, view.frame, error));
+                .show(ui, |ui| self.piano.ui(ui, session, view.frame, view.playing, error));
             return request;
         }
         let events = egui::CentralPanel::default()

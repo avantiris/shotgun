@@ -1125,20 +1125,11 @@ mod tests {
     fn a_song_rings_out_after_its_last_note_and_what_follows_the_range_is_not_played() {
         let dir = tempfile::tempdir().unwrap();
         let note = |start: i64| sg_audio::NoteSpan { start, len: 12_000, pitch: 60, velocity: 100 };
+        // The second note lies after the exported range.
         let track = sg_audio::TrackMix {
-            clips: Vec::new(),
-            gain: 1.0,
-            pan: 0.0,
-            mute: false,
-            low_cut_hz: 0.0,
-            tone: sg_audio::Tone::default(),
-            denoise: 0.0,
-            plugin: None,
-            // The second note lies after the exported range.
             notes: vec![note(0), note(96_000)],
-            unheard: false,
             reverb: 0.5,
-            echo: 0.0,
+            ..sg_audio::TrackMix::plain(Vec::new())
         };
         let mix = sg_audio::Mix { tracks: vec![track], ..sg_audio::Mix::default() };
         let sequence = Sequence::from(sg_core::SequenceHeader {

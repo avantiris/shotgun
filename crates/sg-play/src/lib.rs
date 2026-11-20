@@ -58,6 +58,8 @@ enum Command {
     SavePlugins(crossbeam_channel::Sender<()>),
     /// The metronome on or off.
     Click(bool),
+    /// The audio track (its id) whose instrument is played by hand, or none.
+    Hand(Option<u64>),
     /// Record from a sound input into this file while playing; ends when playback does.
     Record {
         path: PathBuf,
@@ -99,10 +101,13 @@ struct Shared {
     monitor_generation: AtomicU64,
     /// Angles shown, columns and rows, packed 16 bits each; 0 when there are none.
     monitor_grid: AtomicU64,
+    /// Which track of the mix is played by hand; -1: none.
+    hand: AtomicI64,
 }
 
 pub struct Player {
     meters: sg_audio::Meters,
+    keys: sg_audio::Keys,
     commands: Sender<Command>,
     shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -118,7 +123,7 @@ impl Player {
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Result<Player, AudioError> {
         let audio = Engine::start(backend)?;
-        let meters = audio.meters();
+        let (meters, keys) = (audio.meters(), audio.keys());
         let compositor = Compositor::new(device.clone(), queue.clone(), 1920, 1080);
         let monitor = Compositor::new(device.clone(), queue.clone(), MONITOR_CELL_H * 16 / 9, MONITOR_CELL_H);
         let shared = Arc::new(Shared {
@@ -131,6 +136,7 @@ impl Player {
             monitor: Mutex::new(monitor.output_view().clone()),
             monitor_generation: AtomicU64::new(1),
             monitor_grid: AtomicU64::new(0),
+            hand: AtomicI64::new(-1),
         });
         let (commands, command_rx) = crossbeam_channel::unbounded();
         let (result_tx, result_rx) = crossbeam_channel::unbounded();
@@ -139,6 +145,7 @@ impl Player {
         let mut state = State {
             recording: None,
             click: false,
+            hand: None,
             device,
             queue,
             compositor,
@@ -164,7 +171,7 @@ impl Player {
         };
         let thread =
             std::thread::Builder::new().name("sg-player".into()).spawn(move || state.run(command_rx, result_rx))?;
-        Ok(Player { meters, commands, shared, thread: Some(thread) })
+        Ok(Player { meters, keys, commands, shared, thread: Some(thread) })
     }
 
     fn send(&self, command: Command) {
@@ -286,6 +293,22 @@ impl Player {
         self.send(Command::Click(on));
     }
 
+    /// Names the audio track whose instrument is played by hand with
+    /// [`Player::note`] (`None`: no track). That track is then heard within
+    /// a few milliseconds of a key, also while nothing plays.
+    pub fn set_hand(&self, track: Option<u64>) {
+        self.send(Command::Hand(track));
+    }
+
+    /// A key pressed or let go on the instrument played by hand. Returns
+    /// the timeline sample that was being heard, if something plays: where
+    /// the note belongs when it is written down.
+    pub fn note(&self, on: bool, pitch: u8, velocity: u8) -> Option<i64> {
+        let track = usize::try_from(self.shared.hand.load(Ordering::Relaxed)).ok()?;
+        self.keys.note(track, on, pitch, velocity);
+        self.keys.heard()
+    }
+
     /// Starts playing and recording from `source` (`None`: the default
     /// input) into the file at `path`. The recording ends when playback
     /// is stopped; the take is then found with [`Player::take_recordings`].
@@ -329,6 +352,8 @@ struct State {
     recording: Option<sg_audio::record::Recording>,
     /// The metronome is on.
     click: bool,
+    /// The track played by hand (its id).
+    hand: Option<u64>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     compositor: Compositor,
@@ -379,8 +404,21 @@ impl State {
     /// The audio mix of the open sequence.
     fn mix(&self) -> Mix {
         match self.project.as_ref().and_then(|o| o.sequence().map(|s| (o, s))) {
-            Some((open, sequence)) => Mix { click: self.click(sequence), ..audio_mix(&open.root, sequence) },
-            None => Mix::default(),
+            Some((open, sequence)) => {
+                let mut mix = Mix { click: self.click(sequence), ..audio_mix(&open.root, sequence) };
+                // The tracks of the mix are the audio tracks, in order.
+                let audio = sequence.tracks.iter().filter(|t| t.kind == TrackKind::Audio);
+                let hand = self.hand.and_then(|id| audio.clone().position(|t| t.id.0 == id));
+                if let Some(track) = hand.and_then(|index| mix.tracks.get_mut(index)) {
+                    track.by_hand = true;
+                }
+                self.shared.hand.store(hand.map_or(-1, |index| index as i64), Ordering::Relaxed);
+                mix
+            }
+            None => {
+                self.shared.hand.store(-1, Ordering::Relaxed);
+                Mix::default()
+            }
         }
     }
 
@@ -546,6 +584,10 @@ impl State {
             }
             Command::Click(on) => {
                 self.click = on;
+                self.audio.set_mix(self.mix());
+            }
+            Command::Hand(track) => {
+                self.hand = track;
                 self.audio.set_mix(self.mix());
             }
             Command::PluginEditor(key) => self.audio.open_plugin_editor(key),
@@ -962,6 +1004,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
             }),
             notes: track_notes(sequence, track),
             unheard: false,
+            by_hand: false,
             // (Squared: the lower half of the control is the useful, quiet part.)
             reverb: track.mix.reverb * track.mix.reverb,
             echo: track.mix.echo * track.mix.echo,

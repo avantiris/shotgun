@@ -175,6 +175,8 @@ pub struct Track {
     pub chain: Vec<Box<dyn Processor>>,
     /// The track's live settings: its sends are read from them.
     pub live: Arc<Live>,
+    /// Played by hand: heard also while nothing plays.
+    pub by_hand: bool,
 }
 
 pub struct Graph {
@@ -190,6 +192,8 @@ pub struct Graph {
     /// A grain for scrubbing: only this many frames are played, faded at
     /// both ends, and the clock stays where it is.
     pub grain: Option<usize>,
+    /// Some track is played by hand.
+    pub by_hand: bool,
 }
 
 /// Frames over which a grain comes up and goes down (5 ms): no click.
@@ -314,7 +318,9 @@ impl Rt {
         self.shared.callbacks.fetch_add(1, Ordering::Relaxed);
 
         out.fill(0.0);
-        if let (true, Some(graph)) = (playing, self.graph.as_mut()) {
+        // While nothing plays, the tracks played by hand are still heard.
+        let by_hand = self.graph.as_ref().is_some_and(|g| g.by_hand);
+        if let (true, Some(graph)) = (playing || by_hand, self.graph.as_mut()) {
             let transport = Transport { position: self.position, playing };
             let mut dry = false;
             let len = out.len();
@@ -325,6 +331,9 @@ impl Rt {
                     space.to_echo[..block.len()].fill(0.0);
                 }
                 for (index, track) in graph.tracks.iter_mut().enumerate() {
+                    if !playing && !track.by_hand {
+                        continue;
+                    }
                     let scratch = &mut self.scratch[..block.len()];
                     let available = track.ring.slots().min(block.len());
                     if let Ok(chunk) = track.ring.read_chunk(available) {
@@ -373,6 +382,9 @@ impl Rt {
                 }
                 let peak = block.iter().fold(0.0f32, |m, s| m.max(s.abs()));
                 self.shared.master_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
+                if !playing {
+                    continue;
+                }
                 if let (Some(loudness), None) = (self.loudness.add(block), grain) {
                     self.shared.loudness.store(loudness.to_bits(), Ordering::Relaxed);
                 }
@@ -384,7 +396,9 @@ impl Rt {
                     }
                 }
             }
-            if let Some(len) = grain {
+            if !playing {
+                // (Neither the clock nor the grain moves.)
+            } else if let Some(len) = grain {
                 for (i, frame) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                     let at = self.grain_done + i;
                     let left = len.saturating_sub(at);
@@ -396,7 +410,9 @@ impl Rt {
             } else if dry {
                 self.shared.underruns.fetch_add(1, Ordering::Relaxed);
             }
-            self.position += frames as i64;
+            if playing {
+                self.position += frames as i64;
+            }
         }
         let spent = crate::monotonic_ns().saturating_sub(started);
         self.shared.process_max_ns.fetch_max(spent, Ordering::Relaxed);

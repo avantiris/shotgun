@@ -86,6 +86,24 @@ sample-accurate transport.
   half). Draw, move, stretch, delete, velocity lane, the grid above.
 - The computer keyboard plays notes while the piano roll has the focus
   (two rows as a piano), so that nothing has to be drawn blind.
+  As built (2026-11-21, `PROPOSED` in its details): the keyboard is a
+  piano only while "Keyboard" in the piano roll's head is on, because the
+  same keys are the editor's shortcuts otherwise. By position: A S D F G
+  H J K L and the key right of L are the white keys from C, W E T Y U O
+  P the black ones (on the Swiss keyboard the cap Z is the Y of this
+  list), and the two keys at the bottom left (Swiss caps Y and X) move
+  down and up an octave. The keys drawn at the left of the roll play
+  with the mouse, and a note that is placed or carried to another pitch
+  is heard for a moment. With "Record" on, what is played while the
+  timeline plays is written into the clip, where it was heard and as long
+  as it was held; a pass is one undo step. "Quantise" moves every note's
+  start to the nearest grid line.
+- How a played key reaches the ear: the track of the open piano roll is
+  buffered three device blocks ahead (16 ms at the usual block of 256)
+  instead of half a second, and is heard while nothing plays. Its
+  instrument still runs outside the realtime callback (a plugin is a
+  process of its own), so this is the price of that isolation: about
+  16 ms plus the device's own delay from key to sound. `PROPOSED`.
 
 ### Sound
 
