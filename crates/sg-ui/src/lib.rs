@@ -16,6 +16,7 @@ pub mod keymap;
 mod library;
 mod mixer;
 mod perf;
+mod plugins_panel;
 mod session;
 mod stage;
 pub mod theme;
@@ -38,6 +39,7 @@ use crate::history::{HistoryPanel, HistoryRequest};
 pub use crate::keymap::{Action, Scope};
 use crate::library::{Library, LibraryRequest};
 pub use crate::perf::Perf;
+pub use crate::plugins_panel::{NiStep, PluginRequest, PluginUpdate};
 pub use crate::session::Session;
 pub use crate::stage::AnglesView;
 pub use crate::stage::{Transport, ViewerState};
@@ -168,6 +170,9 @@ pub enum Command {
         style: Option<sg_media::voice::VoiceStyle>,
         parts: Vec<(AssetId, i64, i64)>,
     },
+    /// Look for plugins, or run or stop a step of the Native Instruments
+    /// set-up; answered with [`Shell::plugins_update`].
+    Plugins(PluginRequest),
     /// Read the global folder; answered with [`Shell::global_listed`].
     ListGlobal,
     /// Copy an asset of the project into the global folder, then read the folder again.
@@ -232,6 +237,9 @@ pub enum DevStep {
     Song,
     /// Give the sequence a tempo in beats per minute (0: none), four to the bar.
     Bars(f32),
+    /// The plugins popover: `open`, or a step of the Native Instruments
+    /// set-up (`setup`, `launch`, `bridge`).
+    Plugins(String),
     /// Listen to the voice on the n-th audio track and set its strip up.
     Voice(usize),
     /// Global assets: `make` copies the selected asset there, `tab` shows
@@ -274,6 +282,7 @@ pub struct Shell {
     error: Option<String>,
     history: HistoryPanel,
     export: ExportPanel,
+    plugins: plugins_panel::PluginsPanel,
     playing: bool,
     /// Files dropped on the timeline: where the next imported assets go
     /// (frame, track row) and how many imports are still expected there.
@@ -417,6 +426,10 @@ impl Shell {
                 self.editor.assets.drop_overlay(&ctx);
                 match request {
                     Some(EditorRequest::Close) => self.act(Action::CloseProject, &mut commands),
+                    Some(EditorRequest::Plugins) => {
+                        self.plugins.open();
+                        commands.push(Command::Plugins(PluginRequest::Scan));
+                    }
                     Some(EditorRequest::Tempo(tempo)) => self.set_tempo(tempo),
                     Some(EditorRequest::CutsToBeats) => self.programme_action(true),
                     Some(EditorRequest::WhipAll) => self.programme_action(false),
@@ -503,6 +516,12 @@ impl Shell {
         }
         self.colour_requests(colour_requests, &mut commands);
         let gif_range = self.gif_range();
+        if let Some(request) = self.plugins.ui(&ctx) {
+            if let PluginRequest::Run(step) = request {
+                self.plugins.started(step);
+            }
+            commands.push(Command::Plugins(request));
+        }
         match self.export.ui(&ctx, gif_range) {
             Some(ExportAction::Start(request)) => self.start_export(request, &mut commands),
             Some(ExportAction::Cancel) => commands.push(Command::CancelExport),
@@ -576,6 +595,7 @@ impl Shell {
                     || std::mem::take(&mut self.help)
                     || self.history.cancel()
                     || self.export.cancel()
+                    || self.plugins.cancel()
                     || self.editor.cancel()
                 {
                     return;
@@ -847,6 +867,19 @@ impl Shell {
             DevStep::Programme(beats) => self.programme_action(beats),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
+            DevStep::Plugins(what) => {
+                let request = match what.as_str() {
+                    "setup" => PluginRequest::Run(NiStep::Setup),
+                    "launch" => PluginRequest::Run(NiStep::Launch),
+                    "bridge" => PluginRequest::Run(NiStep::Bridge),
+                    _ => PluginRequest::Scan,
+                };
+                self.plugins.open();
+                if let PluginRequest::Run(step) = request {
+                    self.plugins.started(step);
+                }
+                commands.push(Command::Plugins(request));
+            }
             DevStep::Voice(n) => {
                 if let Some(session) = &self.session {
                     let track = session.project().sequences.first().and_then(|s| {
@@ -1072,6 +1105,11 @@ impl Shell {
             }
             Err(e) => self.error = Some(e.to_string()),
         }
+    }
+
+    /// News from the plugin jobs: a line of a running step, what was found, the end of a step.
+    pub fn plugins_update(&mut self, update: PluginUpdate) {
+        self.plugins.update(update);
     }
 
     /// Whether the mark of copied clips could be put on the clipboard.

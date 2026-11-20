@@ -49,6 +49,7 @@ nix develop --command bash scripts/bench-m4.sh        # M4: UI frame time, 10 to
 nix develop --command bash scripts/bench-m5.sh        # M5: three 4K60 layers playing
 nix develop --command bash scripts/bench-m6.sh        # M6: export speed, outputs probed
 nix develop --command bash scripts/check.sh           # fmt + clippy + tests; run before every commit
+nix build                                             # the packaged program with every tool it runs (flake.nix)
 ```
 
 The binary is `shotgun` (`$CARGO_TARGET_DIR/release/shotgun --help`).

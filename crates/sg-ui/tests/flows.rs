@@ -1288,3 +1288,77 @@ fn a_title_is_turned_sized_and_moved_with_its_handles_in_the_viewer() {
     let (_, _, x, y) = props(&harness);
     assert!(x > 0.03 && y > 0.02, "{x} {y}");
 }
+
+#[test]
+fn the_plugins_popover_lists_plugins_and_walks_through_the_native_instruments_set_up() {
+    use sg_project::plugins::{Format, NiState, Plugin};
+    use sg_ui::{NiStep, PluginRequest, PluginUpdate};
+    let mut harness = editor();
+    let asked = |harness: &Harness<'_, App>| -> Vec<PluginRequest> {
+        harness
+            .state()
+            .commands
+            .iter()
+            .filter_map(|c| if let Command::Plugins(r) = c { Some(*r) } else { None })
+            .collect()
+    };
+    // The button in the top bar opens it and has the folders searched.
+    click(&mut harness, "Plugins");
+    assert_eq!(asked(&harness), [PluginRequest::Scan]);
+    let state = |access: bool, installed: &[&str], bridged: &[&str]| NiState {
+        tools: true,
+        prefix: "/disk/shotgun/_wine-ni".into(),
+        prefix_ready: access,
+        access,
+        installed: installed.iter().map(|s| (*s).to_owned()).collect(),
+        bridged: bridged.iter().map(|s| (*s).to_owned()).collect(),
+    };
+    let plugin = |name: &str, bridged: bool| Plugin {
+        name: name.to_owned(),
+        path: format!("/home/x/.vst3/{name}.vst3").into(),
+        format: Format::Vst3,
+        bridged,
+    };
+    let found = |harness: &mut Harness<'_, App>, plugins: Vec<Plugin>, ni: NiState| {
+        harness.state_mut().shell.plugins_update(PluginUpdate::Found { plugins, ni });
+        harness.run_steps(3);
+    };
+    // Nothing set up yet: one native plugin is listed; step one can be started, the others not yet.
+    found(&mut harness, vec![plugin("Surge XT", false)], state(false, &[], &[]));
+    assert!(harness.query_by_label("Surge XT").is_some());
+    assert!(harness.query_by_label("NATIVE INSTRUMENTS (KONTAKT)").is_some());
+    click(&mut harness, "Open Native Access");
+    assert_eq!(asked(&harness).len(), 1, "a step whose turn has not come does nothing");
+    click(&mut harness, "Install Native Instruments");
+    assert_eq!(asked(&harness).last(), Some(&PluginRequest::Run(NiStep::Setup)));
+    // While it runs its lines are shown and it can be stopped.
+    harness.state_mut().shell.plugins_update(PluginUpdate::Line("Creating the Wine prefix...".to_owned()));
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Creating the Wine prefix...").is_some());
+    click(&mut harness, "Stop");
+    assert_eq!(asked(&harness).last(), Some(&PluginRequest::Stop));
+    // Done: step two opens Native Access; after it, what was installed is named and step three bridges it.
+    harness.state_mut().shell.plugins_update(PluginUpdate::Finished(Ok(())));
+    found(&mut harness, vec![plugin("Surge XT", false)], state(true, &[], &[]));
+    click(&mut harness, "Open Native Access");
+    assert_eq!(asked(&harness).last(), Some(&PluginRequest::Run(NiStep::Launch)));
+    harness.state_mut().shell.plugins_update(PluginUpdate::Finished(Ok(())));
+    found(&mut harness, vec![plugin("Surge XT", false)], state(true, &["Kontakt 8"], &[]));
+    click(&mut harness, "Find the installed plugins");
+    assert_eq!(asked(&harness).last(), Some(&PluginRequest::Run(NiStep::Bridge)));
+    harness.state_mut().shell.plugins_update(PluginUpdate::Finished(Ok(())));
+    found(
+        &mut harness,
+        vec![plugin("Kontakt 8", true), plugin("Surge XT", false)],
+        state(true, &["Kontakt 8"], &["Kontakt 8"]),
+    );
+    assert!(harness.query_by_label("Kontakt 8").is_some());
+    assert!(harness.query_by_label("VST3, Windows through the bridge").is_some());
+    // A step that fails says why; Esc closes the popover.
+    harness.state_mut().shell.plugins_update(PluginUpdate::Finished(Err("ni failed: no network".to_owned())));
+    harness.run_steps(3);
+    assert!(harness.query_by_label("ni failed: no network").is_some());
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("PLUGINS").is_none());
+}

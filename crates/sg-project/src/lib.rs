@@ -11,6 +11,7 @@ pub mod import;
 mod journal;
 mod layout;
 mod library;
+pub mod plugins;
 mod save;
 mod writer;
 

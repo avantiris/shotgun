@@ -74,6 +74,8 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 enum UserEvent {
+    /// News from a plugin job.
+    Plugins(sg_ui::PluginUpdate),
     /// A track's voice was listened to.
     Voice {
         root: PathBuf,
@@ -176,6 +178,8 @@ struct App {
     /// Small reads for the UI (posters), kept off the project I/O queue.
     reads: Serial,
     importer: Option<Importer>,
+    /// Stops the step of the Native Instruments set-up that is running.
+    plugin_step: Option<sg_media::Cancel>,
     /// Running imports and when each was requested.
     imports: HashMap<u64, Instant>,
     wl: Option<WlData>,
@@ -517,6 +521,49 @@ impl App {
                             Transport::Toggle => player.toggle(),
                             Transport::Seek(frame) => player.seek(frame),
                             Transport::Step(frames) => player.step(frames),
+                        }
+                    }
+                }
+                Command::Plugins(request) => {
+                    use sg_project::plugins;
+                    use sg_ui::{NiStep, PluginRequest, PluginUpdate};
+                    let found = move |proxy: &EventLoopProxy<UserEvent>, library: &Path| {
+                        let update = PluginUpdate::Found {
+                            plugins: plugins::scan(&plugins::folders()),
+                            ni: plugins::ni_state(library),
+                        };
+                        let _ = proxy.send_event(UserEvent::Plugins(update));
+                    };
+                    match request {
+                        PluginRequest::Stop => {
+                            if let Some(cancel) = &self.plugin_step {
+                                cancel.cancel();
+                            }
+                        }
+                        PluginRequest::Scan => {
+                            self.reads.run(move || found(&proxy, &library));
+                        }
+                        PluginRequest::Run(step) => {
+                            let cancel = sg_media::Cancel::new();
+                            self.plugin_step = Some(cancel.clone());
+                            // Its own thread: a step runs for minutes (an installer, or Native Access while it is open).
+                            let spawned = std::thread::Builder::new().name("sg-plugins".into()).spawn(move || {
+                                let prefix = plugins::ni_prefix(&library);
+                                let line = |text: &str| {
+                                    let _ = proxy.send_event(UserEvent::Plugins(PluginUpdate::Line(text.to_owned())));
+                                };
+                                let result = match step {
+                                    NiStep::Setup => plugins::ni_setup(&prefix, &cancel, line),
+                                    NiStep::Launch => plugins::ni_launch(&prefix, &cancel, line),
+                                    NiStep::Bridge => plugins::bridge(&prefix, &cancel, line),
+                                };
+                                let finished = PluginUpdate::Finished(result.map_err(|e| e.to_string()));
+                                let _ = proxy.send_event(UserEvent::Plugins(finished));
+                                found(&proxy, &library);
+                            });
+                            if let Err(e) = spawned {
+                                self.shell.plugins_update(PluginUpdate::Finished(Err(e.to_string())));
+                            }
                         }
                     }
                 }
@@ -988,6 +1035,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Problem(message) => self.shell.report_error(message),
             UserEvent::ClipsOffered(offered) => self.shell.clips_offered(offered),
+            UserEvent::Plugins(update) => self.shell.plugins_update(update),
             UserEvent::Global(result, news) => {
                 self.shell.global_listed(result, news);
                 self.job_done();
@@ -1188,6 +1236,7 @@ fn main() -> anyhow::Result<()> {
         reads: Serial::spawn("sg-reads")?,
         importer: Some(importer),
         imports: HashMap::new(),
+        plugin_step: None,
         wl: None,
         player: None,
         viewer_texture: None,

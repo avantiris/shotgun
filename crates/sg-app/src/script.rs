@@ -83,6 +83,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "tempo" => Step::Dev(DevStep::Tempo(need()?.parse()?)),
         "bars" => Step::Dev(DevStep::Bars(need()?.parse()?)),
         "voice" => Step::Dev(DevStep::Voice(need()?.parse()?)),
+        "plugins" => Step::Dev(DevStep::Plugins(need()?)),
         "angle" => Step::Dev(DevStep::Act(Action::Angle(need()?.parse()?))),
         "mix" => {
             // mix:<audio track number or master>:<field>=<value>

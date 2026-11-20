@@ -17,6 +17,8 @@ use crate::timeline::Timeline;
 
 pub enum EditorRequest {
     Close,
+    /// Open the plugins popover.
+    Plugins,
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
     SetSize(u32, u32),
@@ -259,6 +261,13 @@ impl Editor {
             {
                 self.colour.open = !self.colour.open;
                 self.mixer.open = false;
+            }
+            if ui
+                .button("Plugins")
+                .on_hover_text("The plugins found on this machine, and the set-up of Native Instruments (Kontakt)")
+                .clicked()
+            {
+                *request = Some(EditorRequest::Plugins);
             }
             for (action, label) in [
                 (Action::Help, "Keys"),
