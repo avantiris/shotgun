@@ -820,6 +820,12 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 threshold_db: track.mix.comp_threshold_db,
                 ratio: track.mix.comp_ratio,
                 deess: track.mix.deess,
+                tune: sg_audio::tune::Tune {
+                    amount: track.mix.tune,
+                    key: track.mix.tune_key,
+                    scale: track.mix.tune_scale,
+                    speed: track.mix.tune_speed,
+                },
             },
         })
         .collect();

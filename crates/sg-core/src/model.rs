@@ -194,6 +194,14 @@ pub struct TrackSettings {
     /// De-esser: how much the S sounds of a voice are turned down, 0 (off)
     /// to 1 (by up to 12 dB). It finds them itself.
     pub deess: f32,
+    /// Pitch correction: how much (0 off, 1 all the way onto the scale),
+    /// the root of the key (0 is C ... 11 is B), the scale (0 every
+    /// semitone, 1 major, 2 minor) and how fast a note is pulled into
+    /// place (0 at once, 1 gently).
+    pub tune: f32,
+    pub tune_key: u8,
+    pub tune_scale: u8,
+    pub tune_speed: f32,
 }
 
 impl Default for TrackSettings {
@@ -213,6 +221,10 @@ impl Default for TrackSettings {
             comp_threshold_db: 0.0,
             comp_ratio: 3.0,
             deess: 0.0,
+            tune: 0.0,
+            tune_key: 0,
+            tune_scale: 0,
+            tune_speed: 0.2,
         }
     }
 }
@@ -237,6 +249,10 @@ impl TrackSettings {
             comp_threshold_db: finite(self.comp_threshold_db, -60.0, 0.0),
             comp_ratio: if self.comp_ratio.is_finite() { self.comp_ratio.clamp(1.0, 20.0) } else { 3.0 },
             deess: finite(self.deess, 0.0, 1.0),
+            tune: finite(self.tune, 0.0, 1.0),
+            tune_key: self.tune_key % 12,
+            tune_scale: self.tune_scale.min(2),
+            tune_speed: finite(self.tune_speed, 0.0, 1.0),
             ..self
         }
     }

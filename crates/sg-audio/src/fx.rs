@@ -123,11 +123,22 @@ pub struct Tone {
     pub ratio: f32,
     /// De-esser, 0 (off) to 1: how much the S sounds are turned down.
     pub deess: f32,
+    /// Pitch correction.
+    pub tune: crate::tune::Tune,
 }
 
 impl Default for Tone {
     fn default() -> Tone {
-        Tone { low_db: 0.0, mid_db: 0.0, mid_hz: 1000.0, high_db: 0.0, threshold_db: 0.0, ratio: 3.0, deess: 0.0 }
+        Tone {
+            low_db: 0.0,
+            mid_db: 0.0,
+            mid_hz: 1000.0,
+            high_db: 0.0,
+            threshold_db: 0.0,
+            ratio: 3.0,
+            deess: 0.0,
+            tune: crate::tune::Tune { amount: 0.0, key: 0, scale: 0, speed: 0.2 },
+        }
     }
 }
 
@@ -252,12 +263,14 @@ pub struct TrackFx {
     /// The compressor's view of the level, in decibels.
     level_db: f32,
     deesser: DeEsser,
+    corrector: Option<crate::tune::PitchCorrector>,
 }
 
 impl TrackFx {
-    /// `denoise` decides whether the stream will carry the noise
-    /// reduction's delay; it cannot change afterwards.
-    pub fn new(denoise: bool) -> TrackFx {
+    /// `denoise` and `tune` decide whether the stream will carry the delay
+    /// of the noise reduction and of the pitch correction; that cannot
+    /// change afterwards.
+    pub fn new(denoise: bool, tune: bool) -> TrackFx {
         TrackFx {
             filters: [HighPass::default(); 2],
             cut_hz: 0.0,
@@ -265,12 +278,14 @@ impl TrackFx {
             bands: [Band::default(); 3],
             level_db: -120.0,
             deesser: DeEsser::new(),
+            corrector: tune.then(crate::tune::PitchCorrector::new),
         }
     }
 
     /// Frames the output trails the input.
     pub fn delay(&self) -> usize {
-        if self.denoiser.is_some() { LOOKAHEAD } else { 0 }
+        let tune = if self.corrector.is_some() { crate::tune::TUNE_DELAY } else { 0 };
+        tune + if self.denoiser.is_some() { LOOKAHEAD } else { 0 }
     }
 
     /// Treats interleaved stereo in place: low cut (`low_cut_hz` of 0 is
@@ -289,6 +304,10 @@ impl TrackFx {
         self.cut_hz = low_cut_hz;
         if let Some(denoiser) = &mut self.denoiser {
             denoiser.process(block, denoise.clamp(0.0, 1.0));
+        }
+        // On the cleaned voice, before tone and level are shaped.
+        if let Some(corrector) = &mut self.corrector {
+            corrector.process(block, &tone.tune);
         }
         for (band, (kind, hz, db)) in self.bands.iter_mut().zip([
             (0u8, 120.0, tone.low_db),
@@ -375,7 +394,7 @@ mod tests {
             })
             .collect();
         let mut wet = dry.clone();
-        let mut fx = TrackFx::new(false);
+        let mut fx = TrackFx::new(false, false);
         let tone = Tone { deess: 1.0, ..Tone::default() };
         for block in wet.chunks_mut(2 * 480) {
             fx.process(block, 0.0, 0.0, &tone);
@@ -396,7 +415,7 @@ mod tests {
         }
         // Off is off: not a sample changes.
         let mut untouched = dry.clone();
-        TrackFx::new(false).process(&mut untouched, 0.0, 0.0, &Tone::default());
+        TrackFx::new(false, false).process(&mut untouched, 0.0, 0.0, &Tone::default());
         assert_eq!(untouched, dry);
     }
 
@@ -404,7 +423,7 @@ mod tests {
     fn noise_reduction_delay_is_what_the_feed_compensates() {
         let input = voice(48_000 * 2);
         let mut output = input.clone();
-        let mut fx = TrackFx::new(true);
+        let mut fx = TrackFx::new(true, false);
         // Odd block sizes: the stream must not care.
         for block in output.chunks_mut(2 * 333) {
             fx.process(block, 0.0, 1.0, &Tone::default());
@@ -437,7 +456,7 @@ mod tests {
             pair[1] += n;
         }
         let mut treated = noisy.clone();
-        let mut fx = TrackFx::new(true);
+        let mut fx = TrackFx::new(true, false);
         fx.process(&mut treated, 0.0, 1.0, &Tone::default());
         // The stretches where the voice is silent hold only hiss: second
         // half of every third of a second. Compare them after the delay.
@@ -465,7 +484,7 @@ mod tests {
         // Level in decibels relative to the untreated tone.
         let change = |hz: f32, tone: Tone| {
             let mut block = tone_at(hz);
-            TrackFx::new(false).process(&mut block, 0.0, 0.0, &tone);
+            TrackFx::new(false, false).process(&mut block, 0.0, 0.0, &tone);
             20.0 * (rms(block[24_000..].iter().copied()) / rms(tone_at(hz)[24_000..].iter().copied())).log10()
         };
         let low = Tone { low_db: 6.0, ..Tone::default() };
@@ -496,7 +515,7 @@ mod tests {
         let squeeze = Tone { threshold_db: -20.0, ratio: 4.0, ..Tone::default() };
         let peak_db = |amplitude: f32| {
             let mut block = tone(amplitude);
-            TrackFx::new(false).process(&mut block, 0.0, 0.0, &squeeze);
+            TrackFx::new(false, false).process(&mut block, 0.0, 0.0, &squeeze);
             20.0 * block[40_000..].iter().fold(0.0f32, |m, s| m.max(s.abs())).log10()
         };
         // -8 dB in is 12 dB over the threshold: 3 dB of that are let through.
@@ -512,7 +531,7 @@ mod tests {
         };
         let level = |hz: f32| {
             let mut block = tone(hz);
-            TrackFx::new(false).process(&mut block, 100.0, 0.0, &Tone::default());
+            TrackFx::new(false, false).process(&mut block, 100.0, 0.0, &Tone::default());
             rms(block[24_000..].iter().copied())
         };
         assert!(level(25.0) < 0.06, "{}", level(25.0));

@@ -1177,6 +1177,7 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
         steadiness: 0.2,
         bands_db: [-30.0, 6.0, 1.0, 0.0, -12.0, -27.0],
         sibilance_db: Some(-5.0),
+        key: Some((9, true)),
         seconds: 42.0,
     };
     let root = harness.state().root.clone();
@@ -1190,6 +1191,9 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
     // Its S sounds were loud, and the added air makes them sharper: the de-esser is well in.
     assert!(after.deess >= 0.6, "{after:?}");
     assert!(harness.query_by_label("De-esser").is_some());
+    // A rap verse is not pitch-corrected, but the key that was heard (A minor) is set for when it is turned up.
+    assert_eq!((after.tune, after.tune_key, after.tune_scale), (0.0, 9, 2));
+    assert!(harness.query_by_label("Tune").is_some());
     // One undo brings the strip back as it was.
     harness.key_press(Key::Z);
     harness.run_steps(3);

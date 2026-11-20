@@ -362,6 +362,49 @@ impl Mixer {
                              whatever the level of the recording; vowels keep their brightness.",
                         );
                         mix.deess = sharp / 100.0;
+                        // Pitch correction: how much, the key, and how hard.
+                        ui.add_space(4.0);
+                        let mut tune = mix.tune * 100.0;
+                        field(
+                            ui,
+                            "Tune",
+                            egui::DragValue::new(&mut tune).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                            "Pitch correction: moves what is sung onto the notes of the key below. 0 is off, 100 all \
+                             the way. \"Voice\" proposes the key by listening.",
+                        );
+                        mix.tune = tune / 100.0;
+                        const NOTES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                        const SCALES: [&str; 3] = ["all notes", "major", "minor"];
+                        ui.label(RichText::new("Key").size(10.5).color(theme::DIM));
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().button_padding = vec2(4.0, 2.0);
+                            ui.add_space(4.0);
+                            egui::ComboBox::from_id_salt(("tune key", index))
+                                .width(34.0)
+                                .selected_text(NOTES[mix.tune_key as usize % 12])
+                                .show_ui(ui, |ui| {
+                                    for (n, name) in NOTES.iter().enumerate() {
+                                        ui.selectable_value(&mut mix.tune_key, n as u8, *name);
+                                    }
+                                });
+                            egui::ComboBox::from_id_salt(("tune scale", index))
+                                .width(44.0)
+                                .selected_text(SCALES[mix.tune_scale.min(2) as usize])
+                                .show_ui(ui, |ui| {
+                                    for (n, name) in SCALES.iter().enumerate() {
+                                        ui.selectable_value(&mut mix.tune_scale, n as u8, *name);
+                                    }
+                                });
+                        });
+                        let mut speed = mix.tune_speed * 100.0;
+                        field(
+                            ui,
+                            "Tune glide",
+                            egui::DragValue::new(&mut speed).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                            "How a note is pulled into place: 0 at once (the hard, robotic sound of rap hooks), \
+                             100 gently (natural singing).",
+                        );
+                        mix.tune_speed = speed / 100.0;
                         ui.add_space(4.0);
                         field(
                             ui,
@@ -426,6 +469,10 @@ pub fn with_voice(mix: TrackSettings, set: &sg_media::voice::Suggestion) -> Trac
         comp_threshold_db: set.comp_threshold_db,
         comp_ratio: set.comp_ratio,
         deess: set.deess,
+        tune: set.tune,
+        tune_key: set.tune_key,
+        tune_scale: set.tune_scale,
+        tune_speed: set.tune_speed,
         ..mix
     }
 }
@@ -447,6 +494,10 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "threshold" => mix.comp_threshold_db = value,
         "ratio" => mix.comp_ratio = value,
         "deess" => mix.deess = value,
+        "tune" => mix.tune = value,
+        "tunekey" => mix.tune_key = value as u8,
+        "tunescale" => mix.tune_scale = value as u8,
+        "tunespeed" => mix.tune_speed = value,
         "hidden" => mix.hidden = value != 0.0,
         // The n-th preset of the list (0 is Flat).
         "preset" => match PRESETS.get(value as usize) {

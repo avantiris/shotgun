@@ -36,6 +36,9 @@ pub struct VoiceStats {
     /// Energy of the six bands (rumble, body, box, middle, presence, air)
     /// relative to the middle band, in decibels.
     pub bands_db: [f32; 6],
+    /// The key the held notes fit best: root (0 is C, ... 11 is B) and
+    /// whether it is minor. `None` if too little is held to tell.
+    pub key: Option<(u8, bool)>,
     /// How loud the S sounds are against the voice as a whole, in
     /// decibels; `None` if none were found.
     pub sibilance_db: Option<f32>,
@@ -108,6 +111,12 @@ pub struct Suggestion {
     pub comp_ratio: f32,
     /// De-esser, 0 to 1.
     pub deess: f32,
+    /// Pitch correction: how much (0 is off), and the key it corrects to
+    /// (root, and scale: 0 every semitone, 1 major, 2 minor).
+    pub tune: f32,
+    pub tune_key: u8,
+    pub tune_scale: u8,
+    pub tune_speed: f32,
 }
 
 fn db(power: f64) -> f32 {
@@ -172,10 +181,11 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
     let mut gaps: Vec<f32> = level.iter().copied().filter(|l| *l <= floor).collect();
     gaps.sort_by(f32::total_cmp);
     let noise_db = (gaps.len() >= 20).then(|| percentile(&gaps, 0.5).max(-110.0));
-    let (pitch_hz, steadiness) = pitch(samples, &sounding);
+    let (pitch_hz, steadiness, key) = pitch(samples, &sounding);
     let middle = bands[3].max(1e-12);
     let loudness_db = db(power / sounding.len() as f64);
     Some(VoiceStats {
+        key,
         sibilance_db: (sharp_frames >= 5).then(|| db(sharp_power / sharp_frames as f64) - loudness_db),
         loudness_db,
         loud_db: percentile(&peaks, 0.9),
@@ -190,7 +200,7 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
 
 /// The typical pitch and how still it holds, from the autocorrelation of
 /// the sounding frames at a quarter of the sample rate.
-fn pitch(samples: &[f32], sounding: &[usize]) -> (Option<f32>, f32) {
+fn pitch(samples: &[f32], sounding: &[usize]) -> (Option<f32>, f32, Option<(u8, bool)>) {
     const STEP: usize = 4;
     let rate = RATE / STEP;
     // 70 to 400 Hz, in samples of the reduced rate.
@@ -227,15 +237,28 @@ fn pitch(samples: &[f32], sounding: &[usize]) -> (Option<f32>, f32) {
             let other: f32 = small[lag..lag + span].iter().map(|s| s * s).sum();
             cross / (energy * other).sqrt().max(1e-9)
         };
-        let best = (short..=long).map(|lag| (lag, score(lag))).fold((0, 0.0f32), |a, b| if b.1 > a.1 { b } else { a });
-        // The shortest lag that is nearly as good: the pitch, not one of its octaves below.
-        let lag = (short..=long).find(|lag| score(*lag) >= best.1 * 0.93).unwrap_or(best.0);
-        if best.1 >= 0.6 && lag > 0 {
-            found.push((f, rate as f32 / lag as f32));
+        // (One lag more at each end, to see whether an end is a peak. The
+        // window has `long` samples to spare, so the short end is the only bound.)
+        let scores: Vec<f32> = (short - 1..=long).map(score).collect();
+        let best = scores[1..].iter().copied().fold(0.0f32, f32::max);
+        if best < 0.6 {
+            continue;
+        }
+        // The shortest lag nearly as good as the best at which the likeness
+        // peaks: the pitch, not one of its octaves below, and not the slope
+        // just before the peak, which would read every note sharp.
+        let peak = (1..scores.len() - 1)
+            .find(|i| scores[*i] >= best * 0.93 && scores[*i] >= scores[*i - 1] && scores[*i] >= scores[*i + 1]);
+        if let Some(i) = peak {
+            // Between the reduced samples: the top of the curve through three scores.
+            let (l, m, r) = (scores[i - 1], scores[i], scores[i + 1]);
+            let bend = l - 2.0 * m + r;
+            let offset = if bend.abs() > 1e-9 { (0.5 * (l - r) / bend).clamp(-0.5, 0.5) } else { 0.0 };
+            found.push((f, rate as f32 / ((short - 1 + i) as f32 + offset)));
         }
     }
     if found.len() < 5 {
-        return (None, 0.0);
+        return (None, 0.0, None);
     }
     let mut pitches: Vec<f32> = found.iter().map(|(_, hz)| *hz).collect();
     pitches.sort_by(f32::total_cmp);
@@ -243,7 +266,38 @@ fn pitch(samples: &[f32], sounding: &[usize]) -> (Option<f32>, f32) {
         found.windows(2).filter(|w| w[1].0 - w[0].0 <= 4).map(|w| (w[0].1, w[1].1)).collect();
     // Still: within a third of a semitone of the moment before.
     let still = neighbours.iter().filter(|(a, b)| (a / b).ln().abs() < 0.02).count();
-    (Some(percentile(&pitches, 0.5)), still as f32 / neighbours.len().max(1) as f32)
+    // The notes that are held say which key it is in.
+    let mut held = [0.0f32; 12];
+    for (a, b) in neighbours.iter().filter(|(a, b)| (a / b).ln().abs() < 0.02) {
+        let note = 69.0 + 12.0 * ((a * b).sqrt() / 440.0).log2();
+        // (A note sung between two semitones counts for neither.)
+        if (note - note.round()).abs() < 0.35 {
+            held[(note.round() as i32).rem_euclid(12) as usize] += 1.0;
+        }
+    }
+    (Some(percentile(&pitches, 0.5)), still as f32 / neighbours.len().max(1) as f32, key_of(&held))
+}
+
+/// The key whose scale holds most of the held notes; its root and its
+/// fifth count extra, which tells a minor key from the major one with the
+/// same notes. `None` below twenty held moments or if a fifth of them
+/// would lie outside every scale.
+fn key_of(held: &[f32; 12]) -> Option<(u8, bool)> {
+    let total: f32 = held.iter().sum();
+    if total < 20.0 {
+        return None;
+    }
+    let mut best: Option<(f32, f32, u8, bool)> = None;
+    for root in 0..12usize {
+        for (minor, scale) in [(false, [0, 2, 4, 5, 7, 9, 11]), (true, [0, 2, 3, 5, 7, 8, 10])] {
+            let inside: f32 = scale.iter().map(|step| held[(root + step) % 12]).sum();
+            let score = inside + 0.5 * held[root] + 0.25 * held[(root + 7) % 12];
+            if best.is_none_or(|(top, ..)| score > top) {
+                best = Some((score, inside, root as u8, minor));
+            }
+        }
+    }
+    best.filter(|(_, inside, ..)| *inside >= total * 0.8).map(|(_, _, root, minor)| (root, minor))
 }
 
 /// The strip settings that bring a measured voice to a style.
@@ -290,6 +344,13 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
         comp_threshold_db: round(comp_threshold_db),
         comp_ratio: ratio,
         deess: (deess * 20.0).round() / 20.0,
+        // A sung hook is corrected, fast (the sound of the records); a rap
+        // verse is left alone, but the key is set so that turning the
+        // correction up does the right thing. Without a key: every semitone.
+        tune: if style == VoiceStyle::SungHook { 1.0 } else { 0.0 },
+        tune_key: stats.key.map_or(0, |(root, _)| root),
+        tune_scale: stats.key.map_or(0, |(_, minor)| if minor { 2 } else { 1 }),
+        tune_speed: 0.15,
     }
 }
 
@@ -391,6 +452,28 @@ mod tests {
         assert!(m < -8.0 && h > -3.0, "{m} {h}");
         let (little, much) = (suggest(&mild, VoiceStyle::RapLead).deess, suggest(&harsh, VoiceStyle::RapLead).deess);
         assert!(little < much && much >= 0.5, "{little} {much}");
+    }
+
+    #[test]
+    fn the_key_is_told_from_the_notes_that_are_held() {
+        // A melody in A minor that keeps coming home to A: A C D E G, half a second each.
+        let melody = [220.0, 261.63, 293.66, 329.63, 220.0, 392.0, 329.63, 220.0, 261.63, 220.0, 293.66, 220.0];
+        let mut phase = 0.0f32;
+        let sung: Vec<f32> = (0..RATE * 6)
+            .map(|i| {
+                let hz = melody[(i / (RATE / 2)) % melody.len()];
+                phase += 2.0 * std::f32::consts::PI * hz / RATE as f32;
+                (1..=10).map(|h| (phase * h as f32).sin() / h as f32).sum::<f32>() * 0.15
+            })
+            .collect();
+        let stats = measure(&sung).unwrap();
+        assert_eq!(stats.key, Some((9, true)), "{stats:?}");
+        let set = suggest(&stats, VoiceStyle::guess(&stats));
+        assert_eq!((set.style, set.tune, set.tune_key, set.tune_scale), (VoiceStyle::SungHook, 1.0, 9, 2));
+        // A rap verse is not corrected, and a voice that wanders has no key.
+        let spoken = measure(&take(115.0, 9.0, 0.0, true)).unwrap();
+        assert_eq!(spoken.key, None);
+        assert_eq!(suggest(&spoken, VoiceStyle::RapLead).tune, 0.0);
     }
 
     #[test]

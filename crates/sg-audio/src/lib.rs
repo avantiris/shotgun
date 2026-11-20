@@ -19,6 +19,7 @@ mod fx;
 pub mod graph;
 mod null;
 mod pw;
+pub mod tune;
 
 use std::path::PathBuf;
 use std::sync::Arc;

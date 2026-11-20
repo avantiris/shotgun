@@ -330,8 +330,24 @@ chain second version, M16 mixing and mastering.
     and sets it. Measured in an exported file (a vowel with bursts of
     noise): the bursts 5.7 dB quieter (their part above 4.5 kHz by 12),
     the vowel unchanged to a hundredth of a decibel.
-  - Still to do for M12: pitch correction that proposes key and scale
-    (asked for 2026-11-20), a second compressor, saturation, the ducking
+  - Built 2026-11-20: the styles' targets set from six measured German
+    rap vocals (09-daw.md, "Reference measurements").
+  - Built 2026-11-20: pitch correction (`sg_audio::tune`, "Tune", key,
+    scale and "Tune glide" on the strip). The voice's pitch is followed
+    and moved to the nearest note of the key, at once (hard) or gently.
+    Listening proposes the key from the notes that are held, switches the
+    correction on for a sung hook and leaves a rap verse alone.
+    Measured through the app into an exported file: a note sung at 225 Hz
+    comes out at 220.1 Hz (the A it was flat of), and starts on the same
+    sample as without correction (its 1024 frames of delay are read
+    ahead). In tests: notes outside a key go to the nearest one inside,
+    half the amount moves half the way, noise passes sample for sample.
+    Keys heard in the two sung references: D minor and E major (not
+    checked against the songs' real keys).
+  - Limits of the pitch correction: one voice at a time (no chords), 70
+    to 400 Hz, the voice's colour moves with its pitch (no formant
+    correction), nothing by ear yet.
+  - Still to do for M12: a second compressor, saturation, the ducking
     of the beat under the voice, a strip that shows the chain as one thing with a few controls
     instead of the raw fields, and listening again when the takes change.
 - [ ] M13 Recording

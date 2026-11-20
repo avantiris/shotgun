@@ -157,7 +157,12 @@ struct Disk {
 /// ahead) on the same tracks. Faders and amounts may differ.
 fn same_structure(a: &Mix, b: &Mix) -> bool {
     a.tracks.len() == b.tracks.len()
-        && a.tracks.iter().zip(&b.tracks).all(|(x, y)| x.clips == y.clips && (x.denoise > 0.0) == (y.denoise > 0.0))
+        && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
+            // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
+            x.clips == y.clips
+                && (x.denoise > 0.0) == (y.denoise > 0.0)
+                && (x.tone.tune.amount > 0.0) == (y.tone.tune.amount > 0.0)
+        })
 }
 
 impl Disk {
@@ -248,7 +253,7 @@ impl Disk {
                 producer,
                 clips: track.clips.clone(),
                 next: pos,
-                fx: TrackFx::new(track.denoise > 0.0),
+                fx: TrackFx::new(track.denoise > 0.0, track.tone.tune.amount > 0.0),
                 low_cut_hz: track.low_cut_hz,
                 denoise: track.denoise,
                 tone: track.tone,

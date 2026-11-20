@@ -158,6 +158,20 @@ of the whole it is an S, and a high shelf at 4.5 kHz goes down by up to
 12 dB times the amount (2 ms in, 60 ms out). A ratio, not a level: nothing
 to aim, and the same on a quiet take as on a loud one.
 
+## Pitch correction (2026-11-20, stage 3)
+
+Per track, on the disk thread after the noise reduction and before the
+equaliser. `PROPOSED` method, the classic time-domain one: every 256
+frames the period of the newest 2048 frames is measured (likeness with
+itself shifted, at a quarter of the rate, 70 to 400 Hz, refined between
+samples); the note it makes is compared with the nearest note of the key
+and the sound is read from a ring buffer faster or slower by that ratio;
+when the reading point has drifted half a period from its place it jumps
+one period with a crossfade. 1024 frames of constant delay, which the
+feed reads ahead like the noise reduction's; switching the correction on
+or off builds a new graph for that reason. What has no pitch passes
+unchanged.
+
 ## Scrub grains (added 2026-11-19)
 
 - A move of the playhead while paused lets a tenth of a second of the mix at
