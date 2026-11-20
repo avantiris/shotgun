@@ -74,6 +74,10 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 enum UserEvent {
+    /// The inputs sound can be recorded from, (name, label).
+    Inputs(Vec<(String, String)>),
+    /// The settings of this machine, read at start.
+    Settings(sg_project::settings::Settings),
     /// News from a plugin job.
     Plugins(sg_ui::PluginUpdate),
     /// A track's voice was listened to.
@@ -266,6 +270,7 @@ impl App {
                             let _ = sg_project::save_project_poster(&root, asset);
                         }
                         let _ = proxy.send_event(scan_library(&library));
+            let _ = proxy.send_event(UserEvent::Settings(sg_project::settings::load(&library)));
                     });
                 }
                 Command::Export { root, project, request } => {
@@ -530,14 +535,31 @@ impl App {
                         }
                     }
                 }
-                Command::Record { root } => match &self.player {
+                Command::ListInputs => {
+                    self.reads.run(move || {
+                        let inputs = sg_play::inputs().unwrap_or_default();
+                        let listed = inputs.into_iter().map(|i| (i.name, i.label)).collect();
+                        let _ = proxy.send_event(UserEvent::Inputs(listed));
+                    });
+                }
+                Command::SaveInput(input) => {
+                    self.reads.run(move || {
+                        let mut settings = sg_project::settings::load(&library);
+                        settings.audio_input = input;
+                        if let Err(e) = sg_project::settings::save(&library, &settings) {
+                            log::warn!("cannot save the settings: {e}");
+                        }
+                    });
+                }
+                Command::Record { root, source } => match &self.player {
                     Some(player) => {
                         // Recorded beside the project's caches, then imported like any file.
                         let stamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map_or(0, |d| d.as_secs());
                         let path = root.join(".shotgun/takes").join(format!("take-{stamp}.wav"));
-                        player.record(path, std::env::var("SHOTGUN_AUDIO_IN").ok());
+                        // The environment names an input for automated runs (a null sink's monitor).
+                        player.record(path, std::env::var("SHOTGUN_AUDIO_IN").ok().or(source));
                     }
                     None => self.shell.recording_failed("There is no sound engine to record with.".to_owned()),
                 },
@@ -1091,6 +1113,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Problem(message) => self.shell.report_error(message),
             UserEvent::ClipsOffered(offered) => self.shell.clips_offered(offered),
             UserEvent::Plugins(update) => self.shell.plugins_update(update),
+            UserEvent::Inputs(inputs) => self.shell.inputs_listed(inputs),
+            UserEvent::Settings(settings) => self.shell.set_input(settings.audio_input),
             UserEvent::Global(result, news) => {
                 self.shell.global_listed(result, news);
                 self.job_done();

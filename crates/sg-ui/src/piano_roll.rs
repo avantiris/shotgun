@@ -126,7 +126,7 @@ impl PianoRoll {
                 ui.label(RichText::new(format!("NOTES  {}", track.name)).size(11.0).strong().color(theme::DIM));
                 ui.add_space(12.0);
                 ui.label(RichText::new("Grid").color(theme::DIM));
-                for (label, ticks) in [("1/4", 960), ("1/8", 480), ("1/16", 240), ("1/32", 120)] {
+                for (label, ticks) in [("1/4", 960), ("1/8", 480), ("1/8T", 320), ("1/16", 240), ("1/16T", 160), ("1/32", 120)] {
                     if ui.selectable_label(grid == ticks, label).clicked() {
                         self.grid = Some(ticks);
                     }

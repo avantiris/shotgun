@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+pub use sg_audio::record::{Input, inputs};
 use sg_audio::{ClipSpan, Engine, Mix, SAMPLE_RATE, TrackMix};
 use sg_core::{AssetId, ClipProps, Project, Sequence, TrackKind};
 use sg_project::cache;

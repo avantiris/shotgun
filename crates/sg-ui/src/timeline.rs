@@ -171,6 +171,8 @@ pub struct Timeline {
     grid_for: Option<(AssetId, i8)>,
     /// The song whose beats should be loaded; taken by the shell.
     pub beat_request: Option<AssetId>,
+    /// What the grid of a sequence with a tempo is made of.
+    pub grid_step: GridStep,
     /// Where posters of assets belong at the heads of clips this frame; the
     /// editor draws them (it has the textures) clipped to `lanes`.
     pub thumbs: Vec<(AssetId, Rect)>,
@@ -239,6 +241,7 @@ impl Default for Timeline {
             grid: Arc::default(),
             grid_for: None,
             beat_request: None,
+            grid_step: GridStep::Auto,
             wave_requests: Vec::new(),
             quads: 0,
         }
@@ -2659,6 +2662,51 @@ impl Timeline {
     }
 }
 
+/// What the grid of a sequence with a tempo is made of: lines drawn and
+/// what edges snap to. A view setting, not part of the project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GridStep {
+    /// Quarters of a beat, beats or bars, whichever has room at this zoom.
+    #[default]
+    Auto,
+    Bar,
+    /// A note value: 1/`den` of a whole note (a beat is a quarter note);
+    /// as a triplet, two thirds of that.
+    Note { den: u8, triplet: bool },
+}
+
+impl GridStep {
+    pub const ALL: [GridStep; 10] = [
+        GridStep::Auto,
+        GridStep::Bar,
+        GridStep::Note { den: 2, triplet: false },
+        GridStep::Note { den: 4, triplet: false },
+        GridStep::Note { den: 8, triplet: false },
+        GridStep::Note { den: 8, triplet: true },
+        GridStep::Note { den: 16, triplet: false },
+        GridStep::Note { den: 16, triplet: true },
+        GridStep::Note { den: 32, triplet: false },
+        GridStep::Note { den: 32, triplet: true },
+    ];
+
+    pub fn label(self) -> String {
+        match self {
+            GridStep::Auto => "auto".to_owned(),
+            GridStep::Bar => "bar".to_owned(),
+            GridStep::Note { den, triplet } => format!("1/{den}{}", if triplet { "T" } else { "" }),
+        }
+    }
+
+    /// The step in beats; `None`: by zoom.
+    fn beats(self, beats_per_bar: u8) -> Option<f64> {
+        match self {
+            GridStep::Auto => None,
+            GridStep::Bar => Some(beats_per_bar as f64),
+            GridStep::Note { den, triplet } => Some(4.0 / den as f64 * if triplet { 2.0 / 3.0 } else { 1.0 }),
+        }
+    }
+}
+
 /// Beat positions for a tempo choice: as found (0), with the beats between
 /// them (1, 2: doubled, quadrupled) or only every second or fourth (-1, -2).
 fn grid_of(beats: &[i64], tempo: i8) -> Vec<i64> {
@@ -2737,18 +2785,22 @@ impl Timeline {
         // A tempo is a grid by itself: beats, or only bars where beats would crowd.
         if let Some(tempo) = sequence.tempo {
             let beat = tempo.frames_per_beat(sequence.rate);
-            let per_bar = tempo.beats_per_bar as usize;
-            let mut stride = 1usize;
-            // Beats, then bars, then every second, fourth, ... bar.
-            while beat * stride as f64 / self.frames_per_point < min_points as f64 && stride < 1 << 20 {
-                stride = if stride < per_bar { per_bar } else { stride * 2 };
+            let bar = beat * tempo.beats_per_bar as f64;
+            let roomy = |unit: f64| unit / self.frames_per_point >= min_points as f64;
+            // The chosen step if its lines have room, else beats, bars, then every second, fourth, ... bar.
+            let chosen = self.grid_step.beats(tempo.beats_per_bar).map(|beats| beat * beats);
+            let mut unit = chosen.into_iter().chain([beat, bar]).find(|u| roomy(*u)).unwrap_or(bar);
+            while !roomy(unit) && unit < bar * (1 << 20) as f64 {
+                unit *= 2.0;
             }
-            let mut index = ((f0.max(0.0) / beat).ceil() as usize).next_multiple_of(stride);
+            let mut index = (f0.max(0.0) / unit).ceil() as usize;
             let mut lines = Vec::new();
-            while (index as f64) * beat < f1 && lines.len() < 4096 {
+            while (index as f64) * unit < f1 && lines.len() < 4096 {
+                let at = index as f64 * unit;
                 // (The caller draws every fourth line strongly: bars count as that.)
-                lines.push((index as f64 * beat, if index.is_multiple_of(per_bar) { 0 } else { 1 }));
-                index += stride;
+                let on_bar = ((at / bar).round() * bar - at).abs() < 1e-6 * bar;
+                lines.push((at, if on_bar { 0 } else { 1 }));
+                index += 1;
             }
             return lines;
         }
@@ -2785,7 +2837,12 @@ impl Timeline {
         if let Some(tempo) = sequence.tempo {
             let beat = tempo.frames_per_beat(sequence.rate);
             let roomy = |unit: f64| unit / self.frames_per_point >= SNAP as f64 * 2.0;
-            let unit = [beat / 4.0, beat].into_iter().find(|u| roomy(*u)).unwrap_or(beat * tempo.beats_per_bar as f64);
+            let bar = beat * tempo.beats_per_bar as f64;
+            let unit = match self.grid_step.beats(tempo.beats_per_bar) {
+                // A chosen grid is kept at every zoom: it was asked for.
+                Some(beats) => beat * beats,
+                None => [beat / 4.0, beat].into_iter().find(|u| roomy(*u)).unwrap_or(bar),
+            };
             return Some((frame / unit).round() * unit);
         }
         let (clip, per) = self.song_clips(sequence, frame - 1.0, frame + 1.0).into_iter().next()?;

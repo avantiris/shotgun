@@ -745,3 +745,14 @@ fn sends_add_a_room_and_repeats_and_the_click_is_heard_only_when_asked_for() {
     let clicked = rendered(Mix { tracks: vec![track(vec![span])], click: Some(click), ..Mix::default() }, 96_000);
     assert!(rms(&clicked[36_000 * 2..36_500 * 2]) > 0.05 && rms(&clicked[40_000 * 2..47_000 * 2]) < 1e-4);
 }
+
+/// Asks the running PipeWire daemon (read only): `cargo test -p sg-audio -- --ignored inputs --nocapture`.
+#[test]
+#[ignore = "needs a running PipeWire daemon"]
+fn the_inputs_of_this_machine_are_listed() {
+    let inputs = sg_audio::record::inputs().unwrap();
+    for input in &inputs {
+        println!("{} = {}", input.name, input.label);
+    }
+    assert!(inputs.iter().all(|i| !i.name.is_empty() && !i.label.is_empty()));
+}

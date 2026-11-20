@@ -285,3 +285,69 @@ impl Drop for Recording {
         }
     }
 }
+
+/// Something sound can be recorded from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Input {
+    /// The PipeWire node name: what [`Recording::start`] takes as `source`.
+    pub name: String,
+    /// What the desktop calls it.
+    pub label: String,
+}
+
+fn list_inputs() -> Result<Vec<Input>, String> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| e.to_string())?;
+    let context = pw::context::ContextRc::new(&mainloop, None).map_err(|e| e.to_string())?;
+    let core = context.connect_rc(None).map_err(|e| format!("cannot connect to the PipeWire daemon: {e}"))?;
+    let registry = core.get_registry().map_err(|e| e.to_string())?;
+    let found = Rc::new(RefCell::new(Vec::new()));
+    // The daemon answers the sync after it has announced every object.
+    let pending = core.sync(0).map_err(|e| e.to_string())?;
+    let quit = mainloop.clone();
+    let _core_listener = core
+        .add_listener_local()
+        .done(move |id, seq| {
+            if id == pw::core::PW_ID_CORE && seq == pending {
+                quit.quit();
+            }
+        })
+        .register();
+    let list = found.clone();
+    let _registry_listener = registry
+        .add_listener_local()
+        .global(move |global| {
+            if global.type_ != pw::types::ObjectType::Node {
+                return;
+            }
+            let Some(props) = global.props else { return };
+            // Microphones and interfaces; not the monitors of outputs.
+            if !matches!(props.get("media.class"), Some("Audio/Source" | "Audio/Duplex" | "Audio/Source/Virtual")) {
+                return;
+            }
+            let Some(name) = props.get("node.name") else { return };
+            let label = props.get("node.description").or_else(|| props.get("node.nick")).unwrap_or(name);
+            list.borrow_mut().push(Input { name: name.to_owned(), label: label.to_owned() });
+        })
+        .register();
+    mainloop.run();
+    let mut inputs = found.take();
+    inputs.sort_by(|a, b| a.label.cmp(&b.label));
+    Ok(inputs)
+}
+
+/// The inputs PipeWire offers now. Asks the daemon and waits for its
+/// answer (a few milliseconds; three seconds at most): not for the UI thread.
+pub fn inputs() -> Result<Vec<Input>, AudioError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // A thread of its own so that a daemon that never answers cannot hold the caller.
+    std::thread::Builder::new().name("sg-audio-inputs".into()).spawn(move || {
+        let _ = tx.send(list_inputs());
+    })?;
+    match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(result) => result.map_err(AudioError::PipeWire),
+        Err(_) => Err(AudioError::PipeWire("no answer from the PipeWire daemon".into())),
+    }
+}

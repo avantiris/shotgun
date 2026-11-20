@@ -13,6 +13,7 @@ mod layout;
 mod library;
 pub mod plugins;
 mod save;
+pub mod settings;
 mod writer;
 
 use std::path::{Path, PathBuf};

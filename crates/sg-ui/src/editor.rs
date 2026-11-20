@@ -55,8 +55,23 @@ pub struct Editor {
     pub metronome: bool,
     /// A take is being recorded: the button says so.
     pub recording_sound: bool,
+    /// The input sound is recorded from (its PipeWire name); `None`: the system's default.
+    pub input: Option<String>,
+    /// The inputs there are, (name, label), once asked for.
+    pub inputs: Option<Vec<(String, String)>>,
+    /// What the input menu asked for this frame; taken by the shell.
+    pub input_requests: Vec<InputRequest>,
     /// The notes of a note clip, shown in place of the viewer while open.
     pub piano: crate::piano_roll::PianoRoll,
+}
+
+/// What the input menu asks of the shell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputRequest {
+    /// Find the inputs there are now.
+    List,
+    /// Record from this one from now on (`None`: the system's default).
+    Choose(Option<String>),
 }
 
 impl Editor {
@@ -96,7 +111,7 @@ impl Editor {
         egui::Panel::bottom("timeline").resizable(true).default_size(270.0).min_size(150.0).frame(flush).show(
             ui,
             |ui| {
-                self.tools(ui);
+                self.tools(ui, session, sequence, error);
                 self.timeline.ui(ui, session, view, transport, error);
                 // A title asked for its text: the inspector shows it with the cursor in the field.
                 if std::mem::take(&mut self.timeline.edit_title) {
@@ -304,7 +319,7 @@ impl Editor {
     /// (feedback F4.1, narrowed in round 5): keyframes, recorded movement,
     /// the transition, titles and markers. Each shows its key. Cutting,
     /// copying, undo and zoom stay with keys and mouse.
-    fn tools(&mut self, ui: &mut egui::Ui) {
+    fn tools(&mut self, ui: &mut egui::Ui, session: &mut Session, sequence: &Sequence, error: &mut Option<String>) {
         let selected = self.timeline.has_selection();
         egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -325,9 +340,68 @@ impl Editor {
                     if actions::enabled_button(ui, enabled, action, label) {
                         self.actions.push(action);
                     }
+                    if action == Action::RecordSound {
+                        self.input_menu(ui);
+                    }
+                }
+                // Tempo and grid where the bars are (09-daw.md, M11).
+                ui.separator();
+                self.tempo_fields(ui, session, sequence, error, true);
+                if sequence.tempo.is_some() {
+                    self.grid_menu(ui);
                 }
             });
         });
+    }
+
+    /// Beside "Record sound": which input the take comes from.
+    fn input_menu(&mut self, ui: &mut egui::Ui) {
+        let chosen = match (&self.input, &self.inputs) {
+            (None, _) => "default".to_owned(),
+            (Some(name), Some(inputs)) => {
+                inputs.iter().find(|(n, _)| n == name).map_or_else(|| name.clone(), |(_, label)| label.clone())
+            }
+            (Some(name), None) => name.clone(),
+        };
+        // The button keeps a steady width: long device names are cut.
+        let short: String = if chosen.chars().count() > 22 {
+            chosen.chars().take(21).chain(std::iter::once('…')).collect()
+        } else {
+            chosen
+        };
+        let response = egui::containers::menu::MenuButton::new(format!("Input: {short}"))
+            .ui(ui, |ui| {
+                let mut choice = None;
+                if ui.selectable_label(self.input.is_none(), "System default").clicked() {
+                    choice = Some(None);
+                }
+                match &self.inputs {
+                    None => {
+                        ui.weak("Looking for inputs…");
+                    }
+                    Some(inputs) if inputs.is_empty() => {
+                        ui.weak("No inputs found");
+                    }
+                    Some(inputs) => {
+                        for (name, label) in inputs {
+                            if ui.selectable_label(self.input.as_ref() == Some(name), label).clicked() {
+                                choice = Some(Some(name.clone()));
+                            }
+                        }
+                    }
+                }
+                if let Some(choice) = choice {
+                    self.input = choice.clone();
+                    self.input_requests.push(InputRequest::Choose(choice));
+                    ui.close();
+                }
+            })
+            .0;
+        if response.clicked() {
+            // Asked for anew at every opening: devices come and go.
+            self.input_requests.push(InputRequest::List);
+        }
+        response.on_hover_text("Where \"Record sound\" records from");
     }
 
     fn inspector(
@@ -526,50 +600,84 @@ impl Editor {
     /// The tempo of the sequence (09-daw.md): none, in which case the
     /// timeline counts time, or beats per minute and beats per bar.
     fn tempo_row(&mut self, ui: &mut egui::Ui, session: &mut Session, sequence: &Sequence, error: &mut Option<String>) {
+        ui.horizontal(|ui| {
+            ui.add_sized([84.0, 16.0], egui::Label::new(RichText::new("Tempo").color(theme::DIM)).halign(Align::LEFT));
+            self.tempo_fields(ui, session, sequence, error, false);
+        });
+    }
+
+    /// The fields of the tempo, in the inspector and above the timeline.
+    /// Above the timeline the button that starts one is called "Tempo", and
+    /// taking the tempo away again is left to the inspector.
+    fn tempo_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        sequence: &Sequence,
+        error: &mut Option<String>,
+        toolbar: bool,
+    ) {
         let dragging = ui.input(|i| i.pointer.any_down());
         if !dragging {
             self.tempo_group = None;
         }
         let mut wanted = sequence.tempo;
-        ui.horizontal(|ui| {
-            ui.add_sized([84.0, 16.0], egui::Label::new(RichText::new("Tempo").color(theme::DIM)).halign(Align::LEFT));
-            match &mut wanted {
-                None => {
-                    let button = ui.button("Bars and beats");
-                    if button
-                        .on_hover_text(
-                            "Gives the sequence a tempo for making music: the ruler counts bars instead of time and \
-                             clips snap to beats. Nothing that is on the timeline moves.",
-                        )
-                        .clicked()
-                    {
-                        wanted = Some(sg_core::Tempo::DEFAULT);
-                    }
-                }
-                Some(tempo) => {
-                    let mut bpm = tempo.bpm();
-                    let field =
-                        egui::DragValue::new(&mut bpm).range(20.0..=400.0).speed(0.1).max_decimals(1).suffix(" bpm");
-                    if ui.add(field).on_hover_text("Beats per minute").changed() {
-                        tempo.milli_bpm = (bpm * 1000.0).round() as u32;
-                    }
-                    let mut beats = tempo.beats_per_bar;
-                    let field = egui::DragValue::new(&mut beats).range(1..=16).speed(0.05).suffix(" / bar");
-                    if ui.add(field).on_hover_text("Beats in a bar: 4 for most music, 3 for a waltz").changed() {
-                        tempo.beats_per_bar = beats;
-                    }
-                    if ui.button("Off").on_hover_text("Back to a ruler in time").clicked() {
-                        wanted = None;
-                    }
+        match &mut wanted {
+            None => {
+                let button = ui.button(if toolbar { "Set tempo" } else { "Bars and beats" });
+                if button
+                    .on_hover_text(
+                        "Gives the sequence a tempo for making music: the ruler counts bars instead of time and \
+                         clips snap to beats. Nothing that is on the timeline moves.",
+                    )
+                    .clicked()
+                {
+                    wanted = Some(sg_core::Tempo::DEFAULT);
                 }
             }
-        });
+            Some(tempo) => {
+                let mut bpm = tempo.bpm();
+                let field =
+                    egui::DragValue::new(&mut bpm).range(20.0..=400.0).speed(0.1).max_decimals(1).suffix(" bpm");
+                if ui.add(field).on_hover_text("Beats per minute").changed() {
+                    tempo.milli_bpm = (bpm * 1000.0).round() as u32;
+                }
+                let mut beats = tempo.beats_per_bar;
+                let field = egui::DragValue::new(&mut beats).range(1..=16).speed(0.05).suffix(" / bar");
+                if ui.add(field).on_hover_text("Beats in a bar: 4 for most music, 3 for a waltz").changed() {
+                    tempo.beats_per_bar = beats;
+                }
+                if !toolbar && ui.button("Off").on_hover_text("Back to a ruler in time").clicked() {
+                    wanted = None;
+                }
+            }
+        }
         if wanted != sequence.tempo {
             let group = dragging.then(|| *self.tempo_group.get_or_insert_with(|| session.new_group()));
             if let Err(e) = session.apply(Op::SetTempo { id: sequence.id, tempo: wanted }, group) {
                 *error = Some(e.to_string());
             }
         }
+    }
+
+    /// What clips and the playhead snap to while there is a tempo.
+    fn grid_menu(&mut self, ui: &mut egui::Ui) {
+        use crate::timeline::GridStep;
+        let now = self.timeline.grid_step;
+        egui::containers::menu::MenuButton::new(format!("Grid: {}", now.label()))
+            .ui(ui, |ui| {
+                for step in GridStep::ALL {
+                    if ui.selectable_label(now == step, step.label()).clicked() {
+                        self.timeline.grid_step = step;
+                        ui.close();
+                    }
+                }
+            })
+            .0
+            .on_hover_text(
+                "What edges snap to and which lines are drawn. \"auto\" follows the zoom; a T is a triplet \
+                 (three in the room of two).",
+            );
     }
 
     /// Brings the inspector to the selected title with the cursor in its text.

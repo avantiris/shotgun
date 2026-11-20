@@ -175,7 +175,13 @@ pub enum Command {
     /// when it ends, [`Shell::take_recorded`] is told.
     Record {
         root: PathBuf,
+        /// The PipeWire node to record from; `None`: the system's default input.
+        source: Option<String>,
     },
+    /// Find the inputs sound can be recorded from; answered with [`Shell::inputs_listed`].
+    ListInputs,
+    /// Remember the input for the next start of the program.
+    SaveInput(Option<String>),
     /// End the recording (and the playback it runs with).
     StopRecording,
     /// The metronome on or off.
@@ -549,6 +555,12 @@ impl Shell {
             self.assign_scenario(asset, choice, &mut commands);
         }
         self.colour_requests(colour_requests, &mut commands);
+        for request in std::mem::take(&mut self.editor.input_requests) {
+            commands.push(match request {
+                editor::InputRequest::List => Command::ListInputs,
+                editor::InputRequest::Choose(input) => Command::SaveInput(input),
+            });
+        }
         let gif_range = self.gif_range();
         if let Some(request) = self.plugins.ui(&ctx) {
             if let PluginRequest::Run(step) = request {
@@ -739,7 +751,7 @@ impl Shell {
                         commands.push(Command::StopRecording);
                     } else {
                         self.editor.recording_sound = true;
-                        commands.push(Command::Record { root: session.root.clone() });
+                        commands.push(Command::Record { root: session.root.clone(), source: self.editor.input.clone() });
                     }
                 }
             }
@@ -1539,6 +1551,16 @@ impl Shell {
         }
         self.takes.push((path.clone(), start));
         self.incoming(Incoming::Paths(vec![path]))
+    }
+
+    /// The inputs sound can be recorded from, (PipeWire name, label).
+    pub fn inputs_listed(&mut self, inputs: Vec<(String, String)>) {
+        self.editor.inputs = Some(inputs);
+    }
+
+    /// The input remembered from the last run.
+    pub fn set_input(&mut self, input: Option<String>) {
+        self.editor.input = input;
     }
 
     /// A recording could not be started or was lost.

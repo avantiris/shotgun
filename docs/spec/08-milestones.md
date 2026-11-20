@@ -311,9 +311,13 @@ chain second version, M16 mixing and mastering.
     export.
   - Under the viewer a sequence with a tempo shows bar, beat and tempo
     before the time.
-  - Still to do: the tempo set at the timeline
-    itself, not only in the inspector; a choice of grid (1/2 to 1/32,
-    triplets).
+  - At the timeline (2026-11-21): above it, after the tool buttons, "Set
+    tempo", or the tempo and the beats per bar once there is one, and
+    "Grid": auto (as before, by zoom), bar, 1/2 to 1/32, and 1/8, 1/16 and
+    1/32 as triplets. A chosen grid is what edges snap to at every zoom
+    and what is drawn while its lines have room. The grid is a setting
+    of the view, not of the project (`PROPOSED`). The piano roll offers
+    1/8 and 1/16 triplets too.
 - [ ] M12 Vocal chain, first version
   - Built 2026-11-20, the listening half: "Voice" on a mixer strip
     measures what the track's clips play (`sg_media::voice`: level, loud
@@ -390,7 +394,12 @@ chain second version, M16 mixing and mastering.
     bar before the playhead, with clicks. Checked on the same loop: the
     recorded clicks lie 5 frames from their beats, also before the start
     of the timeline.
-  - Still to do: choosing the input in the program, monitoring the input
+  - Input (2026-11-21): "Input" beside "Record sound" lists what PipeWire
+    offers to record from (asked anew each time it is opened) and the
+    system's default; the choice is kept in `settings.toml` in the
+    library, as it belongs to the machine and not to a project
+    (`PROPOSED`).
+  - Still to do: monitoring the input
     through the engine, takes stacked on one track (a new take goes to a
     free track instead), punch in and out.
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
@@ -446,9 +455,13 @@ chain second version, M16 mixing and mastering.
     rap with hard pitch correction, ad-libs), and each sets its share of
     reverb and echo. `PROPOSED`: the two new ones and all send amounts
     are choices, not measured on references.
+  - Tail (2026-11-21): a sound-only export goes on after the end of its
+    range until what rings (room, echo, a note's release) has died away
+    below -80 dB, 12 s at most; clips after the range are not played
+    into it, and every track file is as long as the song. A film's sound
+    still ends with its picture.
   - Still to do: pitch correction by hand per note; settings
-    for the room and the echo; the tail after the last clip is cut off at
-    the end of the sequence in an export.
+    for the room and the echo.
 - [ ] M16 Mixing and mastering
   - Built 2026-11-20:
     - Loudness in LUFS (`sg_audio::loudness`, ITU-R BS.1770): the last

@@ -221,38 +221,81 @@ fn render_audio(
     out: &Path,
     cancel: &Cancel,
 ) -> Result<(), ExportError> {
-    render_mix(sg_play::audio_mix(root, sequence), sequence, range, out, cancel).map(|_| ())
+    render_mix(sg_play::audio_mix(root, sequence), sequence, range, out, cancel, Tail::None).map(|_| ())
+}
+
+/// What follows the last frame of the range in a rendered mix.
+#[derive(Clone, Copy)]
+enum Tail {
+    /// Nothing: the sound of a film ends with its picture.
+    None,
+    /// What still rings (reverb, echo, a note's release) until it has died away.
+    Ring,
+    /// This many frames: every track of a song is as long as the song.
+    Frames(u64),
+}
+
+/// Quieter than this (-80 dB) counts as died away.
+const TAIL_SILENCE: f32 = 1.0e-4;
+/// A tail is never longer than this.
+const TAIL_MAX: u64 = SAMPLE_RATE as u64 * 12;
+
+/// Takes away what would play after `end` (timeline samples): beyond the
+/// range of a song only what rings on is wanted, not the next clip.
+fn cut_at(mix: &mut sg_audio::Mix, end: i64) {
+    for track in &mut mix.tracks {
+        track.clips.retain(|c| c.start < end);
+        for clip in &mut track.clips {
+            clip.len = clip.len.min(end - clip.start);
+        }
+        track.notes.retain(|n| n.start < end);
+        for note in &mut track.notes {
+            note.len = note.len.min(end - note.start);
+        }
+    }
 }
 
 /// Renders a mix of the sequence to a 48 kHz float WAV and measures it.
+/// Returns the loudness and the frames written after the range.
 fn render_mix(
-    mix: sg_audio::Mix,
+    mut mix: sg_audio::Mix,
     sequence: &Sequence,
     range: (i64, i64),
     out: &Path,
     cancel: &Cancel,
-) -> Result<sg_audio::loudness::Loudness, ExportError> {
+    tail: Tail,
+) -> Result<(sg_audio::loudness::Loudness, u64), ExportError> {
+    use std::io::{Seek, SeekFrom};
+    let first = sequence.rate.frames_to_samples(range.0, SAMPLE_RATE);
+    let total = (sequence.rate.frames_to_samples(range.1, SAMPLE_RATE) - first).max(0) as u64;
+    if !matches!(tail, Tail::None) {
+        cut_at(&mut mix, first + total as i64);
+    }
+    // Repeats of the echo are a beat apart: only a pause longer than that is the end.
+    let pause = mix.echo_samples as u64 + SAMPLE_RATE as u64 / 4;
     let engine = Engine::start(Backend::Manual).map_err(|e| ExportError::Tool(e.to_string()))?;
     engine.set_mix(mix);
     let mut loudness = sg_audio::loudness::Loudness::default();
-    let first = sequence.rate.frames_to_samples(range.0, SAMPLE_RATE);
-    let total = (sequence.rate.frames_to_samples(range.1, SAMPLE_RATE) - first).max(0) as u64;
     let mut file = std::io::BufWriter::new(std::fs::File::create(out)?);
-    let data = total * 8;
-    // WAV sizes are 32-bit; an RF64 header would be needed beyond 4 GB (3.1 hours).
-    let riff = (36 + data).min(u32::MAX as u64) as u32;
-    file.write_all(b"RIFF")?;
-    file.write_all(&riff.to_le_bytes())?;
-    file.write_all(b"WAVEfmt ")?;
-    file.write_all(&16u32.to_le_bytes())?;
-    file.write_all(&3u16.to_le_bytes())?;
-    file.write_all(&2u16.to_le_bytes())?;
-    file.write_all(&SAMPLE_RATE.to_le_bytes())?;
-    file.write_all(&(SAMPLE_RATE * 8).to_le_bytes())?;
-    file.write_all(&8u16.to_le_bytes())?;
-    file.write_all(&32u16.to_le_bytes())?;
-    file.write_all(b"data")?;
-    file.write_all(&(data.min(u32::MAX as u64) as u32).to_le_bytes())?;
+    let header = |frames: u64| {
+        let data = frames * 8;
+        // WAV sizes are 32-bit; an RF64 header would be needed beyond 4 GB (3.1 hours).
+        let mut bytes = Vec::with_capacity(44);
+        bytes.extend(b"RIFF");
+        bytes.extend(((36 + data).min(u32::MAX as u64) as u32).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend(3u16.to_le_bytes());
+        bytes.extend(2u16.to_le_bytes());
+        bytes.extend(SAMPLE_RATE.to_le_bytes());
+        bytes.extend((SAMPLE_RATE * 8).to_le_bytes());
+        bytes.extend(8u16.to_le_bytes());
+        bytes.extend(32u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend((data.min(u32::MAX as u64) as u32).to_le_bytes());
+        bytes
+    };
+    file.write_all(&header(total))?;
     engine.play(first);
     let mut block = vec![0.0f32; 4096 * 2];
     let mut done = 0u64;
@@ -271,8 +314,43 @@ fn render_mix(
         }
         done += frames as u64;
     }
+    // What rings on. Quiet stretches are held back until sound follows
+    // them, so that the file ends with the last audible sample.
+    let mut extra = 0u64;
+    let limit = match tail {
+        Tail::None => 0,
+        Tail::Ring => TAIL_MAX,
+        Tail::Frames(frames) => frames,
+    };
+    let mut held: Vec<f32> = Vec::new();
+    let mut pulled = 0u64;
+    while pulled < limit {
+        if cancel.is_cancelled() {
+            return Err(ExportError::Cancelled);
+        }
+        engine.settle();
+        let frames = (limit - pulled).min(1024) as usize;
+        engine.pull(&mut block[..frames * 2]);
+        pulled += frames as u64;
+        held.extend_from_slice(&block[..frames * 2]);
+        let audible = block[..frames * 2].iter().any(|s| s.abs() > TAIL_SILENCE);
+        if audible || matches!(tail, Tail::Frames(_)) {
+            loudness.add(&held);
+            for sample in &held {
+                file.write_all(&sample.to_le_bytes())?;
+            }
+            extra += held.len() as u64 / 2;
+            held.clear();
+        } else if held.len() as u64 / 2 >= pause {
+            break;
+        }
+    }
+    if extra > 0 {
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header(total + extra))?;
+    }
     file.flush()?;
-    Ok(loudness)
+    Ok((loudness, extra))
 }
 
 /// The sound alone: the mix as a file, brought to a loudness if asked,
@@ -294,14 +372,14 @@ fn export_sound(
     }
     let rendered = work.join("mix.wav");
     progress("mixing sound", 0.0);
-    let mut heard = render_mix(mix.clone(), sequence, range, &rendered, cancel)?;
+    let (mut heard, mut tail) = render_mix(mix.clone(), sequence, range, &rendered, cancel, Tail::Ring)?;
     if let (Some(target), Some(now)) = (target, heard.integrated()) {
         // Turned up or down by what is missing, and mixed again: the
         // limiter on the master then holds what would go over full scale.
         // (At most 30 dB up: a near-silent piece is not made of noise.)
         mix.master_gain *= 10f32.powf((target - now).clamp(-60.0, 30.0) / 20.0);
         progress("setting the loudness", 0.3);
-        heard = render_mix(mix.clone(), sequence, range, &rendered, cancel)?;
+        (heard, tail) = render_mix(mix.clone(), sequence, range, &rendered, cancel, Tail::Ring)?;
     }
     let encode = |from: &Path, to: &Path| {
         let mut cmd = Command::new("ffmpeg");
@@ -336,7 +414,7 @@ fn export_sound(
                 track.unheard = other != *index;
             }
             let stem = work.join("stem.wav");
-            render_mix(alone, sequence, range, &stem, cancel)?;
+            render_mix(alone, sequence, range, &stem, cancel, Tail::Frames(tail))?;
             let name = slug(names.get(*index).copied().unwrap_or("track"));
             encode(&stem, &folder.join(format!("{:02}-{name}.{}", n + 1, format.extension())))?;
             written += 1;
@@ -1036,4 +1114,52 @@ pub fn export(
     })();
     let _ = std::fs::remove_dir_all(&work);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn a_song_rings_out_after_its_last_note_and_what_follows_the_range_is_not_played() {
+        let dir = tempfile::tempdir().unwrap();
+        let note = |start: i64| sg_audio::NoteSpan { start, len: 12_000, pitch: 60, velocity: 100 };
+        let track = sg_audio::TrackMix {
+            clips: Vec::new(),
+            gain: 1.0,
+            pan: 0.0,
+            mute: false,
+            low_cut_hz: 0.0,
+            tone: sg_audio::Tone::default(),
+            denoise: 0.0,
+            plugin: None,
+            // The second note lies after the exported range.
+            notes: vec![note(0), note(96_000)],
+            unheard: false,
+            reverb: 0.5,
+            echo: 0.0,
+        };
+        let mix = sg_audio::Mix { tracks: vec![track], ..sg_audio::Mix::default() };
+        let sequence = Sequence::from(sg_core::SequenceHeader {
+            id: sg_core::SequenceId(1),
+            name: "s".into(),
+            rate: sg_core::Rate::FPS_60,
+            width: 1920,
+            height: 1080,
+        });
+        // One second of the timeline.
+        let out = dir.path().join("a.wav");
+        let (loud, tail) = render_mix(mix.clone(), &sequence, (0, 60), &out, &Cancel::new(), Tail::Ring).unwrap();
+        // The room rings on for more than half a second and has an end.
+        assert!(tail > 24_000 && tail < TAIL_MAX, "{tail}");
+        assert!(loud.integrated().is_some());
+        assert_eq!(std::fs::metadata(&out).unwrap().len(), 44 + (48_000 + tail) * 8);
+        // A film's sound ends with its picture.
+        let (_, none) = render_mix(mix.clone(), &sequence, (0, 60), &out, &Cancel::new(), Tail::None).unwrap();
+        assert_eq!((none, std::fs::metadata(&out).unwrap().len()), (0, 44 + 48_000 * 8));
+        // Every track of a song is as long as the song.
+        let (_, fixed) = render_mix(mix, &sequence, (0, 60), &out, &Cancel::new(), Tail::Frames(tail)).unwrap();
+        assert_eq!(fixed, tail);
+    }
 }
