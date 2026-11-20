@@ -6,7 +6,7 @@ publish.workspace = true
 
 [[bin]]
 name = "shotgun-plugin"
-path = "src/bin/shotgun-plugin.rs"
+path = "src/bin/shotgun-plugin/main.rs"
 
 [dependencies]
 log.workspace = true
@@ -16,6 +16,7 @@ vst3 = "0.3"
 libloading = "0.8"
 libc = "0.2"
 x11rb = "0.13"
+clap-sys = "0.5"
 
 [dev-dependencies]
 tempfile.workspace = true

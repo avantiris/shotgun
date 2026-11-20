@@ -1,4 +1,4 @@
-//! Hosting plugins (VST3) in processes of their own.
+//! Hosting plugins (VST3 and CLAP) in processes of their own.
 //!
 //! Each plugin runs in a child process, `shotgun-plugin` (the binary of
 //! this crate), and is driven over a pipe: a plugin that crashes or hangs
@@ -104,7 +104,7 @@ fn read_flag(from: &mut impl Read) -> std::io::Result<bool> {
 
 impl Client {
     /// Starts the host program and loads the plugin at `plugin` (a
-    /// `.vst3` bundle) into it. Takes as long as the plugin takes to load.
+    /// `.vst3` bundle or `.clap` file) into it. Takes as long as the plugin takes to load.
     pub fn start(plugin: &Path) -> Result<Client, PlugError> {
         let program = host_program();
         if program.components().count() > 1 && !program.is_file() {

@@ -7,7 +7,10 @@
 //! its host for) and for the editor window's events, whichever comes first.
 //!
 //! The whole program is an FFI boundary: a plugin is foreign code loaded
-//! into the process and driven through COM interfaces.
+//! into the process and driven through COM interfaces (VST3, here) or a
+//! table of C functions (CLAP, in `clap.rs`).
+
+mod clap;
 
 use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
@@ -35,6 +38,60 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 const SAMPLE_RATE: f64 = 48_000.0;
+
+/// A plugin of either format, as the requests see it.
+trait Hosted {
+    fn name(&self) -> &str;
+    fn instrument(&self) -> bool;
+    fn has_editor(&self) -> bool;
+    /// Interleaved stereo in place; notes as (frame, on, pitch, velocity).
+    fn process(&mut self, sound: &mut [f32], notes: &[(u32, bool, u8, u8)]) -> bool;
+    fn reset(&mut self);
+    fn state(&mut self) -> Vec<u8>;
+    fn set_state(&mut self, state: &[u8]) -> bool;
+    fn open_editor(&mut self) -> Result<(), String>;
+    fn close_editor(&mut self);
+    /// What the plugin and its window are waiting for, done once.
+    /// Returns how long the next wait may last.
+    fn turn(&mut self) -> Duration;
+}
+
+/// An X11 window for a plugin to put its own into: the connection, the
+/// window and the atom by which the desktop asks to close it.
+fn make_window(name: &str, size: (u16, u16)) -> Result<(RustConnection, u32, u32), String> {
+    let (x, screen) = RustConnection::connect(None).map_err(|e| format!("no X11 display ({e})"))?;
+    let root = &x.setup().roots[screen];
+    let window = x.generate_id().map_err(|e| e.to_string())?;
+    let events = EventMask::STRUCTURE_NOTIFY | EventMask::EXPOSURE;
+    let made = (|| {
+        x.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            window,
+            root.root,
+            0,
+            0,
+            size.0,
+            size.1,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().event_mask(events).background_pixel(root.black_pixel),
+        )?;
+        x.change_property8(PropMode::REPLACE, window, AtomEnum::WM_NAME, AtomEnum::STRING, name.as_bytes())?;
+        // Automated runs give their windows a class the desktop keeps out of sight.
+        let class = std::env::var("SHOTGUN_APP_ID").unwrap_or_else(|_| "shotgun-plugin".to_owned());
+        let both = format!("{class}\0{class}\0");
+        x.change_property8(PropMode::REPLACE, window, AtomEnum::WM_CLASS, AtomEnum::STRING, both.as_bytes())?;
+        let protocols = x.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
+        let delete = x.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
+        x.change_property32(PropMode::REPLACE, window, protocols, AtomEnum::ATOM, &[delete])?;
+        x.map_window(window)?;
+        x.flush()?;
+        Ok::<u32, Box<dyn std::error::Error>>(delete)
+    })();
+    let delete = made.map_err(|e| e.to_string())?;
+    Ok((x, window, delete))
+}
 
 struct Host;
 
@@ -562,47 +619,11 @@ impl Plugin {
             if view.isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) != kResultOk {
                 return Err("the plugin's window cannot be shown on this system".to_owned());
             }
-            let (x, screen) = RustConnection::connect(None).map_err(|e| format!("no X11 display ({e})"))?;
-            let root = &x.setup().roots[screen];
             let mut rect: ViewRect = std::mem::zeroed();
             view.getSize(&mut rect);
             let size =
                 ((rect.right - rect.left).clamp(64, 8192) as u16, (rect.bottom - rect.top).clamp(64, 8192) as u16);
-            let window = x.generate_id().map_err(|e| e.to_string())?;
-            let events = EventMask::STRUCTURE_NOTIFY | EventMask::EXPOSURE;
-            let made = (|| {
-                x.create_window(
-                    x11rb::COPY_DEPTH_FROM_PARENT,
-                    window,
-                    root.root,
-                    0,
-                    0,
-                    size.0,
-                    size.1,
-                    0,
-                    WindowClass::INPUT_OUTPUT,
-                    0,
-                    &CreateWindowAux::new().event_mask(events).background_pixel(root.black_pixel),
-                )?;
-                x.change_property8(
-                    PropMode::REPLACE,
-                    window,
-                    AtomEnum::WM_NAME,
-                    AtomEnum::STRING,
-                    self.name.as_bytes(),
-                )?;
-                // Automated runs give their windows a class the desktop keeps out of sight.
-                let class = std::env::var("SHOTGUN_APP_ID").unwrap_or_else(|_| "shotgun-plugin".to_owned());
-                let both = format!("{class}\0{class}\0");
-                x.change_property8(PropMode::REPLACE, window, AtomEnum::WM_CLASS, AtomEnum::STRING, both.as_bytes())?;
-                let protocols = x.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
-                let delete = x.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
-                x.change_property32(PropMode::REPLACE, window, protocols, AtomEnum::ATOM, &[delete])?;
-                x.map_window(window)?;
-                x.flush()?;
-                Ok::<u32, Box<dyn std::error::Error>>(delete)
-            })();
-            let delete = made.map_err(|e| e.to_string())?;
+            let (x, window, delete) = make_window(&self.name, size)?;
             if let Some(frame) = self.frame.to_com_ptr::<IPlugFrame>() {
                 view.setFrame(frame.as_ptr());
             }
@@ -706,6 +727,57 @@ impl Drop for Plugin {
     }
 }
 
+impl Hosted for Plugin {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn instrument(&self) -> bool {
+        self.instrument
+    }
+
+    fn has_editor(&self) -> bool {
+        self.has_editor
+    }
+
+    fn process(&mut self, sound: &mut [f32], notes: &[(u32, bool, u8, u8)]) -> bool {
+        Plugin::process(self, sound, notes)
+    }
+
+    fn reset(&mut self) {
+        Plugin::reset(self);
+    }
+
+    fn state(&mut self) -> Vec<u8> {
+        Plugin::state(self)
+    }
+
+    fn set_state(&mut self, state: &[u8]) -> bool {
+        Plugin::set_state(self, state)
+    }
+
+    fn open_editor(&mut self) -> Result<(), String> {
+        Plugin::open_editor(self)
+    }
+
+    fn close_editor(&mut self) {
+        Plugin::close_editor(self);
+    }
+
+    fn turn(&mut self) -> Duration {
+        Plugin::turn(self)
+    }
+}
+
+/// Loads the plugin at `path`: a `.clap` file, or a VST3 bundle.
+fn load(path: &Path) -> Result<Box<dyn Hosted>, String> {
+    if path.extension().is_some_and(|e| e == "clap") {
+        Ok(Box::new(clap::ClapPlugin::load(path)?))
+    } else {
+        Ok(Box::new(Plugin::load(path)?))
+    }
+}
+
 fn read_u32(from: &mut impl Read) -> std::io::Result<u32> {
     let mut bytes = [0u8; 4];
     from.read_exact(&mut bytes)?;
@@ -731,12 +803,12 @@ fn main() -> std::io::Result<()> {
         <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(copy)
     };
     let mut to = BufWriter::new(answers);
-    let mut plugin: Option<Plugin> = None;
+    let mut plugin: Option<Box<dyn Hosted>> = None;
     let mut sound = vec![0.0f32; MAX_FRAMES * 2];
     let mut bytes = vec![0u8; MAX_FRAMES * 8];
     loop {
         // Wait for a request, but not longer than the plugin's timers and window allow.
-        let wait = plugin.as_mut().map_or(Duration::from_millis(500), Plugin::turn);
+        let wait = plugin.as_mut().map_or(Duration::from_millis(500), |p| p.turn());
         if from.buffer().is_empty() {
             let mut request = [libc::pollfd { fd: descriptor, events: libc::POLLIN, revents: 0 }];
             // SAFETY: one valid entry.
@@ -757,10 +829,10 @@ fn main() -> std::io::Result<()> {
                 let mut path = vec![0u8; len];
                 from.read_exact(&mut path)?;
                 let path = PathBuf::from(String::from_utf8_lossy(&path).into_owned());
-                match Plugin::load(&path) {
+                match load(&path) {
                     Ok(loaded) => {
-                        to.write_all(&[1, loaded.instrument as u8, loaded.has_editor as u8])?;
-                        write_bytes(&mut to, loaded.name.as_bytes())?;
+                        to.write_all(&[1, loaded.instrument() as u8, loaded.has_editor() as u8])?;
+                        write_bytes(&mut to, loaded.name().as_bytes())?;
                         plugin = Some(loaded);
                     }
                     Err(why) => {
@@ -799,7 +871,7 @@ fn main() -> std::io::Result<()> {
                 to.write_all(&[1])?;
             }
             tag::GET_STATE => {
-                let state = plugin.as_mut().map(Plugin::state).unwrap_or_default();
+                let state = plugin.as_mut().map(|p| p.state()).unwrap_or_default();
                 write_bytes(&mut to, &state)?;
             }
             tag::SET_STATE => {
@@ -810,7 +882,7 @@ fn main() -> std::io::Result<()> {
                 to.write_all(&[taken as u8])?;
             }
             tag::EDITOR_OPEN => {
-                let opened = match plugin.as_mut().map(Plugin::open_editor) {
+                let opened = match plugin.as_mut().map(|p| p.open_editor()) {
                     Some(Ok(())) => true,
                     Some(Err(why)) => {
                         eprintln!("shotgun-plugin: {why}");

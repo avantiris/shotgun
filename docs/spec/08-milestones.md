@@ -420,7 +420,15 @@ chain second version, M16 mixing and mastering.
     was written, exported with the built-in instrument and with Surge XT.
   - Not checked: Kontakt or any bridged Windows plugin (needs the user's
     login first), anything by ear, the piano roll with a real mouse.
-  - Still to do: CLAP and LV2; playing notes from the computer keyboard;
+  - CLAP (2026-11-20): `.clap` plugins are hosted by the same program
+    behind the same requests (`clap-sys`; notes, state, the plugin's
+    window, its timers and descriptors). Checked with Surge XT's CLAP
+    build: the tests that pass for VST3 pass for it, and in the app a
+    note clip played through it into a sound export.
+  - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
+    as VST3 or CLAP too); playing notes from the computer keyboard (the
+    engine reads half a second ahead, so a note played by hand would
+    sound that late: it needs a live path of its own);
     velocity editing; copy and paste of notes; plugin parameters as
     keyframes; more than one plugin per track; a plugin that hangs (not
     crashes) stalls the sound of all tracks until it answers.

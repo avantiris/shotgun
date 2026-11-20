@@ -15,7 +15,9 @@ fn bundle(name: &str) -> Option<PathBuf> {
         eprintln!("SHOTGUN_TEST_VST3 is not set: no plugin to test with");
         return None;
     };
-    Some(PathBuf::from(folder).join(name))
+    // (CLAP plugins lie in the folder beside the VST3 ones.)
+    let folder = PathBuf::from(folder);
+    Some(if name.ends_with(".clap") { folder.with_file_name("clap").join(name) } else { folder.join(name) })
 }
 
 fn level(block: &[f32]) -> f32 {
@@ -25,7 +27,16 @@ fn level(block: &[f32]) -> f32 {
 
 #[test]
 fn an_instrument_plays_the_notes_it_is_sent_and_keeps_its_state() {
-    let Some(path) = bundle("Surge XT.vst3") else { return };
+    instrument("Surge XT.vst3");
+}
+
+#[test]
+fn a_clap_instrument_plays_the_notes_it_is_sent_and_keeps_its_state() {
+    instrument("Surge XT.clap");
+}
+
+fn instrument(name: &str) {
+    let Some(path) = bundle(name) else { return };
     let mut plugin = Client::start(&path).unwrap();
     assert!(plugin.loaded.instrument && plugin.loaded.has_editor, "{:?}", plugin.loaded);
     assert_eq!(plugin.loaded.name, "Surge XT");
@@ -56,7 +67,16 @@ fn an_instrument_plays_the_notes_it_is_sent_and_keeps_its_state() {
 
 #[test]
 fn an_effect_treats_sound_and_a_plugin_that_dies_costs_only_its_own_sound() {
-    let Some(path) = bundle("Surge XT Effects.vst3") else { return };
+    effect("Surge XT Effects.vst3");
+}
+
+#[test]
+fn a_clap_effect_treats_sound_and_a_plugin_that_dies_costs_only_its_own_sound() {
+    effect("Surge XT Effects.clap");
+}
+
+fn effect(name: &str) {
+    let Some(path) = bundle(name) else { return };
     let mut plugin = Client::start(&path).unwrap();
     assert!(!plugin.loaded.instrument);
     let tone: Vec<f32> = (0..2 * 9600).map(|i| 0.2 * ((i / 2) as f32 * 0.05).sin()).collect();
@@ -92,7 +112,17 @@ fn what_is_not_a_plugin_is_refused_with_a_reason() {
 #[test]
 #[ignore = "opens a window"]
 fn the_editor_window_opens_and_closes() {
-    let Some(path) = bundle("Surge XT.vst3") else { return };
+    editor("Surge XT.vst3");
+}
+
+#[test]
+#[ignore = "opens a window"]
+fn the_editor_window_of_a_clap_plugin_opens_and_closes() {
+    editor("Surge XT.clap");
+}
+
+fn editor(name: &str) {
+    let Some(path) = bundle(name) else { return };
     let mut plugin = Client::start(&path).unwrap();
     assert!(plugin.open_editor());
     // The plugin keeps working while its window is open, and the window is there.
