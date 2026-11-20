@@ -421,13 +421,23 @@ fn bench_seek(path: &Path, threads: i32, skip_nonref: bool, max_dim: u32) -> any
 
 /// Exports a project without the app: the same code the export panel runs.
 fn bench_export(root: &Path, preset: &str, range: Option<(i64, i64)>) -> anyhow::Result<()> {
-    use sg_export::{Job, Preset};
-    let preset = match preset.split_once(':') {
-        None if preset == "master" => Preset::Master,
-        None if preset == "vertical" => Preset::Vertical,
-        None if preset == "gif" => Preset::Gif,
-        Some(("share", mb)) => Preset::Share { megabytes: mb.parse().context("share:<megabytes>")? },
-        _ => bail!("preset must be master, vertical, gif or share:<megabytes>"),
+    use sg_export::{Compression, Job, Preset};
+    // An optional last part is the compression, 0 (none) to 4 (smallest).
+    let parts: Vec<&str> = preset.split(':').collect();
+    let level = |part: Option<&&str>| -> anyhow::Result<Compression> {
+        Ok(match part {
+            Some(level) => Compression::from_level(level.parse().context("compression 0 to 4")?),
+            None => Compression::default(),
+        })
+    };
+    let preset = match parts.as_slice() {
+        ["master"] => Preset::Master,
+        ["vertical"] => Preset::Vertical,
+        ["gif", rest @ ..] => Preset::Gif { compression: level(rest.first())? },
+        ["share", mb, rest @ ..] => {
+            Preset::Share { megabytes: mb.parse().context("share:<megabytes>")?, compression: level(rest.first())? }
+        }
+        _ => bail!("preset must be master, vertical, gif[:<0-4>] or share:<megabytes>[:<0-4>]"),
     };
     let opened = sg_project::open(root, || {})?;
     let project = opened.document.project().clone();

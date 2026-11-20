@@ -187,6 +187,23 @@ fn export_starts_from_the_panel() {
     harness.run_steps(3);
     let app = harness.state();
     assert!(app.commands.iter().any(|c| matches!(c, Command::Export { root, .. } if *root == app.root)));
+    // (The first export ends, so that the panel offers its button again.)
+    harness.state_mut().shell.export_update(sg_ui::ExportUpdate::Failed("cancelled".to_owned()));
+    harness.run_steps(2);
+    // A share copy is compressed as chosen: "Strong" is level 3; light without a choice.
+    click(&mut harness, "Share copy");
+    assert!(harness.query_by_label("Compression").is_some());
+    click(&mut harness, "Strong");
+    let buttons: Vec<_> = harness.get_all_by_label("Export").collect();
+    buttons.last().unwrap().click();
+    harness.run_steps(3);
+    let levels: Vec<u8> = harness
+        .state()
+        .commands
+        .iter()
+        .filter_map(|c| if let Command::Export { request, .. } = c { Some(request.compression) } else { None })
+        .collect();
+    assert_eq!(levels, [1, 3]);
 }
 
 #[test]

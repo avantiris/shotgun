@@ -119,7 +119,7 @@ Cutting
 | X | ripple delete selection |
 | Shift + X | delete, leave gap |
 | W | select clip under playhead (repeat: next track up) |
-| C / V | copy selected clips / paste them at the playhead, on the same tracks, with what they were given (volume, fades, placement). The copies go down over what is in their place, like a move with Ctrl (`PROPOSED`, 2026-11-19; a paste without room was refused before) and stay selected |
+| C / V | copy selected clips / paste them at the playhead, on the same tracks, with what they were given (volume, fades, placement). A paste covers nothing (feedback F7.2): clips copied from one track go to that track if they fit at the playhead, otherwise to the nearest track of the kind with room there, otherwise to a new track. The copies stay selected |
 | Ctrl + C / Ctrl + X | copy / cut (copy and take out, leaving the gap) the selected clips (feedback F4.4) |
 | Ctrl + V | paste: the copied clips, if they were the last thing copied; if a link, file or image was copied anywhere since: **import it**. How it is told apart: copying clips puts a short text on the system clipboard as a mark, and Ctrl + V looks at what the clipboard holds now. In a text field the three keys belong to the text |
 | G | add marker at the playhead (again on the same frame: remove it) |

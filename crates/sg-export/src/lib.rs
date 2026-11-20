@@ -26,10 +26,60 @@ pub enum Preset {
     Master,
     /// 9:16: the frame turned upright; pictures fill it and lose their sides.
     Vertical,
-    /// H.264 small enough to send: at most this many megabytes (10^6 bytes).
-    Share { megabytes: u32 },
-    /// Animated GIF, 480 pixels wide, 20 fps.
-    Gif,
+    /// H.264 to send: compressed as `compression` says, and in no case
+    /// larger than this many megabytes (10^6 bytes).
+    Share { megabytes: u32, compression: Compression },
+    /// Animated GIF; `compression` decides its width, frame rate and how
+    /// much the encoder may give up for a smaller file.
+    Gif { compression: Compression },
+}
+
+/// How much quality a share copy or GIF trades for a smaller file
+/// (feedback F7.1). `Light` is what both were before there was a choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Compression {
+    /// The best the format can do; the largest file.
+    None,
+    #[default]
+    Light,
+    Medium,
+    Strong,
+    /// As small as is still worth looking at.
+    Smallest,
+}
+
+impl Compression {
+    pub const ALL: [Compression; 5] =
+        [Compression::None, Compression::Light, Compression::Medium, Compression::Strong, Compression::Smallest];
+
+    /// 0 (none) to 4 (smallest); anything above counts as 4.
+    pub fn from_level(level: u8) -> Compression {
+        Compression::ALL[(level as usize).min(4)]
+    }
+
+    /// GIF: width in pixels, frames per second, gifski's quality, and its
+    /// lossy and motion quality (not passed where `None`).
+    fn gif(self) -> (u32, u32, u32, Option<u32>, Option<u32>) {
+        match self {
+            Compression::None => (480, 20, 100, None, None),
+            Compression::Light => (480, 20, 90, None, None),
+            Compression::Medium => (480, 15, 75, Some(60), Some(70)),
+            Compression::Strong => (400, 12, 60, Some(40), Some(50)),
+            Compression::Smallest => (320, 10, 45, Some(25), Some(35)),
+        }
+    }
+
+    /// Share copy: x264's constant quality (lower is better) and the
+    /// greatest height and frame rate.
+    fn share(self) -> (u32, u32, f64) {
+        match self {
+            Compression::None => (14, 2160, 60.0),
+            Compression::Light => (21, 1080, 60.0),
+            Compression::Medium => (26, 1080, 30.0),
+            Compression::Strong => (30, 720, 30.0),
+            Compression::Smallest => (35, 480, 30.0),
+        }
+    }
 }
 
 impl Preset {
@@ -38,12 +88,12 @@ impl Preset {
             Preset::Master => "master",
             Preset::Vertical => "vertical",
             Preset::Share { .. } => "share",
-            Preset::Gif => "gif",
+            Preset::Gif { .. } => "gif",
         }
     }
 
     fn extension(&self) -> &'static str {
-        if *self == Preset::Gif { "gif" } else { "mp4" }
+        if matches!(self, Preset::Gif { .. }) { "gif" } else { "mp4" }
     }
 }
 
@@ -561,11 +611,16 @@ fn tool(cmd: Command, cancel: &Cancel) -> Result<(), ExportError> {
     run_lines(cmd, cancel, |_| {}).map_err(ExportError::from)
 }
 
-/// Two-pass H.264 under a size limit (S4, D6).
+/// H.264 at the quality the compression asks for; only if that comes out
+/// above the size limit, two passes at the bitrate that fits (S4, D6).
+/// A short clip is therefore as small as its quality needs, not as large
+/// as the limit allows.
+#[allow(clippy::too_many_arguments)]
 fn share_copy(
     render: &Path,
     out: &Path,
     megabytes: u32,
+    compression: Compression,
     seconds: f64,
     fps: f64,
     work: &Path,
@@ -581,6 +636,24 @@ fn share_copy(
         tool(cmd, cancel).is_ok() && audio.is_file()
     };
     let audio_bytes = if has_audio { std::fs::metadata(&audio)?.len() as f64 } else { 0.0 };
+    {
+        let (crf, height, most) = compression.share();
+        progress("compressing", 0.1);
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-v", "error", "-nostdin", "-y", "-i"]).arg(render);
+        if has_audio {
+            cmd.arg("-i").arg(&audio).args(["-map", "0:v:0", "-map", "1:a:0", "-c:a", "copy"]);
+        } else {
+            cmd.arg("-an");
+        }
+        let filter = format!("fps={},scale=-2:'min({height},ih)':flags=lanczos", fps.min(most));
+        cmd.args(["-vf", &filter, "-c:v", "libx264", "-preset", "medium", "-crf", &crf.to_string()]);
+        cmd.args(["-pix_fmt", "yuv420p"]).args(COLOUR).args(["-movflags", "+faststart"]).arg(out);
+        tool(cmd, cancel)?;
+        if std::fs::metadata(out)?.len() as f64 <= target {
+            return Ok(());
+        }
+    }
     let budget = target * 0.99 - audio_bytes - target * 0.003;
     let mut bitrate = (budget * 8.0 / seconds.max(0.1)).max(50_000.0);
     // Less picture when there are fewer bits to spend (proposed ladder of S4).
@@ -632,7 +705,7 @@ fn share_copy(
 }
 
 /// GIF through gifski (S4, D7).
-fn gif(render: &Path, out: &Path, cancel: &Cancel) -> Result<(), ExportError> {
+fn gif(render: &Path, out: &Path, compression: Compression, cancel: &Cancel) -> Result<(), ExportError> {
     let quote = |p: &Path| -> Result<String, ExportError> {
         let text = p.to_string_lossy();
         // The paths are made by the app from slugs; refuse anything that could break the quoting.
@@ -642,9 +715,16 @@ fn gif(render: &Path, out: &Path, cancel: &Cancel) -> Result<(), ExportError> {
             Ok(format!("'{text}'"))
         }
     };
+    let (width, fps, quality, lossy, motion) = compression.gif();
+    let mut options = format!("--fps {fps} --quality {quality}");
+    for (name, value) in [("--lossy-quality", lossy), ("--motion-quality", motion)] {
+        if let Some(value) = value {
+            options.push_str(&format!(" {name} {value}"));
+        }
+    }
     let script = format!(
-        "set -o pipefail; ffmpeg -v error -nostdin -i {} -an -vf 'fps=20,scale=480:-2:flags=lanczos,format=yuv444p' -f yuv4mpegpipe - \
-         | gifski --quiet --y4m-color-override bt709 --fps 20 --quality 90 -o {} -",
+        "set -o pipefail; ffmpeg -v error -nostdin -i {} -an -vf 'fps={fps},scale={width}:-2:flags=lanczos,format=yuv444p' -f yuv4mpegpipe - \
+         | gifski --quiet --y4m-color-override bt709 {options} -o {} -",
         quote(render)?,
         quote(out)?
     );
@@ -680,7 +760,7 @@ pub fn export(
     let work = exports.join(format!(".tmp-{}", std::process::id()));
     std::fs::create_dir_all(&work)?;
     let result = (|| {
-        let has_sound = job.preset != Preset::Gif
+        let has_sound = !matches!(job.preset, Preset::Gif { .. })
             && sequence.tracks.iter().any(|t| t.kind == sg_core::TrackKind::Audio && !t.clips.is_empty());
         let audio = work.join("audio.wav");
         if has_sound {
@@ -730,7 +810,7 @@ pub fn export(
         }
         // A master is the same stream remuxed and is checked once, as the
         // final file; the others are made from this render, so it is checked.
-        if matches!(job.preset, Preset::Share { .. } | Preset::Gif) {
+        if matches!(job.preset, Preset::Share { .. } | Preset::Gif { .. }) {
             progress("checking", 0.0);
             verify(&rendered, frames, cancel)?;
         }
@@ -750,15 +830,15 @@ pub fn export(
                     std::fs::rename(&rendered, &out)?;
                 }
             }
-            Preset::Share { megabytes } => {
-                share_copy(&rendered, &out, *megabytes, seconds, fps, &work, cancel, progress)?
+            Preset::Share { megabytes, compression } => {
+                share_copy(&rendered, &out, *megabytes, *compression, seconds, fps, &work, cancel, progress)?
             }
-            Preset::Gif => {
+            Preset::Gif { compression } => {
                 progress("making GIF", 0.5);
-                gif(&rendered, &out, cancel)?;
+                gif(&rendered, &out, *compression, cancel)?;
             }
         }
-        if job.preset != Preset::Gif {
+        if !matches!(job.preset, Preset::Gif { .. }) {
             progress("checking", 0.5);
             // The share copy may have a lower frame rate; count what it should have.
             let expected = if matches!(job.preset, Preset::Share { .. }) { -1 } else { frames };

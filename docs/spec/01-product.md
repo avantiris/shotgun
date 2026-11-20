@@ -58,6 +58,10 @@ marked `PROPOSED` (my design, not yet reviewed) or `OPEN`.
   - 9:16 vertical, with reframing of landscape footage in the editor
   - GIF to clipboard for short clips
   - Compressed share copy under a target size, copyable to the clipboard
+  - GIF and share copy take a compression level, from none to smallest
+    (asked for in feedback F7.1, 2026-11-20; the levels' values are
+    `PROPOSED`, in `sg-export`). The size limit of a share copy is an upper
+    bound, not a target: a short clip is as small as its level makes it.
 
 ## Use case 3: music production (later, architecture must be ready now)
 

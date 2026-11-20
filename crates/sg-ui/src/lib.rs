@@ -624,7 +624,13 @@ impl Shell {
             Action::ExportGif => {
                 let range = self.gif_range();
                 self.start_export(
-                    ExportRequest { preset: ExportPreset::Gif, megabytes: 10, range, to_clipboard: true },
+                    ExportRequest {
+                        preset: ExportPreset::Gif,
+                        megabytes: 10,
+                        compression: self.export.compression(),
+                        range,
+                        to_clipboard: true,
+                    },
                     commands,
                 );
             }
@@ -784,15 +790,19 @@ impl Shell {
                 }
             }
             DevStep::Export(what) => {
-                let (preset, megabytes) = match what.split_once(':') {
-                    Some(("share", mb)) => (ExportPreset::Share, mb.parse().unwrap_or(10)),
-                    _ if what == "vertical" => (ExportPreset::Vertical, 10),
-                    _ if what == "gif" => (ExportPreset::Gif, 10),
-                    _ => (ExportPreset::Master, 10),
+                // `gif:<0-4>` and `share:<MB>:<0-4>` name the compression; 1 (light) without.
+                let parts: Vec<&str> = what.split(':').collect();
+                let level = |part: Option<&&str>| part.and_then(|l| l.parse().ok()).unwrap_or(1);
+                let (preset, megabytes, compression) = match parts.as_slice() {
+                    ["share", mb, rest @ ..] => (ExportPreset::Share, mb.parse().unwrap_or(10), level(rest.first())),
+                    ["vertical"] => (ExportPreset::Vertical, 10, 1),
+                    ["gif", rest @ ..] => (ExportPreset::Gif, 10, level(rest.first())),
+                    _ => (ExportPreset::Master, 10, 1),
                 };
                 let range = if preset == ExportPreset::Gif { self.gif_range() } else { None };
                 // Scripted exports never touch the clipboard: it belongs to the person at the desk.
-                self.start_export(ExportRequest { preset, megabytes, range, to_clipboard: false }, &mut commands);
+                let request = ExportRequest { preset, megabytes, compression, range, to_clipboard: false };
+                self.start_export(request, &mut commands);
             }
             DevStep::Checkpoint(name) => {
                 if let Some(session) = &self.session {

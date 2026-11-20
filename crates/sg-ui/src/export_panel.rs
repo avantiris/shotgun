@@ -18,6 +18,9 @@ pub struct ExportRequest {
     pub preset: ExportPreset,
     /// Size limit of the share copy in megabytes.
     pub megabytes: u32,
+    /// Share copy and GIF: 0 (no compression beyond the format's own) to
+    /// 4 (smallest file).
+    pub compression: u8,
     /// Frames (start, end); the whole sequence if `None`.
     pub range: Option<(i64, i64)>,
     /// Put the finished file on the clipboard.
@@ -35,6 +38,7 @@ pub struct ExportPanel {
     open: bool,
     preset: ExportPreset,
     megabytes: u32,
+    compression: u8,
     to_clipboard: bool,
     /// Export the selection or marked stretch instead of everything.
     only_range: bool,
@@ -49,6 +53,7 @@ impl Default for ExportPanel {
             open: false,
             preset: ExportPreset::Master,
             megabytes: 10,
+            compression: 1,
             to_clipboard: true,
             only_range: false,
             running: None,
@@ -75,6 +80,11 @@ impl ExportPanel {
 
     pub fn is_running(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// The compression chosen in the panel, for the GIF key.
+    pub fn compression(&self) -> u8 {
+        self.compression
     }
 
     /// The last export again, if there was one.
@@ -140,8 +150,8 @@ impl ExportPanel {
                                 "Vertical 9:16",
                                 "Upright frame; pictures fill it and lose their sides",
                             ),
-                            (ExportPreset::Share, "Share copy", "Small enough to send (H.264), under a size you set"),
-                            (ExportPreset::Gif, "GIF", "The selection or the stretch between markers, 480 px wide"),
+                            (ExportPreset::Share, "Share copy", "To send (H.264): compressed as chosen, never above a size you set"),
+                            (ExportPreset::Gif, "GIF", "The selection or the stretch between markers"),
                         ] {
                             ui.horizontal(|ui| {
                                 ui.radio_value(&mut self.preset, preset, name);
@@ -159,6 +169,24 @@ impl ExportPanel {
                             }
                             _ => {}
                         });
+                        if matches!(self.preset, ExportPreset::Share | ExportPreset::Gif) {
+                            let gif = self.preset == ExportPreset::Gif;
+                            ui.horizontal(|ui| {
+                                ui.label("Compression");
+                                for (level, name, share, as_gif) in [
+                                    (0, "None", "Near the master's quality, up to 4K. The largest file.", "The best a GIF can be: 480 px wide, 20 pictures a second, nothing given up. The largest file."),
+                                    (1, "Light", "Good quality at up to 1080p. No loss you would notice.", "480 px, 20 pictures a second, hardly any loss."),
+                                    (2, "Medium", "1080p at up to 30 pictures a second; fine detail softens.", "480 px, 15 pictures a second, some noise in flat areas. Often half the size of Light."),
+                                    (3, "Strong", "720p; visibly softer, much smaller.", "400 px, 12 pictures a second, visible noise and less smooth motion."),
+                                    (4, "Smallest", "480p; blocky in motion. For when size is all that counts.", "320 px, 10 pictures a second, rough. For when size is all that counts."),
+                                ] {
+                                    let tip = if gif { as_gif } else { share };
+                                    if ui.selectable_label(self.compression == level, name).on_hover_text(tip).clicked() {
+                                        self.compression = level;
+                                    }
+                                }
+                            });
+                        }
                         if self.preset != ExportPreset::Gif {
                             // The same stretch the GIF key takes.
                             let what = match gif_range {
@@ -195,6 +223,7 @@ impl ExportPanel {
                                     action = Some(ExportAction::Start(ExportRequest {
                                         preset: self.preset,
                                         megabytes: self.megabytes,
+                                        compression: self.compression,
                                         range,
                                         to_clipboard: clipboard,
                                     }));

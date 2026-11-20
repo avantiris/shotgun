@@ -1257,8 +1257,13 @@ fn run_export(
     let preset = match request.preset {
         ExportPreset::Master => sg_export::Preset::Master,
         ExportPreset::Vertical => sg_export::Preset::Vertical,
-        ExportPreset::Share => sg_export::Preset::Share { megabytes: request.megabytes },
-        ExportPreset::Gif => sg_export::Preset::Gif,
+        ExportPreset::Share => sg_export::Preset::Share {
+            megabytes: request.megabytes,
+            compression: sg_export::Compression::from_level(request.compression),
+        },
+        ExportPreset::Gif => {
+            sg_export::Preset::Gif { compression: sg_export::Compression::from_level(request.compression) }
+        }
     };
     let job = sg_export::Job { root, project, preset, range: request.range };
     // One event per stage change or percent, not one per frame.

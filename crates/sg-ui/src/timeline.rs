@@ -1847,30 +1847,71 @@ impl Timeline {
             Action::Copy => self.copy(&sequence),
             Action::PasteClips => {
                 self.selection.clear();
-                // Like a move with Ctrl: the copies go down over whatever
-                // is in their place (07-ui-keybinds.md), and stay selected.
-                let mut over: Vec<(TrackId, Clip)> = Vec::new();
-                for copied in &self.clipboard {
-                    let Some(track) = sequence.tracks.get(copied.row) else { continue };
-                    let start = Lane::of(track, &sequence).units(playhead) + copied.offset;
-                    let clip = Clip { id: session.new_clip_id(), start, ..copied.clip };
-                    let mut down = vec![Op::InsertClip { seq, track: track.id, clip }];
-                    // The copy keeps what the original was given: volume, fades, placement.
-                    if let Some(props) = &copied.props {
-                        down.push(Op::SetClipProps { seq, track: track.id, clip: clip.id, props: Some(props.clone()) });
-                    }
-                    ops.extend(down);
-                    over.push((track.id, clip));
-                }
-                if !ops.is_empty() {
-                    // Free room: plain insertions. Otherwise over what is there.
-                    let pasted = match session.apply(Op::Batch(std::mem::take(&mut ops)), None) {
-                        Ok(()) => Ok(()),
-                        Err(_) => self.paste_over(session, seq, &over),
+                // Nothing is covered by a paste (feedback F7.2): the clips
+                // copied from one track stay together and go to that track
+                // if they fit there at the playhead, otherwise to the
+                // nearest track of the kind that has the room, otherwise to
+                // a new one.
+                let mut rows: Vec<usize> = self.clipboard.iter().map(|c| c.row).collect();
+                rows.dedup();
+                rows.sort_unstable();
+                rows.dedup();
+                let mut placed: Vec<(TrackId, Clip)> = Vec::new();
+                let mut taken: Vec<TrackId> = Vec::new();
+                let mut inserts: Vec<Op> = Vec::new();
+                let mut added = [0usize; 2];
+                for row in rows {
+                    let Some(home) = sequence.tracks.get(row) else { continue };
+                    let at = Lane::of(home, &sequence).units(playhead);
+                    let group: Vec<&Copied> = self.clipboard.iter().filter(|c| c.row == row).collect();
+                    let fits = |track: &Track| {
+                        group
+                            .iter()
+                            .all(|c| track.clips.range(at + c.offset, at + c.offset + c.clip.len).next().is_none())
                     };
-                    match pasted {
+                    // Nearest first; for pictures the track above before the one below (it shows on top).
+                    let mut others: Vec<(usize, &Arc<Track>)> = sequence
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, t)| t.kind == home.kind && (*index == row || !t.mix.hidden))
+                        .collect();
+                    others.sort_by_key(|(index, _)| (index.abs_diff(row), *index));
+                    let free = others.into_iter().map(|(_, t)| t).find(|t| !taken.contains(&t.id) && fits(t));
+                    let track = match free {
+                        Some(track) => track.id,
+                        None => {
+                            let kind = home.kind as usize;
+                            let count = sequence.tracks.iter().filter(|t| t.kind == home.kind).count() + added[kind];
+                            let (index, name) = match home.kind {
+                                TrackKind::Video => (0, format!("V{}", count + 1)),
+                                TrackKind::Audio => {
+                                    (sequence.tracks.len() + added[0] + added[1], format!("A{}", count + 1))
+                                }
+                            };
+                            added[kind] += 1;
+                            let id = session.new_track_id();
+                            let track = sg_core::TrackHeader { id, kind: home.kind, name };
+                            ops.push(Op::AddTrack { seq, index, track });
+                            id
+                        }
+                    };
+                    taken.push(track);
+                    for copied in group {
+                        let clip = Clip { id: session.new_clip_id(), start: at + copied.offset, ..copied.clip };
+                        inserts.push(Op::InsertClip { seq, track, clip });
+                        // The copy keeps what the original was given: volume, fades, placement.
+                        if let Some(props) = &copied.props {
+                            inserts.push(Op::SetClipProps { seq, track, clip: clip.id, props: Some(props.clone()) });
+                        }
+                        placed.push((track, clip));
+                    }
+                }
+                ops.append(&mut inserts);
+                if !ops.is_empty() {
+                    match session.apply(Op::Batch(std::mem::take(&mut ops)), None) {
                         Ok(()) => {
-                            self.selection = over
+                            self.selection = placed
                                 .iter()
                                 .map(|(track, clip)| Sel { track: *track, start: clip.start, id: clip.id })
                                 .collect()
@@ -1968,24 +2009,6 @@ impl Timeline {
     /// Whether clips have been copied and can be pasted.
     pub fn has_copied(&self) -> bool {
         !self.clipboard.is_empty()
-    }
-
-    /// Pastes over what is in the way; the properties follow each copy.
-    fn paste_over(
-        &mut self,
-        session: &mut Session,
-        seq: sg_core::SequenceId,
-        over: &[(TrackId, Clip)],
-    ) -> Result<(), sg_core::OpError> {
-        let group = session.new_group();
-        session.move_over_in(Vec::new(), over.to_vec(), Some(group))?;
-        for ((track, clip), copied) in over.iter().zip(&self.clipboard) {
-            if let Some(props) = &copied.props {
-                let op = Op::SetClipProps { seq, track: *track, clip: clip.id, props: Some(props.clone()) };
-                session.apply(op, Some(group))?;
-            }
-        }
-        Ok(())
     }
 
     /// Scrolls so that `frame` is in view (after a jump).
@@ -2599,14 +2622,29 @@ mod tests {
         let (video, audio) = layout(&session);
         // W picked the lowest track under the playhead: the audio clip.
         assert_eq!((video.len(), audio), (2, vec![(0, 600), (600, 600), (1500, 600)]));
-        // Pasting onto something covers it, as a move with Ctrl does: the
-        // clip pasted before keeps its first 100 frames. One undo takes it back.
+        // Pasting onto something covers nothing: there is no other audio
+        // track, so one is made for the copy. One undo takes both back.
         let mut error = None;
         timeline.act(Action::PasteClips, &mut session, 1600, &mut error);
         assert_eq!(error, None);
-        assert_eq!(layout(&session).1, vec![(0, 600), (600, 600), (1500, 100), (1600, 600)]);
-        session.undo().unwrap();
         assert_eq!(layout(&session).1, vec![(0, 600), (600, 600), (1500, 600)]);
+        let lanes = |session: &Session| -> Vec<(String, Vec<i64>)> {
+            let sequence = &session.project().sequences[0];
+            let audio = sequence.tracks.iter().filter(|t| t.kind == TrackKind::Audio);
+            audio
+                .map(|t| (t.name.clone(), t.clips.iter().map(|c| Lane::of(t, sequence).frame(c.start)).collect()))
+                .collect()
+        };
+        assert_eq!(lanes(&session), vec![("A1".to_owned(), vec![0, 600, 1500]), ("A2".to_owned(), vec![1600])]);
+        // Again where only the new track has room: no third one is made.
+        timeline.act(Action::PasteClips, &mut session, 900, &mut error);
+        assert_eq!(lanes(&session)[1], ("A2".to_owned(), vec![900, 1600]));
+        timeline.act(Action::PasteClips, &mut session, 1700, &mut error);
+        assert_eq!(lanes(&session).len(), 3);
+        for _ in 0..3 {
+            session.undo().unwrap();
+        }
+        assert_eq!(lanes(&session), vec![("A1".to_owned(), vec![0, 600, 1500])]);
         // Cut copies and takes out, leaving the gap; the copy carries what the clip was given.
         let project = session.project().clone();
         let seq = &project.sequences[0];

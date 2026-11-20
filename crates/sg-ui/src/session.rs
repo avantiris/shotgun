@@ -301,16 +301,6 @@ impl Session {
     /// out, then each of `clips` is put down over what is in its place.
     /// One undo step.
     pub fn move_over(&mut self, removes: Vec<Op>, clips: Vec<(sg_core::TrackId, Clip)>) -> Result<(), OpError> {
-        self.move_over_in(removes, clips, None)
-    }
-
-    /// The same as part of an undo group (a paste that also sets properties).
-    pub fn move_over_in(
-        &mut self,
-        removes: Vec<Op>,
-        clips: Vec<(sg_core::TrackId, Clip)>,
-        group: Option<u64>,
-    ) -> Result<(), OpError> {
         // Each step is planned on the state the one before leaves behind.
         let (mut project, _) = sg_core::apply(self.project(), &Op::Batch(removes.clone()))?;
         let mut ops = removes;
@@ -320,7 +310,7 @@ impl Session {
             project = sg_core::apply(&project, &op)?.0;
             ops.push(op);
         }
-        self.apply(Op::Batch(ops), group)
+        self.apply(Op::Batch(ops), None)
     }
 
     /// Adds a track: video on top, audio at the bottom.
