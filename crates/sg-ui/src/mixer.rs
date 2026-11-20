@@ -605,6 +605,8 @@ pub fn with_voice(mix: TrackSettings, set: &sg_media::voice::Suggestion) -> Trac
         drive: set.drive,
         voice: true,
         duck_db: 0.0,
+        reverb: set.reverb,
+        echo: set.echo,
         ..mix
     }
 }

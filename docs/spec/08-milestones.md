@@ -432,7 +432,11 @@ chain second version, M16 mixing and mastering.
     are the same sound. `PROPOSED`: one room and one echo with fixed
     character (about 1.8 s of tail; repeats 38 % of the one before,
     between 300 Hz and 4 kHz); nothing of them can be set yet.
-  - Still to do: the styles do not set the sends; more styles; settings
+  - Styles (2026-11-20): five now (rap lead, doubles, sung hook, melodic
+    rap with hard pitch correction, ad-libs), and each sets its share of
+    reverb and echo. `PROPOSED`: the two new ones and all send amounts
+    are choices, not measured on references.
+  - Still to do: pitch correction by hand per note; settings
     for the room and the echo; the tail after the last clip is cut off at
     the end of the sequence in an export.
 - [ ] M16 Mixing and mastering

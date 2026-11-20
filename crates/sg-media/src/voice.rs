@@ -55,16 +55,24 @@ pub enum VoiceStyle {
     Doubles,
     /// A sung hook: fuller and less squeezed.
     SungHook,
+    /// Melodic rap: sung-rapped lines snapped hard onto the scale (the
+    /// audible pitch correction of trap), bright, with echo.
+    Melodic,
+    /// Shouts and answers behind the lines: thin, far back, wet.
+    AdLibs,
 }
 
 impl VoiceStyle {
-    pub const ALL: [VoiceStyle; 3] = [VoiceStyle::RapLead, VoiceStyle::Doubles, VoiceStyle::SungHook];
+    pub const ALL: [VoiceStyle; 5] =
+        [VoiceStyle::RapLead, VoiceStyle::Doubles, VoiceStyle::SungHook, VoiceStyle::Melodic, VoiceStyle::AdLibs];
 
     pub fn name(self) -> &'static str {
         match self {
             VoiceStyle::RapLead => "Rap lead",
-            VoiceStyle::Doubles => "Doubles and ad-libs",
+            VoiceStyle::Doubles => "Doubles",
             VoiceStyle::SungHook => "Sung hook",
+            VoiceStyle::Melodic => "Melodic rap (hard tune)",
+            VoiceStyle::AdLibs => "Ad-libs",
         }
     }
 
@@ -88,6 +96,10 @@ impl VoiceStyle {
             VoiceStyle::RapLead => (-8.5, 0.5, 12.0, 4.0, -17.0, 0.6),
             VoiceStyle::Doubles => (-7.0, -2.0, 10.0, 6.0, -23.0, 0.85),
             VoiceStyle::SungHook => (-9.5, 1.5, 12.5, 3.0, -17.0, 0.55),
+            // (Not measured on references of their own: the lead's and
+            // the doubles' values, moved the way these voices are mixed.)
+            VoiceStyle::Melodic => (-7.5, 0.5, 11.0, 4.0, -17.0, 0.6),
+            VoiceStyle::AdLibs => (-6.0, -3.0, 9.0, 6.0, -25.0, 0.9),
         }
     }
 }
@@ -122,6 +134,9 @@ pub struct Suggestion {
     pub drive: f32,
     /// How far the other tracks should go down under this voice, in decibels.
     pub duck_db: f32,
+    /// How much goes to the shared reverb and echo, 0 to 1.
+    pub reverb: f32,
+    pub echo: f32,
 }
 
 fn db(power: f64) -> f32 {
@@ -352,25 +367,44 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
         // A sung hook is corrected, fast (the sound of the records); a rap
         // verse is left alone, but the key is set so that turning the
         // correction up does the right thing. Without a key: every semitone.
-        tune: if style == VoiceStyle::SungHook { 1.0 } else { 0.0 },
+        tune: if matches!(style, VoiceStyle::SungHook | VoiceStyle::Melodic) { 1.0 } else { 0.0 },
         tune_key: stats.key.map_or(0, |(root, _)| root),
         tune_scale: stats.key.map_or(0, |(_, minor)| if minor { 2 } else { 1 }),
-        tune_speed: 0.15,
+        // (At once for melodic rap: the steps between notes are the sound.)
+        tune_speed: if style == VoiceStyle::Melodic { 0.0 } else { 0.15 },
         // (Choices, not measurements: how even, how dense, and how much room the beat makes.)
         level: match style {
             VoiceStyle::RapLead => 0.6,
             VoiceStyle::Doubles => 0.7,
             VoiceStyle::SungHook => 0.5,
+            VoiceStyle::Melodic => 0.6,
+            VoiceStyle::AdLibs => 0.7,
         },
         drive: match style {
             VoiceStyle::RapLead => 0.25,
             VoiceStyle::Doubles => 0.35,
             VoiceStyle::SungHook => 0.15,
+            VoiceStyle::Melodic => 0.2,
+            VoiceStyle::AdLibs => 0.4,
         },
         duck_db: match style {
-            VoiceStyle::RapLead => 3.0,
-            VoiceStyle::Doubles => 0.0,
+            VoiceStyle::RapLead | VoiceStyle::Melodic => 3.0,
+            VoiceStyle::Doubles | VoiceStyle::AdLibs => 0.0,
             VoiceStyle::SungHook => 2.0,
+        },
+        // A rap lead stays almost dry; what is sung, and what stands behind, gets room.
+        reverb: match style {
+            VoiceStyle::RapLead => 0.1,
+            VoiceStyle::Doubles => 0.15,
+            VoiceStyle::SungHook => 0.25,
+            VoiceStyle::Melodic => 0.2,
+            VoiceStyle::AdLibs => 0.3,
+        },
+        echo: match style {
+            VoiceStyle::RapLead | VoiceStyle::Doubles => 0.0,
+            VoiceStyle::SungHook => 0.15,
+            VoiceStyle::Melodic => 0.25,
+            VoiceStyle::AdLibs => 0.35,
         },
     }
 }
