@@ -1762,6 +1762,35 @@ impl Timeline {
             .unwrap_or(3600.0 * fps);
         let mut tick = (self.left / frames_per_tick).floor().max(0.0) * frames_per_tick;
         let right = self.left + lanes.width() as f64 * fpp;
+        // With a tempo the ruler counts bars (09-daw.md): every bar that has
+        // room for its number, thinned out by twos when zoomed far out.
+        if let Some(tempo) = sequence.tempo {
+            let bar = tempo.frames_per_beat(rate) * tempo.beats_per_bar as f64;
+            let mut stride = 1.0;
+            while bar * stride / fpp < 46.0 && stride < 65_536.0 {
+                stride *= 2.0;
+            }
+            let mut n = (self.left / (bar * stride)).floor().max(0.0);
+            while n * bar * stride <= right {
+                let x = x_of(n * bar * stride);
+                if x >= lanes.left() {
+                    painter.line_segment(
+                        [pos2(x, rect.top() + 13.0), pos2(x, rect.top() + RULER_H)],
+                        Stroke::new(1.0, theme::LINE),
+                    );
+                    let number = format!("{}", (n * stride) as i64 + 1);
+                    painter.text(
+                        pos2(x + 3.0, rect.top() + 2.0),
+                        Align2::LEFT_TOP,
+                        number,
+                        FontId::monospace(10.0),
+                        theme::DIM,
+                    );
+                }
+                n += 1.0;
+            }
+            tick = f64::INFINITY;
+        }
         while tick <= right {
             let x = x_of(tick);
             if x >= lanes.left() {
@@ -2617,6 +2646,24 @@ impl Timeline {
     /// Grid lines between frames `f0` and `f1`, at least `min_points` apart
     /// on screen: (frame, running beat number).
     fn grid_lines(&self, sequence: &Sequence, f0: f64, f1: f64, min_points: f32) -> Vec<(f64, usize)> {
+        // A tempo is a grid by itself: beats, or only bars where beats would crowd.
+        if let Some(tempo) = sequence.tempo {
+            let beat = tempo.frames_per_beat(sequence.rate);
+            let per_bar = tempo.beats_per_bar as usize;
+            let mut stride = 1usize;
+            // Beats, then bars, then every second, fourth, ... bar.
+            while beat * stride as f64 / self.frames_per_point < min_points as f64 && stride < 1 << 20 {
+                stride = if stride < per_bar { per_bar } else { stride * 2 };
+            }
+            let mut index = ((f0.max(0.0) / beat).ceil() as usize).next_multiple_of(stride);
+            let mut lines = Vec::new();
+            while (index as f64) * beat < f1 && lines.len() < 4096 {
+                // (The caller draws every fourth line strongly: bars count as that.)
+                lines.push((index as f64 * beat, if index.is_multiple_of(per_bar) { 0 } else { 1 }));
+                index += stride;
+            }
+            return lines;
+        }
         if self.grid.len() < 2 {
             return Vec::new();
         }
@@ -2645,6 +2692,14 @@ impl Timeline {
 
     /// The grid line nearest to `frame`, for snapping.
     fn nearest_beat(&self, sequence: &Sequence, frame: f64) -> Option<f64> {
+        // With a tempo: the nearest quarter of a beat while those are far
+        // enough apart to aim at, else the nearest beat, else the nearest bar.
+        if let Some(tempo) = sequence.tempo {
+            let beat = tempo.frames_per_beat(sequence.rate);
+            let roomy = |unit: f64| unit / self.frames_per_point >= SNAP as f64 * 2.0;
+            let unit = [beat / 4.0, beat].into_iter().find(|u| roomy(*u)).unwrap_or(beat * tempo.beats_per_bar as f64);
+            return Some((frame / unit).round() * unit);
+        }
         let (clip, per) = self.song_clips(sequence, frame - 1.0, frame + 1.0).into_iter().next()?;
         let at = clip.src_in + (frame * per) as i64 - clip.start;
         let after = self.grid.partition_point(|b| *b < at);

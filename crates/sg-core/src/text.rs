@@ -198,6 +198,9 @@ fn write_sequence(seq: &Sequence) -> String {
     if seq.master_db != 0.0 {
         let _ = writeln!(out, "master {}", seq.master_db);
     }
+    if let Some(tempo) = seq.tempo {
+        let _ = writeln!(out, "tempo {} {}", tempo.milli_bpm, tempo.beats_per_bar);
+    }
     for marker in seq.markers.iter() {
         let _ = writeln!(out, "marker {} {}", marker.frame, quote(&marker.label));
     }
@@ -237,6 +240,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
 
     let (mut id, mut name, mut rate, mut size) = (None, None, None, None);
     let mut master_db = 0.0f32;
+    let mut tempo = None;
     let mut song = None;
     let mut markers: Vec<Marker> = Vec::new();
     // The track being read: its header and clips so far.
@@ -297,6 +301,12 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                     tempo: tempo.parse::<i8>().map_err(|_| err(n, "bad song tempo"))?.clamp(-2, 2),
                 });
             }
+            "tempo" => {
+                let parsed = rest.split_once(' ').and_then(|(bpm, beats)| {
+                    Some(crate::model::Tempo { milli_bpm: bpm.parse().ok()?, beats_per_bar: beats.parse().ok()? })
+                });
+                tempo = Some(parsed.ok_or_else(|| err(n, "bad tempo"))?.clamped());
+            }
             "master" => {
                 let level = rest.parse::<f32>().ok().filter(|db| db.is_finite());
                 master_db = level.ok_or_else(|| err(n, "bad master level"))?.clamp(-60.0, 12.0);
@@ -332,6 +342,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
         height,
         tracks,
         master_db,
+        tempo,
         song,
         markers: Arc::new(markers),
     })
@@ -434,6 +445,8 @@ mod tests {
         };
         let (p, _) = apply(&base(), &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
         let (p, _) = apply(&p, &Op::SetMasterGain { id: SEQ, db: -2.0 }).unwrap();
+        let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
+        let (p, _) = apply(&p, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();
         let song = crate::model::Song { asset: crate::ids::AssetId(0xABC), tempo: -1 };
         let (p, _) = apply(&p, &Op::SetSong { id: SEQ, song: Some(song) }).unwrap();
         let files = to_files(&p);

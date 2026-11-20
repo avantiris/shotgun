@@ -1118,3 +1118,31 @@ fn shift_g_groups_the_selected_clips_and_again_ungroups_them() {
     harness.run_steps(3);
     assert_eq!((clips(&harness, 0).len(), clips(&harness, 1).len()), (1, 1));
 }
+
+#[test]
+fn a_sequence_gets_a_tempo_and_clips_snap_to_its_beats() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let tempo = |harness: &Harness<'_, App>| harness.state().shell.session().unwrap().project().sequences[0].tempo;
+    assert_eq!(tempo(&harness), None);
+    // In the inspector, under SEQUENCE: bars and beats at 120 a minute, four to the bar.
+    click(&mut harness, "Bars and beats");
+    assert_eq!(tempo(&harness), Some(sg_core::Tempo::DEFAULT));
+    // A beat is 30 frames at 60 a second. A clip dragged along lands on one.
+    let on_clip = on_timeline(&harness, 60.0, 0);
+    drag(&mut harness, on_clip, on_clip + vec2(103.0, 0.0));
+    let start = clips(&harness, 0)[0].0;
+    assert!(start > 0 && start % 30 == 0, "{start}");
+    // Its sound came along, on the same beat.
+    assert_eq!(clips(&harness, 1)[0].0, start * 800);
+    // "Off" brings the ruler in time back; the clip stays where it is.
+    // (Nothing selected, so that the sequence's settings are in view.)
+    let empty = on_timeline(&harness, 300.0, 4);
+    pointer(&mut harness, empty, egui::PointerButton::Primary);
+    click(&mut harness, "Off");
+    assert_eq!((tempo(&harness), clips(&harness, 0)[0].0), (None, start));
+    // Undo steps back through all of it.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(tempo(&harness), Some(sg_core::Tempo::DEFAULT));
+}

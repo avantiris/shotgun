@@ -91,6 +91,14 @@ file included.
   "Between keys" row), and a button to remove it. More than 80 (a recorded
   movement) are listed up to there.
 
+## Bars and beats (stage 3, M11; `PROPOSED`)
+
+Under SEQUENCE in the inspector, "Bars and beats" gives the sequence a
+tempo (beats per minute, beats per bar; "Off" takes it away again). With a
+tempo the ruler counts bars instead of time, the lanes show the beats, and
+clips snap to the grid. Nothing on the timeline moves when the tempo is set
+or changed: clips stay at their place in time.
+
 ## Keys (left hand, bound by physical position)
 
 Labels below are the **Swiss German (QWERTZ)** key caps. Bottom row is

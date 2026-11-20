@@ -39,6 +39,9 @@ pub struct Sequence {
     pub song: Option<Song>,
     /// Master fader in decibels.
     pub master_db: f32,
+    /// The tempo of the music made in this sequence: with one, the
+    /// timeline counts bars and beats (09-daw.md).
+    pub tempo: Option<Tempo>,
     /// Sorted by frame, at most one per frame.
     pub markers: Arc<Vec<Marker>>,
 }
@@ -119,6 +122,7 @@ impl From<SequenceHeader> for Sequence {
             height: h.height,
             tracks: Vec::new(),
             master_db: 0.0,
+            tempo: None,
             song: None,
             markers: Arc::default(),
         }
@@ -233,6 +237,42 @@ impl TrackSettings {
     }
 }
 
+/// A tempo: how fast the beats come and how many make a bar. Whole
+/// numbers, like every time in the model: thousandths of a beat per minute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tempo {
+    pub milli_bpm: u32,
+    pub beats_per_bar: u8,
+}
+
+impl Tempo {
+    /// 120 beats a minute in four-beat bars.
+    pub const DEFAULT: Tempo = Tempo { milli_bpm: 120_000, beats_per_bar: 4 };
+
+    /// Brought into the range the program works with: 20 to 400 beats a
+    /// minute, 1 to 16 beats to the bar.
+    pub fn clamped(self) -> Tempo {
+        Tempo { milli_bpm: self.milli_bpm.clamp(20_000, 400_000), beats_per_bar: self.beats_per_bar.clamp(1, 16) }
+    }
+
+    pub fn bpm(self) -> f64 {
+        self.milli_bpm as f64 / 1000.0
+    }
+
+    /// Length of a beat in frames of `rate`. Not a whole number in general:
+    /// for drawing and for the engine, never stored.
+    pub fn frames_per_beat(self, rate: crate::Rate) -> f64 {
+        60_000.0 / self.milli_bpm.max(1) as f64 * rate.num() as f64 / rate.den() as f64
+    }
+
+    /// Bar and beat of a frame, both counted from 1, as a ruler names them.
+    pub fn bar_and_beat(self, frame: i64, rate: crate::Rate) -> (i64, i64) {
+        let beat = (frame.max(0) as f64 / self.frames_per_beat(rate) + 1e-6).floor() as i64;
+        let per_bar = self.beats_per_bar.max(1) as i64;
+        (beat / per_bar + 1, beat % per_bar + 1)
+    }
+}
+
 /// The song a sequence is cut to: the asset whose beats make the grid and
 /// to which takes are synchronised.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,5 +294,29 @@ impl Project {
     pub fn grade_of(&self, asset: AssetId) -> Option<Grade> {
         let grade = self.scenario_of(asset)?.grade(asset);
         (!grade.is_neutral()).then_some(grade)
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::*;
+    use crate::Rate;
+
+    #[test]
+    fn a_tempo_counts_bars_and_beats() {
+        let tempo = Tempo::DEFAULT;
+        // 120 a minute at 60 frames a second: a beat every 30 frames, a bar every 120.
+        assert_eq!(tempo.frames_per_beat(Rate::FPS_60), 30.0);
+        assert_eq!(tempo.bar_and_beat(0, Rate::FPS_60), (1, 1));
+        assert_eq!(tempo.bar_and_beat(29, Rate::FPS_60), (1, 1));
+        assert_eq!(tempo.bar_and_beat(30, Rate::FPS_60), (1, 2));
+        assert_eq!(tempo.bar_and_beat(120, Rate::FPS_60), (2, 1));
+        assert_eq!(tempo.bar_and_beat(7 * 120 + 95, Rate::FPS_60), (8, 4));
+        // Three to the bar, and a tempo that does not divide the frame rate.
+        let waltz = Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
+        assert!((waltz.frames_per_beat(Rate::FPS_60) - 38.502_67).abs() < 1e-3);
+        assert_eq!(waltz.bar_and_beat(116, Rate::FPS_60), (2, 1));
+        // Out of range values are brought in.
+        assert_eq!(Tempo { milli_bpm: 1, beats_per_bar: 0 }.clamped(), Tempo { milli_bpm: 20_000, beats_per_bar: 1 });
     }
 }

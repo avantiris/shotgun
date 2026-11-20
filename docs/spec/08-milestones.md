@@ -299,6 +299,15 @@ and built-in instruments, M13 recording, M14 mixing and mastering, M15
 native plugins, M16 Windows plugins.
 
 - [ ] M11 Tempo and bars
+  - Built 2026-11-20: a sequence can have a tempo (`Tempo`: thousandths of
+    a beat per minute, beats per bar; `Op::SetTempo`, a `tempo` line in the
+    `.sg` file). Set under SEQUENCE in the inspector ("Bars and beats").
+    With one, the ruler counts bars, the lanes show beats and bars, and
+    moving and trimming snap to quarter beats, beats or bars, whichever
+    is far enough apart on screen to aim at.
+  - Still to do: the metronome; the tempo shown and set at the timeline
+    itself, not only in the inspector; a choice of grid (1/2 to 1/32,
+    triplets); a time display in bars and beats under the viewer.
 - [ ] M12 Notes and built-in instruments
 - [ ] M13 Recording
 - [ ] M14 Mixing and mastering

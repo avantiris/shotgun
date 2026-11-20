@@ -94,6 +94,11 @@ pub enum Op {
         id: SequenceId,
         db: f32,
     },
+    /// Gives a sequence a tempo (bars and beats), changes it or takes it away.
+    SetTempo {
+        id: SequenceId,
+        tempo: Option<crate::model::Tempo>,
+    },
     /// Changes the frame size of a sequence.
     SetSequenceSize {
         id: SequenceId,
@@ -175,6 +180,7 @@ impl Op {
             Op::SetScenario { .. } => "adjust colour",
             Op::SetSong { .. } => "set song",
             Op::SetMasterGain { .. } => "adjust master",
+            Op::SetTempo { .. } => "set tempo",
             Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
             Op::AddMarker { .. } => "add marker",
@@ -322,6 +328,9 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             if seq.master_db != 0.0 {
                 restore.push(Op::SetMasterGain { id: *id, db: seq.master_db });
             }
+            if seq.tempo.is_some() {
+                restore.push(Op::SetTempo { id: *id, tempo: seq.tempo });
+            }
             if seq.song.is_some() {
                 restore.push(Op::SetSong { id: *id, song: seq.song });
             }
@@ -402,6 +411,11 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
         Op::SetSong { id, song } => with_sequence(p, *id, |s| {
             let inverse = Op::SetSong { id: *id, song: s.song };
             s.song = song.map(|song| Song { tempo: song.tempo.clamp(-2, 2), ..song });
+            Ok(inverse)
+        }),
+        Op::SetTempo { id, tempo } => with_sequence(p, *id, |s| {
+            let inverse = Op::SetTempo { id: *id, tempo: s.tempo };
+            s.tempo = tempo.map(crate::model::Tempo::clamped);
             Ok(inverse)
         }),
         Op::SetMasterGain { id, db } => with_sequence(p, *id, |s| {
@@ -979,6 +993,11 @@ mod mix_tests {
         let (p2, undo) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
         assert_eq!(p2.sequences[0].track(A1).unwrap().mix, mix);
         assert_eq!(apply(&p2, &undo).unwrap().0, p);
+        // A tempo comes and goes like any other setting.
+        let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
+        let (timed, untime) = apply(&p2, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();
+        assert_eq!(timed.sequences[0].tempo, Some(waltz));
+        assert_eq!(apply(&timed, &untime).unwrap().0, p2);
         let (p3, undo) = apply(&p2, &Op::SetMasterGain { id: SEQ, db: -3.0 }).unwrap();
         assert_eq!(p3.sequences[0].master_db, -3.0);
         assert_eq!(apply(&p3, &undo).unwrap().0, p2);

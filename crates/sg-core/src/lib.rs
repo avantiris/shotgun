@@ -21,7 +21,7 @@ pub use colour::{ColourStats, Correction, Grade, Lut, Member, Module, ModuleKind
 pub use history::{Document, History, HistoryError, Record};
 pub use ids::ScenarioId;
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};
-pub use model::{Marker, Project, Sequence, SequenceHeader, Song, Track, TrackHeader, TrackKind, TrackSettings};
+pub use model::{Marker, Project, Sequence, SequenceHeader, Song, Tempo, Track, TrackHeader, TrackKind, TrackSettings};
 pub use ops::{Op, OpError, apply};
 pub use props::{ClipProps, Ease, Key, Param, Shift, Title, Transition, TransitionKind};
 pub use time::Rate;

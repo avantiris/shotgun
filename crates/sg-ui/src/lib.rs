@@ -222,6 +222,8 @@ pub enum DevStep {
     Programme(bool),
     /// Make the selected asset the song.
     Song,
+    /// Give the sequence a tempo in beats per minute (0: none), four to the bar.
+    Bars(f32),
     /// Global assets: `make` copies the selected asset there, `tab` shows
     /// the tab, `use:<n>` takes the n-th entry into the project.
     Global(String),
@@ -826,6 +828,17 @@ impl Shell {
             DevStep::Programme(beats) => self.programme_action(beats),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
+            DevStep::Bars(bpm) => {
+                if let Some(session) = &mut self.session
+                    && let Some(id) = session.project().sequences.first().map(|s| s.id)
+                {
+                    let tempo = (bpm > 0.0)
+                        .then(|| sg_core::Tempo { milli_bpm: (bpm * 1000.0).round() as u32, beats_per_bar: 4 });
+                    if let Err(e) = session.apply(Op::SetTempo { id, tempo }, None) {
+                        self.error = Some(e.to_string());
+                    }
+                }
+            }
             DevStep::Global(what) => {
                 let selected = self.editor.assets.selected;
                 let session = self.session.as_ref();

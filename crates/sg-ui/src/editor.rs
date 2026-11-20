@@ -47,6 +47,8 @@ pub struct Editor {
     /// Actions whose buttons or menu entries were clicked this frame; the
     /// shell runs them the way it runs their keys.
     pub actions: Vec<Action>,
+    /// Undo group while a tempo field is being dragged: one drag, one step.
+    tempo_group: Option<u64>,
 }
 
 impl Editor {
@@ -357,6 +359,7 @@ impl Editor {
                 }
             }
         });
+        self.tempo_row(ui, session, sequence, error);
         row(ui, "Tracks", &sequence.tracks.len().to_string());
         row(ui, "Clips", &sequence.clip_count().to_string());
         ui.horizontal(|ui| {
@@ -468,6 +471,55 @@ impl Editor {
         let sequence = project.sequences.first()?;
         let (track, clip) = self.timeline.primary(sequence)?;
         Some(Target::new(sequence, &track, clip, playhead))
+    }
+
+    /// The tempo of the sequence (09-daw.md): none, in which case the
+    /// timeline counts time, or beats per minute and beats per bar.
+    fn tempo_row(&mut self, ui: &mut egui::Ui, session: &mut Session, sequence: &Sequence, error: &mut Option<String>) {
+        let dragging = ui.input(|i| i.pointer.any_down());
+        if !dragging {
+            self.tempo_group = None;
+        }
+        let mut wanted = sequence.tempo;
+        ui.horizontal(|ui| {
+            ui.add_sized([84.0, 16.0], egui::Label::new(RichText::new("Tempo").color(theme::DIM)).halign(Align::LEFT));
+            match &mut wanted {
+                None => {
+                    let button = ui.button("Bars and beats");
+                    if button
+                        .on_hover_text(
+                            "Gives the sequence a tempo for making music: the ruler counts bars instead of time and \
+                             clips snap to beats. Nothing that is on the timeline moves.",
+                        )
+                        .clicked()
+                    {
+                        wanted = Some(sg_core::Tempo::DEFAULT);
+                    }
+                }
+                Some(tempo) => {
+                    let mut bpm = tempo.bpm();
+                    let field =
+                        egui::DragValue::new(&mut bpm).range(20.0..=400.0).speed(0.1).max_decimals(1).suffix(" bpm");
+                    if ui.add(field).on_hover_text("Beats per minute").changed() {
+                        tempo.milli_bpm = (bpm * 1000.0).round() as u32;
+                    }
+                    let mut beats = tempo.beats_per_bar;
+                    let field = egui::DragValue::new(&mut beats).range(1..=16).speed(0.05).suffix(" / bar");
+                    if ui.add(field).on_hover_text("Beats in a bar: 4 for most music, 3 for a waltz").changed() {
+                        tempo.beats_per_bar = beats;
+                    }
+                    if ui.button("Off").on_hover_text("Back to a ruler in time").clicked() {
+                        wanted = None;
+                    }
+                }
+            }
+        });
+        if wanted != sequence.tempo {
+            let group = dragging.then(|| *self.tempo_group.get_or_insert_with(|| session.new_group()));
+            if let Err(e) = session.apply(Op::SetTempo { id: sequence.id, tempo: wanted }, group) {
+                *error = Some(e.to_string());
+            }
+        }
     }
 
     /// Brings the inspector to the selected title with the cursor in its text.
