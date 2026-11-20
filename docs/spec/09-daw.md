@@ -13,16 +13,28 @@ Asked when stage 3 began; his answers, in his words where he wrote any:
    native Linux plugins (CLAP, VST3, LV2), Windows VSTs through a bridge,
    and, added by him: "Native instrument integration that this works out
    of the box".
-   - Read as: the Native Instruments products (Kontakt and the like) must
-     load without the user setting anything up. They exist for Windows
-     only, so this is the Windows-VST path made automatic. `OPEN`: to be
-     confirmed with him that this is what he meant, and which products.
+   - Confirmed by him the same day: "yes use the native instrument
+     kontakt one... there is a repo from selimbucher which already does a
+     lot of this as sample." That is
+     `github.com/selimbucher/native-instruments` (GPL-3.0): Native Access 2
+     and Kontakt 8 under Wine with a one-command installer (`ni`,
+     `native-access`), and a yabridge built against the same Wine. Both are
+     already installed on his machine (see "Kontakt" below).
 3. **Hardware:** "Not decided yet". So: everything works with mouse and
    computer keyboard; a MIDI keyboard and an audio interface can be added
    later without a redesign.
 4. **Where music lives:** in the same timeline as video and audio. The
    ruler can show bars and beats with a tempo; one project can be a video
    with its own music.
+
+5. **A built-in vocal chain** (2026-11-20, his words): "besides vst
+   plugins I can load, a BUILTIN vocalchain that is pretty basic but
+   extremly good at detecting and automatically applying a style (main
+   concern right now is german rap texts) this should also already provide
+   sidechaining etc."
+   - So: one built-in thing per vocal track, few controls, that listens to
+     the recording and sets itself up for a style; German rap first; the
+     beat ducking under the voice is part of it.
 
 Carried over from 01-product.md (agreed earlier): note editor, audio
 tracks, recording, mixing and mastering, effect chains, plugin hosting,
@@ -77,21 +89,65 @@ sample-accurate transport.
   compressor and noise reduction of the mixer become movable inserts).
 - Buses and sends; sidechain input on the compressor.
 
+### Vocal chain (`PROPOSED`; his main concern, so it comes early)
+
+One built-in processor on an audio track, "Vocal chain", with a style and
+one amount control per stage; everything else is set by listening.
+
+- **Stages, in order:** level into the chain; low cut; noise reduction;
+  de-esser; equaliser (takes out mud and boxiness, adds presence and air);
+  a fast compressor for peaks, then a slow one that levels; saturation;
+  pitch correction (off, natural, hard: the "autotune" of modern rap, with
+  key and scale); sends to a short delay and a plate reverb; limiter.
+  **Ducking:** the tracks chosen as "the beat" are turned down a little
+  while the voice sounds (sidechain), without a routing to set up.
+- **Listening:** the takes on the track are measured once (and again when
+  they change): loudness and peaks, noise floor between phrases, the
+  voice's pitch range, its tonal balance against the style's target curve,
+  how sharp the S sounds are, how much the level swings. From that the
+  stages get their values: where the low cut sits, how much noise
+  reduction, the equaliser's gains, the de-esser's band and threshold, the
+  compressors' thresholds for the gain reduction the style wants.
+- **Styles:** a style is a target (tonal curve, gain reduction, brightness,
+  effects, ducking depth), not a list of fixed numbers. First: German rap
+  lead (close, bright, hard-levelled, dry), doubles and ad-libs (thinner,
+  wider, further back), sung hook with pitch correction. Which one fits is
+  guessed from the take (rapped or sung: how steady the pitch is; how
+  hard: level and peaks) and can be overridden.
+- **Honest limit:** "extremely good" can only be judged by ear against
+  records he likes. `OPEN`: two or three reference songs and a raw vocal
+  recording of his to tune the styles against.
+
 ### Plugins
 
-Hosting in this order, each behind the same `Processor` trait:
+Kontakt 8 is a VST3 plugin, so VST3 hosting comes first:
 
-1. **CLAP** (open, simplest to host correctly).
-2. **LV2** and **VST3** native Linux builds.
-3. **Windows VST2/VST3** through yabridge and Wine, set up by Shotgun
-   itself: it finds the plugins, runs the bridge and keeps its own Wine
-   prefix, so that "out of the box" holds. Needs a spike before anything
-   is promised: copy protection of commercial plugins (Native Access)
-   under Wine is the known risk.
+1. **VST3** (native Linux builds, and Windows ones through yabridge, which
+   presents them as native VST3).
+2. **CLAP**.
+3. **LV2**.
 
 A plugin runs in its own process where the format allows it, so that a
 crashing plugin costs one track's sound and not the project. Plugin state
-is saved in the bundle.
+is saved in the bundle. A spike comes before the build: loading a
+yabridge-bridged VST3 from Rust, its editor window under Wayland, and
+state save and restore.
+
+### Kontakt (Native Instruments)
+
+Found on his machine on 2026-11-20: `ni`, `native-access`, `yabridgectl`,
+`yabridge-host.exe` and Wine 11.21 are installed (from the repository
+above). No Wine prefix exists yet, and nothing is bridged.
+
+- "Out of the box" then means: Shotgun looks for the prefix (`~/.wine-ni`
+  or `NI_WINE_PREFIX`), runs `yabridgectl add` on its VST3 folder and
+  `yabridgectl sync` by itself (job pool, output shown), and lists Kontakt
+  among the instruments. Nothing to configure in Shotgun.
+- What only he can do: start `native-access` once, log in to his account
+  and install Kontakt. The home disk has 3.5 GB free and the prefix
+  defaults to `~/.wine-ni`: it should be put on the large disk first
+  (`NI_WINE_PREFIX=/disk/...`), or Kontakt's libraries will not fit.
+- Shotgun does not ship or install any Native Instruments software.
 
 ### Recording
 
@@ -119,18 +175,21 @@ is saved in the bundle.
 | | What works at the end |
 |---|---|
 | M11 | Tempo and bars: a sequence has a tempo; the ruler shows bars and beats; clips snap to the grid; a metronome clicks while playing. |
-| M12 | Notes: instrument tracks, note clips, the piano roll, the built-in sampler and drum kit; the computer keyboard plays; notes are in the export. |
+| M12 | Vocal chain, first version: on a track of recorded or imported voice it measures the takes and sets itself up for a style (German rap lead first); de-esser, two compressors, saturation, ducking of the beat; in the export. |
 | M13 | Recording: arm, count-in, record, takes; latency measured and compensated; monitoring. |
-| M14 | Mixing: editable insert chains, buses and sends, sidechain, the synth, loudness metering, sound-only export and stems. |
-| M15 | Plugins, native: CLAP, then LV2 and VST3; state in the bundle; a plugin crash does not take the project down. |
-| M16 | Plugins, Windows: the bridge set up by Shotgun; the Native Instruments question answered by a spike first. |
+| M14 | Plugins: VST3 hosting, Kontakt through the bridge found and set up by Shotgun; then CLAP and LV2. Instrument tracks, note clips and the piano roll come with it, with a built-in sampler so that notes sound without any plugin. |
+| M15 | Vocal chain, second version: pitch correction, delay and reverb sends, more styles, tuned against his references. |
+| M16 | Mixing and mastering: editable insert chains, buses and sends, loudness metering, sound-only export and stems. |
 
-After M12 and M13 ("a small version of each") the stage is ready for a
-first test round.
+Order changed on 2026-11-20 after his fifth answer: the voice first
+(M12, M13), then the beat (M14).
+
+After M12 the vocal chain can be tried on any recorded voice file; after
+M13 on his own recordings; after M14 with a beat from Kontakt.
 
 ## Open
 
-- `OPEN` What "Native instrument integration" means exactly (see above).
+- `OPEN` Reference songs and a raw vocal take for tuning the vocal chain.
 - `OPEN` Which plugins he owns or wants first: decides what the spikes for
   M15 and M16 test against.
 - `OPEN` Whether a music project should hide the video parts of the screen.

@@ -294,9 +294,9 @@ Status:
 ## Stage 3: DAW
 
 Started 2026-11-20. What the user decided, the design and the milestones
-M11 to M16 are in `09-daw.md`. In short: M11 tempo and bars, M12 notes
-and built-in instruments, M13 recording, M14 mixing and mastering, M15
-native plugins, M16 Windows plugins.
+M11 to M16 are in `09-daw.md`. In short: M11 tempo and bars, M12 vocal
+chain, M13 recording, M14 plugins (VST3, Kontakt) and notes, M15 vocal
+chain second version, M16 mixing and mastering.
 
 - [ ] M11 Tempo and bars
   - Built 2026-11-20: a sequence can have a tempo (`Tempo`: thousandths of
@@ -308,8 +308,8 @@ native plugins, M16 Windows plugins.
   - Still to do: the metronome; the tempo shown and set at the timeline
     itself, not only in the inspector; a choice of grid (1/2 to 1/32,
     triplets); a time display in bars and beats under the viewer.
-- [ ] M12 Notes and built-in instruments
+- [ ] M12 Vocal chain, first version
 - [ ] M13 Recording
-- [ ] M14 Mixing and mastering
-- [ ] M15 Plugins, native
-- [ ] M16 Plugins, Windows
+- [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
+- [ ] M15 Vocal chain, second version
+- [ ] M16 Mixing and mastering
