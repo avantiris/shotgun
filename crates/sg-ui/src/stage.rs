@@ -127,8 +127,13 @@ pub fn viewer(
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::LINE), StrokeKind::Outside);
     let y = picture_area.bottom() + BAR_H / 2.0;
     let state = if view.playing { "playing" } else { "paused" };
-    let text =
+    let mut text =
         format!("{}  /  {}", timecode(view.frame, sequence.rate), timecode(sequence_end(sequence), sequence.rate));
+    // A sequence with a tempo is a song: where the playhead is in bars and beats, and how fast.
+    if let Some(tempo) = sequence.tempo {
+        let (bar, beat) = tempo.bar_and_beat(view.frame, sequence.rate);
+        text = format!("{bar}.{beat}   {:.1} bpm   {text}", tempo.bpm());
+    }
     painter.text(pos2(available.center().x, y), Align2::CENTER_CENTER, text, FontId::monospace(12.0), theme::TEXT);
     painter.text(pos2(rect.right(), y), Align2::RIGHT_CENTER, state, FontId::proportional(11.0), theme::DIM);
     if recording {

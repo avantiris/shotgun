@@ -309,9 +309,11 @@ chain second version, M16 mixing and mastering.
     clicks on the beats while playing (the first of a bar higher), placed
     by whole-number arithmetic so that they do not drift; never in an
     export.
-  - Still to do: the tempo shown and set at the timeline
+  - Under the viewer a sequence with a tempo shows bar, beat and tempo
+    before the time.
+  - Still to do: the tempo set at the timeline
     itself, not only in the inspector; a choice of grid (1/2 to 1/32,
-    triplets); a time display in bars and beats under the viewer.
+    triplets).
 - [ ] M12 Vocal chain, first version
   - Built 2026-11-20, the listening half: "Voice" on a mixer strip
     measures what the track's clips play (`sg_media::voice`: level, loud
