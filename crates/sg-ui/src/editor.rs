@@ -61,6 +61,12 @@ pub struct Editor {
     pub inputs: Option<Vec<(String, String)>>,
     /// What the input menu asked for this frame; taken by the shell.
     pub input_requests: Vec<InputRequest>,
+    /// The input is open: its level is shown.
+    pub monitor: bool,
+    /// The open input is also heard.
+    pub hear_input: bool,
+    /// The level shown: the highest of the last moments, falling back slowly.
+    input_shown: f32,
     /// The notes of a note clip, shown in place of the viewer while open.
     pub piano: crate::piano_roll::PianoRoll,
 }
@@ -111,7 +117,7 @@ impl Editor {
         egui::Panel::bottom("timeline").resizable(true).default_size(270.0).min_size(150.0).frame(flush).show(
             ui,
             |ui| {
-                self.tools(ui, session, sequence, error);
+                self.tools(ui, session, sequence, view, error);
                 self.timeline.ui(ui, session, view, transport, error);
                 // A title asked for its text: the inspector shows it with the cursor in the field.
                 if std::mem::take(&mut self.timeline.edit_title) {
@@ -319,7 +325,14 @@ impl Editor {
     /// (feedback F4.1, narrowed in round 5): keyframes, recorded movement,
     /// the transition, titles and markers. Each shows its key. Cutting,
     /// copying, undo and zoom stay with keys and mouse.
-    fn tools(&mut self, ui: &mut egui::Ui, session: &mut Session, sequence: &Sequence, error: &mut Option<String>) {
+    fn tools(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        sequence: &Sequence,
+        view: &ViewerState,
+        error: &mut Option<String>,
+    ) {
         let selected = self.timeline.has_selection();
         egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -342,6 +355,7 @@ impl Editor {
                     }
                     if action == Action::RecordSound {
                         self.input_menu(ui);
+                        self.monitor_buttons(ui, view);
                     }
                 }
                 // Tempo and grid where the bars are (09-daw.md, M11).
@@ -352,6 +366,54 @@ impl Editor {
                 }
             });
         });
+    }
+
+    /// Beside the input: "Level" opens it and shows how loud it arrives
+    /// (is the microphone there at all, is it too hot), "Hear" adds it to
+    /// what is heard. Hearing is its own button and off at first: through
+    /// loudspeakers it would feed back.
+    fn monitor_buttons(&mut self, ui: &mut egui::Ui, view: &ViewerState) {
+        if ui
+            .selectable_label(self.monitor, "Level")
+            .on_hover_text("Opens the input and shows its level, without recording")
+            .clicked()
+        {
+            self.monitor = !self.monitor;
+            self.input_shown = 0.0;
+        }
+        if !self.monitor {
+            return;
+        }
+        // Up at once, down by about 20 dB a second: a peak stays readable.
+        self.input_shown = view.input_level.max(self.input_shown * 0.96);
+        let db = 20.0 * self.input_shown.max(1e-6).log10();
+        let (rect, response) = ui.allocate_exact_size(vec2(90.0, 14.0), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 2.0, theme::BG);
+        // -60 dB at the left, full scale at the right.
+        let filled = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+        let colour = if db > -1.0 {
+            egui::Color32::from_rgb(220, 70, 60)
+        } else if db > -9.0 {
+            egui::Color32::from_rgb(220, 180, 60)
+        } else {
+            theme::ACCENT
+        };
+        painter.rect_filled(rect.with_max_x(rect.left() + rect.width() * filled), 2.0, colour);
+        let said = if db <= -119.0 { "no signal".to_owned() } else { format!("{db:.0} dB") };
+        response.on_hover_text(format!("Input level: {said}. Loud passages should stay in the yellow, below the red."));
+        ui.label(RichText::new(said).monospace().size(10.0).color(theme::DIM));
+        if ui
+            .selectable_label(self.hear_input, "Hear")
+            .on_hover_text(
+                "Adds the input to what is heard (a few milliseconds late). For headphones: through \
+                 loudspeakers the microphone would pick itself up.",
+            )
+            .clicked()
+        {
+            self.hear_input = !self.hear_input;
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
     }
 
     /// Beside "Record sound": which input the take comes from.

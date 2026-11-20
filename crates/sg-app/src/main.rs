@@ -535,6 +535,13 @@ impl App {
                         }
                     }
                 }
+                Command::Monitor(input) => {
+                    if let Some(player) = &self.player {
+                        // (Automated runs name their input through the environment, as for recording.)
+                        let named = std::env::var("SHOTGUN_AUDIO_IN").ok();
+                        player.monitor(input.map(|(source, hear)| (named.or(source), hear)));
+                    }
+                }
                 Command::Hand(track) => {
                     if let Some(player) = &self.player {
                         player.set_hand(track.map(|t| t.0));
@@ -860,6 +867,7 @@ impl App {
             master_meter: player.take_meters(&mut self.meters),
             limiting_db: player.take_limiting(),
             loudness: player.loudness(),
+            input_level: player.take_input_level(),
             meters: self.meters.clone(),
             angles,
         }

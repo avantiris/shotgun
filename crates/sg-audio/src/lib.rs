@@ -227,6 +227,27 @@ pub(crate) struct Shared {
     loudness: AtomicU32,
     /// Lowest gain the limiter applied since it was last read (f32 bits; 1.0 when idle).
     limited: AtomicU32,
+    /// The ring a monitor of the input feeds, on its way to the realtime
+    /// thread, and the one that thread has finished with (as graphs are
+    /// handed over: a pointer swapped in, never a lock).
+    pub(crate) monitor_in: std::sync::atomic::AtomicPtr<rtrb::Consumer<f32>>,
+    pub(crate) monitor_out: std::sync::atomic::AtomicPtr<rtrb::Consumer<f32>>,
+    /// The monitored input is added to what is heard.
+    pub(crate) monitor_heard: AtomicBool,
+    /// Peak level of the input since it was last read (f32 bits).
+    pub(crate) input_meter: AtomicU32,
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        for slot in [&self.monitor_in, &self.monitor_out] {
+            let ptr = slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+            if !ptr.is_null() {
+                // SAFETY: a non-null pointer in these slots came from `Box::into_raw`, and nobody else is left.
+                drop(unsafe { Box::from_raw(ptr) });
+            }
+        }
+    }
 }
 
 pub(crate) fn monotonic_ns() -> u64 {
@@ -361,6 +382,38 @@ impl Engine {
         record::Recording::start(path, source, Box::new(playing))
     }
 
+    /// Opens `source` (`None`: the default input) to see its level
+    /// ([`Meters::take_input`]) and, with `hear`, to hear it with the mix,
+    /// playing or not. Until the returned handle is dropped. Needs a sound device.
+    pub fn monitor(&self, source: Option<String>, hear: bool) -> Result<record::Monitor, AudioError> {
+        if self.backend.is_none() {
+            return Err(AudioError::PipeWire("there is no sound device to listen to in this mode".into()));
+        }
+        // A sixth of a second of room: the playback side takes what there is every block.
+        let (producer, consumer) = rtrb::RingBuffer::new(SAMPLE_RATE as usize / 3);
+        let hand_over = |slot: &std::sync::atomic::AtomicPtr<rtrb::Consumer<f32>>, new: *mut rtrb::Consumer<f32>| {
+            let old = slot.swap(new, Ordering::AcqRel);
+            if !old.is_null() {
+                // SAFETY: a non-null pointer in these slots came from
+                // `Box::into_raw`, and the swap makes this side its only owner.
+                drop(unsafe { Box::from_raw(old) });
+            }
+        };
+        // (Frees one the realtime thread has finished with, and one it never took.)
+        hand_over(&self.shared.monitor_out, std::ptr::null_mut());
+        hand_over(&self.shared.monitor_in, Box::into_raw(Box::new(consumer)));
+        self.shared.monitor_heard.store(hear, Ordering::Relaxed);
+        let mut monitor = record::Monitor::start(producer, source)?;
+        monitor.control = Some(self.control.clone());
+        self.send(disk::Control::Monitor(true));
+        Ok(monitor)
+    }
+
+    /// Whether the monitored input is heard or only measured.
+    pub fn hear_monitor(&self, hear: bool) {
+        self.shared.monitor_heard.store(hear, Ordering::Relaxed);
+    }
+
     pub fn stats(&self) -> Stats {
         let s = &self.shared;
         Stats {
@@ -470,6 +523,11 @@ impl Meters {
             *out = f32::from_bits(meter.swap(0, Ordering::Relaxed));
         }
         f32::from_bits(self.shared.master_meter.swap(0, Ordering::Relaxed))
+    }
+
+    /// Peak level of the monitored input since the last call (linear).
+    pub fn take_input(&self) -> f32 {
+        f32::from_bits(self.shared.input_meter.swap(0, Ordering::Relaxed))
     }
 
     /// Loudness of the last three seconds of the mix, in LUFS (-120: silence).

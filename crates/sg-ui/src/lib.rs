@@ -178,6 +178,9 @@ pub enum Command {
         /// The PipeWire node to record from; `None`: the system's default input.
         source: Option<String>,
     },
+    /// Open the sound input (`None` inside: the system's default) to show
+    /// its level and, with the flag, to hear it; `None`: close it.
+    Monitor(Option<(Option<String>, bool)>),
     /// The audio track whose instrument is played by hand from now on, or none.
     Hand(Option<sg_core::TrackId>),
     /// A key going down or up on that instrument. If the timeline plays,
@@ -274,6 +277,8 @@ pub enum DevStep {
     Hand(u8, bool),
     /// Switch the piano roll's "Record" (what is played is written into the clip).
     RecordNotes,
+    /// Switch "Level" (the input is opened and measured) or, with true, "Hear".
+    Monitor(bool),
     /// Put the plugin at this path on the n-th audio track (empty path:
     /// take it off), or with `window` as the path show its window.
     Plugin(usize, String),
@@ -330,6 +335,8 @@ pub struct Shell {
     /// Recorded takes being imported: the file and the timeline sample it starts at.
     takes: Vec<(PathBuf, i64)>,
     spent_takes: Vec<PathBuf>,
+    /// What the application was last told about monitoring the input.
+    monitor: Option<(Option<String>, bool)>,
     /// The track the application was last told is played by hand.
     hand: Option<sg_core::TrackId>,
     /// The key reference is showing.
@@ -579,6 +586,7 @@ impl Shell {
                 editor::InputRequest::Choose(input) => Command::SaveInput(input),
             });
         }
+        self.monitor_commands(&mut commands);
         let gif_range = self.gif_range();
         if let Some(request) = self.plugins.ui(&ctx) {
             if let PluginRequest::Run(step) = request {
@@ -990,6 +998,11 @@ impl Shell {
             }
             DevStep::Hand(pitch, on) => self.editor.piano.play(pitch, on),
             DevStep::RecordNotes => self.editor.piano.toggle_record(),
+            DevStep::Monitor(hear) => {
+                let flag = if hear { &mut self.editor.hear_input } else { &mut self.editor.monitor };
+                *flag = !*flag;
+                self.monitor_commands(&mut commands);
+            }
             DevStep::Note(n, pitch, start, len) => {
                 if let Some(session) = &mut self.session {
                     let project = session.project().clone();
@@ -1579,6 +1592,16 @@ impl Shell {
         }
         self.takes.push((path.clone(), start));
         self.incoming(Incoming::Paths(vec![path]))
+    }
+
+    /// The monitored input follows the buttons, the chosen input and the open project.
+    fn monitor_commands(&mut self, commands: &mut Vec<Command>) {
+        let monitor = (self.editor.monitor && self.session.is_some())
+            .then(|| (self.editor.input.clone(), self.editor.hear_input));
+        if monitor != self.monitor {
+            self.monitor = monitor.clone();
+            commands.push(Command::Monitor(monitor));
+        }
     }
 
     /// Tells the application which track's instrument is played by hand

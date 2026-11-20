@@ -1697,3 +1697,31 @@ fn the_instrument_is_played_with_the_keyboard_and_what_is_played_is_recorded() {
     ));
     assert_eq!(harness.state().shell.error_shown(), None);
 }
+
+#[test]
+fn the_input_level_is_shown_and_the_input_heard_only_when_asked() {
+    let mut harness = editor();
+    let monitor = |harness: &Harness<'_, App>| {
+        let all = harness.state().commands.iter();
+        all.filter_map(|c| if let Command::Monitor(m) = c { Some(m.clone()) } else { None }).next_back()
+    };
+    assert_eq!(monitor(&harness), None);
+    // "Level" opens the input: measured, not heard.
+    click(&mut harness, "Level");
+    assert_eq!(monitor(&harness), Some(Some((None, false))));
+    harness.state_mut().view.input_level = 0.5;
+    harness.run_steps(2);
+    assert!(harness.query_by_label("-6 dB").is_some());
+    // "Hear" is a button of its own, and another input is followed.
+    click(&mut harness, "Hear");
+    assert_eq!(monitor(&harness), Some(Some((None, true))));
+    click(&mut harness, "Input: default");
+    harness.state_mut().shell.inputs_listed(vec![("alsa_input.usb".to_owned(), "Interface".to_owned())]);
+    harness.run_steps(3);
+    click(&mut harness, "Interface");
+    assert_eq!(monitor(&harness), Some(Some((Some("alsa_input.usb".to_owned()), true))));
+    // Off again: the input is closed.
+    click(&mut harness, "Level");
+    assert_eq!(monitor(&harness), Some(None));
+    assert!(harness.query_by_label("Hear").is_none());
+}

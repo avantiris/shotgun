@@ -32,6 +32,8 @@ pub enum Control {
     SaveStates(Sender<()>),
     /// From a loader thread: the plugin for this track has started, or has not (`None`).
     Loaded(crate::PluginSpec, Option<Box<sg_plug::Client>>),
+    /// The input is being monitored (or no longer): the device stays awake for it.
+    Monitor(bool),
     /// A key played by hand on the instrument of a track.
     Note {
         track: usize,
@@ -181,6 +183,8 @@ struct Disk {
     /// Nothing plays, but a track is played by hand: its ring is kept
     /// filled and the device stays awake.
     idle_hand: bool,
+    /// The input is monitored: the device stays awake for that too.
+    monitoring: bool,
     /// Where the graph in use was built for.
     built_at: i64,
     /// A grain is (or was just) sounding; when to let the device rest.
@@ -597,7 +601,7 @@ impl Disk {
     fn end_grain(&mut self) {
         self.grain_until = None;
         // (The grain's graph stays where it is: it has gone quiet by itself.)
-        if let (false, Some(activate)) = (self.playing || self.idle_hand, &self.activate) {
+        if let (false, Some(activate)) = (self.playing || self.idle_hand || self.monitoring, &self.activate) {
             activate(false);
         }
     }
@@ -645,8 +649,15 @@ impl Disk {
                     self.grain_until = None;
                     self.rebuild(self.built_at, false, None);
                     if let Some(activate) = &self.activate {
-                        activate(self.idle_hand);
+                        activate(self.idle_hand || self.monitoring);
                     }
+                }
+            }
+            Control::Monitor(on) => {
+                self.monitoring = on;
+                let awake = self.playing || self.idle_hand || self.monitoring || self.grain_until.is_some();
+                if let Some(activate) = &self.activate {
+                    activate(awake);
                 }
             }
             Control::Note { track, on, pitch, velocity } => {
@@ -681,8 +692,8 @@ impl Disk {
                     if let Some(policy) = realtime_policy() {
                         self.shared.sched_policy.store(policy, Ordering::Relaxed);
                     }
-                    // (A track played by hand keeps the device awake.)
-                    if !self.idle_hand {
+                    // (A track played by hand keeps the device awake, and so does a monitored input.)
+                    if !self.idle_hand && !self.monitoring {
                         activate(false);
                     }
                 }
@@ -759,6 +770,7 @@ pub fn run(
         files: HashMap::new(),
         playing: false,
         idle_hand: false,
+        monitoring: false,
         built_at: 0,
         grain_until: None,
         block: Vec::new(),

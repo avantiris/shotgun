@@ -102,6 +102,9 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             Step::Dev(DevStep::Hand(pitch.parse()?, state == "on"))
         }
         "recordnotes" => Step::Dev(DevStep::RecordNotes),
+        // level opens (or closes) the input for its meter; hear adds it to what is heard.
+        "level" => Step::Dev(DevStep::Monitor(false)),
+        "hear" => Step::Dev(DevStep::Monitor(true)),
         // plugin:<audio track>:<path of the bundle | window | (empty)>
         "plugin" => {
             let (track, path) = arg.split_once(':').ok_or_else(|| anyhow!("plugin needs <track>:<path>"))?;

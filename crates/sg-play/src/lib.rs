@@ -60,6 +60,8 @@ enum Command {
     Click(bool),
     /// The audio track (its id) whose instrument is played by hand, or none.
     Hand(Option<u64>),
+    /// Open a sound input to see its level and, if asked, hear it; `None` closes it.
+    Monitor(Option<(Option<String>, bool)>),
     /// Record from a sound input into this file while playing; ends when playback does.
     Record {
         path: PathBuf,
@@ -144,6 +146,7 @@ impl Player {
         let pool = Pool::new(result_tx)?;
         let mut state = State {
             recording: None,
+            listening: None,
             click: false,
             hand: None,
             device,
@@ -309,6 +312,18 @@ impl Player {
         self.keys.heard()
     }
 
+    /// Opens a sound input (`source`; `None` inside: the default one) to
+    /// see its level with [`Player::take_input_level`] and, with the flag,
+    /// to hear it. `None` closes it again.
+    pub fn monitor(&self, input: Option<(Option<String>, bool)>) {
+        self.send(Command::Monitor(input));
+    }
+
+    /// Peak level of the monitored input since the last call (linear).
+    pub fn take_input_level(&self) -> f32 {
+        self.meters.take_input()
+    }
+
     /// Starts playing and recording from `source` (`None`: the default
     /// input) into the file at `path`. The recording ends when playback
     /// is stopped; the take is then found with [`Player::take_recordings`].
@@ -350,6 +365,8 @@ impl Open {
 struct State {
     /// The recording in progress.
     recording: Option<sg_audio::record::Recording>,
+    /// The input being monitored, and which one it is.
+    listening: Option<(Option<String>, sg_audio::record::Monitor)>,
     /// The metronome is on.
     click: bool,
     /// The track played by hand (its id).
@@ -589,6 +606,23 @@ impl State {
             Command::Hand(track) => {
                 self.hand = track;
                 self.audio.set_mix(self.mix());
+            }
+            Command::Monitor(None) => self.listening = None,
+            Command::Monitor(Some((source, hear))) => {
+                // Only hearing changed: the stream stays as it is.
+                if self.listening.as_ref().is_some_and(|(open, _)| *open == source) {
+                    self.audio.hear_monitor(hear);
+                } else {
+                    // (The one before is closed first: its ring is handed back.)
+                    self.listening = None;
+                    match self.audio.monitor(source.clone(), hear) {
+                        Ok(monitor) => self.listening = Some((source, monitor)),
+                        Err(e) => {
+                            self.stats(|s| s.plugin_news.push(format!("Cannot listen to the input: {e}")));
+                            (self.notify)();
+                        }
+                    }
+                }
             }
             Command::PluginEditor(key) => self.audio.open_plugin_editor(key),
             Command::SavePlugins(reply) => {

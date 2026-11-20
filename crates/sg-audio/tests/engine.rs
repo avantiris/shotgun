@@ -804,3 +804,73 @@ fn a_track_played_by_hand_sounds_within_milliseconds_playing_or_not() {
     engine.note(1, true, 60, 100);
     engine.settle();
 }
+
+/// Monitoring against the real sound server, with two null sinks: one
+/// engine plays a burst into the first; a second engine monitors that
+/// sink and plays into the second, which the first engine records. So the
+/// take shows how late the monitored input is heard. Not run by default.
+#[test]
+#[ignore = "adds two null sinks to the session's PipeWire graph"]
+fn a_monitored_input_is_measured_and_heard_a_few_milliseconds_late() {
+    let pactl = |args: &[&str]| std::process::Command::new("pactl").args(args).output().unwrap();
+    let load = |name: &str| {
+        let loaded = pactl(&["load-module", "module-null-sink", &format!("sink_name={name}")]);
+        let module = String::from_utf8_lossy(&loaded.stdout).trim().to_owned();
+        assert!(loaded.status.success() && !module.is_empty(), "no null sink: {loaded:?}");
+        module
+    };
+    let modules = [load("shotgun-test-source"), load("shotgun-test-heard")];
+    let result = std::panic::catch_unwind(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let played = wav(dir.path(), "burst.wav", 1, 144_000, |n, _| {
+            if (48_000..57_600).contains(&n) { 0.5 * ((n as f32) * 0.2).sin() } else { 0.0 }
+        });
+        let span = ClipSpan {
+            start: 0,
+            len: 144_000,
+            src_in: 0,
+            wav: played,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            speed: (1, 1),
+            gain_keys: Vec::new(),
+            warp: Vec::new(),
+        };
+        let player =
+            Engine::start(Backend::PipeWire { target: Some("shotgun-test-source".into()), quantum: 256 }).unwrap();
+        let listener =
+            Engine::start(Backend::PipeWire { target: Some("shotgun-test-heard".into()), quantum: 256 }).unwrap();
+        // Nothing plays on the listening engine: the device wakes for the monitor alone.
+        let monitor = listener.monitor(Some("shotgun-test-source.monitor".into()), true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut none = [0.0f32; 1];
+        listener.take_meters(&mut none);
+        assert!(listener.meters().take_input() < 1e-4);
+        player.set_mix(Mix { tracks: vec![track(vec![span])], master_gain: 1.0, ..Mix::default() });
+        player.play(0);
+        let recording = player.record(dir.path().join("take.wav"), Some("shotgun-test-heard.monitor".into())).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let take = recording.stop().unwrap();
+        player.pause();
+        // The meter saw the burst at its level.
+        let level = listener.meters().take_input();
+        assert!((0.4..0.6).contains(&level), "{level}");
+        let bytes = std::fs::read(&take.path).unwrap();
+        let samples: Vec<f32> =
+            bytes[44..].chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let first = samples.iter().step_by(2).position(|s| s.abs() > 0.05).expect("the burst was heard") as i64;
+        let late = take.start + first - 48_000;
+        eprintln!("monitored input heard {late} frames = {:.1} ms late", late as f64 / 48.0);
+        assert!((0..2_048).contains(&late), "{late}");
+        // Measured only, not heard: nothing arrives any more.
+        listener.hear_monitor(false);
+        drop(monitor);
+        let stats = listener.stats();
+        assert_eq!((stats.xruns, stats.underruns), (0, 0));
+    });
+    for module in &modules {
+        pactl(&["unload-module", module]);
+    }
+    result.unwrap();
+}

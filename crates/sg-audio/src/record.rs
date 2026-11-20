@@ -112,8 +112,12 @@ fn format_pod() -> Option<Vec<u8>> {
         .map(|(c, _)| c.into_inner())
 }
 
-fn run(
-    data: Capture,
+/// Runs a capture stream on this thread until `quit` says otherwise;
+/// `process` is its realtime callback, with `data` as its own.
+pub(crate) fn run<D: 'static>(
+    data: D,
+    process: fn(&pw::stream::Stream, &mut D),
+    name: &str,
     source: Option<String>,
     quit: pw::channel::Receiver<()>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
@@ -130,7 +134,7 @@ fn run(
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Production",
-            *pw::keys::NODE_NAME => "shotgun-record",
+            *pw::keys::NODE_NAME => name,
             *pw::keys::APP_NAME => "Shotgun",
             *pw::keys::NODE_LATENCY => "256/48000",
             *pw::keys::NODE_RATE => "1/48000",
@@ -144,14 +148,14 @@ fn run(
             Some((None, source)) => props.insert(*pw::keys::TARGET_OBJECT, source),
             None => {}
         }
-        let stream = pw::stream::StreamRc::new(core.clone(), "shotgun-record", props).map_err(|e| e.to_string())?;
+        let stream = pw::stream::StreamRc::new(core.clone(), name, props).map_err(|e| e.to_string())?;
         Ok((mainloop, context, core, stream))
     };
     let (mainloop, _context, _core, stream) = match setup() {
         Ok(parts) => parts,
         Err(e) => return fail(e),
     };
-    let listener = stream.add_local_listener_with_user_data(data).process(capture).register();
+    let listener = stream.add_local_listener_with_user_data(data).process(process).register();
     let _listener = match listener {
         Ok(listener) => listener,
         Err(e) => return fail(e.to_string()),
@@ -240,7 +244,7 @@ impl Recording {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let capture = std::thread::Builder::new()
             .name("sg-audio-record".into())
-            .spawn(move || run(data, source, quit_rx, ready_tx))?;
+            .spawn(move || run(data, capture, "shotgun-record", source, quit_rx, ready_tx))?;
         match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(AudioError::PipeWire(e)),
@@ -349,5 +353,60 @@ pub fn inputs() -> Result<Vec<Input>, AudioError> {
     match rx.recv_timeout(std::time::Duration::from_secs(3)) {
         Ok(result) => result.map_err(AudioError::PipeWire),
         Err(_) => Err(AudioError::PipeWire("no answer from the PipeWire daemon".into())),
+    }
+}
+
+/// The input as it arrives, for the level meter and for hearing oneself
+/// (docs/spec/09-daw.md, M13): a capture stream whose samples go straight
+/// to the playback callback through a small ring. Ends when dropped.
+pub struct Monitor {
+    quit: pw::channel::Sender<()>,
+    capture: Option<std::thread::JoinHandle<()>>,
+    pub(crate) control: Option<crossbeam_channel::Sender<crate::disk::Control>>,
+}
+
+/// The realtime callback of the monitor stream: copies what arrived into the ring.
+fn pass_on(stream: &pw::stream::Stream, ring: &mut rtrb::Producer<f32>) {
+    let Some(mut buffer) = stream.dequeue_buffer() else { return };
+    let Some(d) = buffer.datas_mut().first_mut() else { return };
+    let (offset, size) = (d.chunk().offset() as usize, d.chunk().size() as usize);
+    let Some(bytes) = d.data() else { return };
+    let Some(bytes) = bytes.get(offset..offset + size) else { return };
+    let frames = bytes.len() / 8;
+    // SAFETY: the buffer is PipeWire's mapped memory, negotiated as
+    // interleaved 32-bit float; `bytes` was bounds-checked above.
+    let samples: &[f32] = unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), frames * 2) };
+    // (A full ring: the playback side is not running. What does not fit is dropped.)
+    if let Ok(chunk) = ring.write_chunk_uninit(samples.len().min(ring.slots() & !1)) {
+        chunk.fill_from_iter(samples.iter().copied());
+    }
+}
+
+impl Monitor {
+    /// Starts capturing from `source` (`None`: the default input) into `ring`.
+    pub(crate) fn start(ring: rtrb::Producer<f32>, source: Option<String>) -> Result<Monitor, AudioError> {
+        let (quit, quit_rx) = pw::channel::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let capture = std::thread::Builder::new()
+            .name("sg-audio-monitor".into())
+            .spawn(move || run(ring, pass_on, "shotgun-monitor", source, quit_rx, ready_tx))?;
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(Monitor { quit, capture: Some(capture), control: None }),
+            Ok(Err(e)) => Err(AudioError::PipeWire(e)),
+            Err(_) => Err(AudioError::PipeWire("no answer from the monitor thread".into())),
+        }
+    }
+}
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        let _ = self.quit.send(());
+        if let Some(capture) = self.capture.take() {
+            let _ = capture.join();
+        }
+        // The device may rest again if nothing else needs it.
+        if let Some(control) = &self.control {
+            let _ = control.send(crate::disk::Control::Monitor(false));
+        }
     }
 }

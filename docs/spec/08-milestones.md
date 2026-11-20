@@ -399,8 +399,20 @@ chain second version, M16 mixing and mastering.
     system's default; the choice is kept in `settings.toml` in the
     library, as it belongs to the machine and not to a project
     (`PROPOSED`).
-  - Still to do: monitoring the input
-    through the engine, takes stacked on one track (a new take goes to a
+  - Level and monitoring (2026-11-21): "Level" beside the input opens it
+    without recording and shows how loud it arrives (-60 dB to full
+    scale, yellow from -9, red from -1); "Hear" adds it to what is heard,
+    playing or not. Hearing is a button of its own and off at first
+    (`PROPOSED`): through loudspeakers it feeds back. The input goes
+    from its capture stream through a ring straight into the playback
+    callback (after the master, unprocessed), which skips what piles up
+    beyond two blocks. Checked on two null sinks (one engine plays a
+    burst into the first, a second monitors it into the other, the take
+    of that shows the delay): heard 312 frames (6.5 ms) late, the meter
+    at the burst's level, 0 xruns; and in the app the same way. Not
+    checked: a real interface, whose converters add their own delay.
+    Not built: the input through the track's own chain (it is heard dry).
+  - Still to do: takes stacked on one track (a new take goes to a
     free track instead), punch in and out.
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
   - Built 2026-11-20:

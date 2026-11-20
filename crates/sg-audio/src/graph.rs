@@ -253,6 +253,10 @@ pub struct Rt {
     /// Frames of the current grain already played.
     grain_done: usize,
     loudness: crate::loudness::ShortTerm,
+    /// The monitored input, while there is one, and one that has ended
+    /// and could not be parked yet.
+    monitor: Option<Box<rtrb::Consumer<f32>>>,
+    monitor_limbo: Option<Box<rtrb::Consumer<f32>>>,
 }
 
 impl Rt {
@@ -267,6 +271,8 @@ impl Rt {
             limbo: None,
             grain_done: 0,
             loudness: crate::loudness::ShortTerm::default(),
+            monitor: None,
+            monitor_limbo: None,
         };
         (rt, slot)
     }
@@ -414,12 +420,73 @@ impl Rt {
                 self.position += frames as i64;
             }
         }
+        self.monitor_input(out);
         let spent = crate::monotonic_ns().saturating_sub(started);
         self.shared.process_max_ns.fetch_max(spent, Ordering::Relaxed);
     }
 }
 
 impl Rt {
+    /// Measures the monitored input and, if it is to be heard, adds it to
+    /// `out`. Nothing here allocates or frees: rings come and go through
+    /// pointer slots, as graphs do.
+    fn monitor_input(&mut self, out: &mut [f32]) {
+        let park = |shared: &Shared, ring: Box<rtrb::Consumer<f32>>| -> Option<Box<rtrb::Consumer<f32>>> {
+            if shared.monitor_out.load(Ordering::Acquire).is_null() {
+                shared.monitor_out.store(Box::into_raw(ring), Ordering::Release);
+                None
+            } else {
+                Some(ring)
+            }
+        };
+        if let Some(ring) = self.monitor_limbo.take() {
+            self.monitor_limbo = park(&self.shared, ring);
+        }
+        let incoming = self.shared.monitor_in.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !incoming.is_null() && self.monitor_limbo.is_none() {
+            // SAFETY: a non-null pointer in the slot came from `Box::into_raw`
+            // and the swap makes this side its only owner.
+            let new = unsafe { Box::from_raw(incoming) };
+            if let Some(old) = self.monitor.replace(new) {
+                self.monitor_limbo = park(&self.shared, old);
+            }
+        } else if !incoming.is_null() {
+            // No room to put the old one down this block: take the new one at the next.
+            self.shared.monitor_in.store(incoming, Ordering::Release);
+        }
+        let Some(ring) = &mut self.monitor else { return };
+        let waiting = ring.slots();
+        if waiting == 0 {
+            if ring.is_abandoned()
+                && let Some(ended) = self.monitor.take()
+            {
+                self.monitor_limbo = park(&self.shared, ended);
+            }
+            return;
+        }
+        // What has piled up beyond two blocks is skipped: the input is
+        // heard as late as it has to be and no later.
+        let keep = (out.len() * 2).max(512);
+        if waiting > keep
+            && let Ok(old) = ring.read_chunk((waiting - out.len()) & !1)
+        {
+            old.commit_all();
+        }
+        let take = ring.slots().min(out.len()) & !1;
+        let Ok(chunk) = ring.read_chunk(take) else { return };
+        let heard = self.shared.monitor_heard.load(Ordering::Relaxed);
+        let (a, b) = chunk.as_slices();
+        let mut peak = 0.0f32;
+        for (o, s) in out.iter_mut().zip(a.iter().chain(b)) {
+            peak = peak.max(s.abs());
+            if heard {
+                *o = (*o + *s).clamp(-1.0, 1.0);
+            }
+        }
+        chunk.commit_all();
+        self.shared.input_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
+    }
+
     /// The shared counters, for a backend that reports device state into them.
     pub(crate) fn shared_for_backend(&self) -> Arc<Shared> {
         self.shared.clone()
