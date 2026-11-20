@@ -293,6 +293,14 @@ Status:
     about 19 minutes.
 ## Stage 3: DAW
 
-Recording, MIDI/piano roll, plugin hosting (CLAP/VST3/LV2), mixing/mastering.
-Planned separately once stage 2 is accepted; the audio engine from M3 is its
-foundation.
+Started 2026-11-20. What the user decided, the design and the milestones
+M11 to M16 are in `09-daw.md`. In short: M11 tempo and bars, M12 notes
+and built-in instruments, M13 recording, M14 mixing and mastering, M15
+native plugins, M16 Windows plugins.
+
+- [ ] M11 Tempo and bars
+- [ ] M12 Notes and built-in instruments
+- [ ] M13 Recording
+- [ ] M14 Mixing and mastering
+- [ ] M15 Plugins, native
+- [ ] M16 Plugins, Windows

@@ -12,6 +12,7 @@ DAW planned inside the same app. Rust, wgpu/Vulkan, FFmpeg, PipeWire.
 | `docs/spec/04-performance.md` | before any feature: budgets are hard requirements |
 | `docs/spec/08-milestones.md` | to find what to build next and the definition of done |
 | `docs/spec/03,05,06,07` | when working on bundle/git, colour, audio, UI/keys |
+| `docs/spec/09-daw.md` | before any music work (stage 3): what was decided, design, milestones M11 to M16 |
 | `docs/spikes/*.md` | before choosing a crate or approach: measured decisions live here and override the specs where they differ |
 
 Statements in specs marked `PROPOSED` are my design, not user decisions: fine
