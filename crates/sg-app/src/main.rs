@@ -827,6 +827,7 @@ impl App {
             stats: player_lines(player),
             master_meter: player.take_meters(&mut self.meters),
             limiting_db: player.take_limiting(),
+            loudness: player.loudness(),
             meters: self.meters.clone(),
             angles,
         }
@@ -1439,6 +1440,11 @@ fn run_export(
         ExportPreset::Gif => {
             sg_export::Preset::Gif { compression: sg_export::Compression::from_level(request.compression) }
         }
+        ExportPreset::Sound => sg_export::Preset::Sound {
+            format: sg_export::SoundFormat::from_level(request.sound_format),
+            stems: request.stems,
+            loudness: request.loudness,
+        },
     };
     let job = sg_export::Job { root, project, preset, range: request.range };
     // One event per stage change or percent, not one per frame.
@@ -1452,6 +1458,9 @@ fn run_export(
     };
     match sg_export::export(&job, device, queue, cancel, &mut progress) {
         Ok(done) => {
+            if let Some((loudness, peak, stems)) = done.sound {
+                log::info!("sound: {loudness:?} LUFS, peak {peak:.1} dB, {stems} stems");
+            }
             log::info!(
                 "exported {} ({} bytes, {} frames) in {:.1} s; render pass {:.1} fps with {}",
                 done.path.display(),
@@ -1469,6 +1478,12 @@ fn run_export(
                 bytes: done.bytes,
                 seconds: done.seconds,
                 on_clipboard,
+                note: done.sound.map_or(String::new(), |(loudness, peak, stems)| {
+                    let loud = loudness.map_or("silent".to_owned(), |l| format!("{l:.1} LUFS"));
+                    let tracks =
+                        if stems > 0 { format!(", and {stems} tracks in a folder beside it") } else { String::new() };
+                    format!("Loudness {loud}, highest peak {peak:.1} dB{tracks}")
+                }),
             }
         }
         Err(sg_export::ExportError::Cancelled) => ExportUpdate::Failed("cancelled".to_owned()),

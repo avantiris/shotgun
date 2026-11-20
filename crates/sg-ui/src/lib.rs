@@ -768,6 +768,9 @@ impl Shell {
                         compression: self.export.compression(),
                         range,
                         to_clipboard: true,
+                        sound_format: 0,
+                        stems: false,
+                        loudness: None,
                     },
                     commands,
                 );
@@ -1064,7 +1067,13 @@ impl Shell {
                 // `gif:<0-4>` and `share:<MB>:<0-4>` name the compression; 1 (light) without.
                 let parts: Vec<&str> = what.split(':').collect();
                 let level = |part: Option<&&str>| part.and_then(|l| l.parse().ok()).unwrap_or(1);
+                // `sound[:wav|flac|mp3][:stems][:<LUFS>]`
+                let sound_format = ["wav", "flac", "mp3"].iter().position(|f| parts.contains(f)).unwrap_or(0) as u8;
+                let stems = parts.contains(&"stems");
+                let loudness =
+                    parts.iter().skip(1).find_map(|part| part.parse::<f32>().ok()).filter(|_| parts[0] == "sound");
                 let (preset, megabytes, compression) = match parts.as_slice() {
+                    ["sound", ..] => (ExportPreset::Sound, 10, 1),
                     ["share", mb, rest @ ..] => (ExportPreset::Share, mb.parse().unwrap_or(10), level(rest.first())),
                     ["vertical"] => (ExportPreset::Vertical, 10, 1),
                     ["gif", rest @ ..] => (ExportPreset::Gif, 10, level(rest.first())),
@@ -1072,7 +1081,16 @@ impl Shell {
                 };
                 let range = if preset == ExportPreset::Gif { self.gif_range() } else { None };
                 // Scripted exports never touch the clipboard: it belongs to the person at the desk.
-                let request = ExportRequest { preset, megabytes, compression, range, to_clipboard: false };
+                let request = ExportRequest {
+                    preset,
+                    megabytes,
+                    compression,
+                    range,
+                    to_clipboard: false,
+                    sound_format,
+                    stems,
+                    loudness,
+                };
                 self.start_export(request, &mut commands);
             }
             DevStep::Checkpoint(name) => {

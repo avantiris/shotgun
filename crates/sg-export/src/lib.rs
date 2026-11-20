@@ -32,6 +32,43 @@ pub enum Preset {
     /// Animated GIF; `compression` decides its width, frame rate and how
     /// much the encoder may give up for a smaller file.
     Gif { compression: Compression },
+    /// The sound alone (a song). With `stems`, also every track by itself,
+    /// sounding as it does in the mix, in a folder beside the file. With
+    /// `loudness`, the whole is brought to that many LUFS.
+    Sound { format: SoundFormat, stems: bool, loudness: Option<f32> },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SoundFormat {
+    /// 24-bit WAV: for mastering elsewhere, and for distributors.
+    #[default]
+    Wav,
+    /// The same without loss at about half the size.
+    Flac,
+    /// MP3 at 320 kbit/s: to send.
+    Mp3,
+}
+
+impl SoundFormat {
+    pub fn from_level(level: u8) -> SoundFormat {
+        [SoundFormat::Wav, SoundFormat::Flac, SoundFormat::Mp3][level.min(2) as usize]
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            SoundFormat::Wav => "wav",
+            SoundFormat::Flac => "flac",
+            SoundFormat::Mp3 => "mp3",
+        }
+    }
+
+    fn codec(self) -> &'static [&'static str] {
+        match self {
+            SoundFormat::Wav => &["-c:a", "pcm_s24le"],
+            SoundFormat::Flac => &["-c:a", "flac", "-sample_fmt", "s32", "-bits_per_raw_sample", "24"],
+            SoundFormat::Mp3 => &["-c:a", "libmp3lame", "-b:a", "320k"],
+        }
+    }
 }
 
 /// How much quality a share copy or GIF trades for a smaller file
@@ -89,11 +126,16 @@ impl Preset {
             Preset::Vertical => "vertical",
             Preset::Share { .. } => "share",
             Preset::Gif { .. } => "gif",
+            Preset::Sound { .. } => "sound",
         }
     }
 
     fn extension(&self) -> &'static str {
-        if matches!(self, Preset::Gif { .. }) { "gif" } else { "mp4" }
+        match self {
+            Preset::Gif { .. } => "gif",
+            Preset::Sound { format, .. } => format.extension(),
+            _ => "mp4",
+        }
     }
 }
 
@@ -119,6 +161,9 @@ pub struct Exported {
     /// read-back, and feeding the encoder.
     pub stage_ms: [f64; 4],
     pub encoder: &'static str,
+    /// A sound export: its loudness in LUFS (`None`: silence), its highest
+    /// peak in decibels below full scale, and how many stems were written.
+    pub sound: Option<(Option<f32>, f32, usize)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -176,8 +221,20 @@ fn render_audio(
     out: &Path,
     cancel: &Cancel,
 ) -> Result<(), ExportError> {
+    render_mix(sg_play::audio_mix(root, sequence), sequence, range, out, cancel).map(|_| ())
+}
+
+/// Renders a mix of the sequence to a 48 kHz float WAV and measures it.
+fn render_mix(
+    mix: sg_audio::Mix,
+    sequence: &Sequence,
+    range: (i64, i64),
+    out: &Path,
+    cancel: &Cancel,
+) -> Result<sg_audio::loudness::Loudness, ExportError> {
     let engine = Engine::start(Backend::Manual).map_err(|e| ExportError::Tool(e.to_string()))?;
-    engine.set_mix(sg_play::audio_mix(root, sequence));
+    engine.set_mix(mix);
+    let mut loudness = sg_audio::loudness::Loudness::default();
     let first = sequence.rate.frames_to_samples(range.0, SAMPLE_RATE);
     let total = (sequence.rate.frames_to_samples(range.1, SAMPLE_RATE) - first).max(0) as u64;
     let mut file = std::io::BufWriter::new(std::fs::File::create(out)?);
@@ -208,13 +265,99 @@ fn render_audio(
         engine.settle();
         let frames = (total - done).min(4096) as usize;
         engine.pull(&mut block[..frames * 2]);
+        loudness.add(&block[..frames * 2]);
         for sample in &block[..frames * 2] {
             file.write_all(&sample.to_le_bytes())?;
         }
         done += frames as u64;
     }
     file.flush()?;
-    Ok(())
+    Ok(loudness)
+}
+
+/// The sound alone: the mix as a file, brought to a loudness if asked,
+/// and every track by itself if asked.
+#[allow(clippy::too_many_arguments)]
+fn export_sound(
+    job: &Job,
+    sequence: &Sequence,
+    range: (i64, i64),
+    (format, stems, target): (SoundFormat, bool, Option<f32>),
+    work: &Path,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+    started: Instant,
+) -> Result<Exported, ExportError> {
+    let mut mix = sg_play::audio_mix(&job.root, sequence);
+    if mix.tracks.iter().all(|t| t.clips.is_empty() && t.notes.is_empty()) {
+        return Err(ExportError::Empty);
+    }
+    let rendered = work.join("mix.wav");
+    progress("mixing sound", 0.0);
+    let mut heard = render_mix(mix.clone(), sequence, range, &rendered, cancel)?;
+    if let (Some(target), Some(now)) = (target, heard.integrated()) {
+        // Turned up or down by what is missing, and mixed again: the
+        // limiter on the master then holds what would go over full scale.
+        // (At most 30 dB up: a near-silent piece is not made of noise.)
+        mix.master_gain *= 10f32.powf((target - now).clamp(-60.0, 30.0) / 20.0);
+        progress("setting the loudness", 0.3);
+        heard = render_mix(mix.clone(), sequence, range, &rendered, cancel)?;
+    }
+    let encode = |from: &Path, to: &Path| {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-v", "error", "-nostdin", "-y", "-i"]).arg(from).args(format.codec()).arg(to);
+        tool(cmd, cancel)
+    };
+    let out = output_path(&job.root, &job.project, &job.preset);
+    let unfinished = Unfinished(Some(out.clone()));
+    progress("writing the file", 0.5);
+    encode(&rendered, &out)?;
+    let mut written = 0;
+    if stems {
+        // Beside the file, under its name: `<name>-stems/01 <track>.wav`.
+        let folder = out.with_extension("").with_file_name(format!(
+            "{}-stems",
+            out.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&folder)?;
+        let names: Vec<&str> =
+            sequence.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).map(|t| t.name.as_str()).collect();
+        // (A muted track is not in the song: it gets no file.)
+        let sounding: Vec<usize> = (0..mix.tracks.len())
+            .filter(|i| {
+                let track = &mix.tracks[*i];
+                !track.mute && (!track.clips.is_empty() || !track.notes.is_empty())
+            })
+            .collect();
+        for (n, index) in sounding.iter().enumerate() {
+            progress("writing the tracks", 0.5 + 0.5 * n as f32 / sounding.len() as f32);
+            let mut alone = mix.clone();
+            for (other, track) in alone.tracks.iter_mut().enumerate() {
+                track.unheard = other != *index;
+            }
+            let stem = work.join("stem.wav");
+            render_mix(alone, sequence, range, &stem, cancel)?;
+            let name = slug(names.get(*index).copied().unwrap_or("track"));
+            encode(&stem, &folder.join(format!("{:02}-{name}.{}", n + 1, format.extension())))?;
+            written += 1;
+        }
+    }
+    progress("checking", 0.95);
+    let mut decode = Command::new("ffmpeg");
+    decode.args(["-v", "error", "-xerror", "-i"]).arg(&out).args(["-f", "null", "-"]);
+    run_lines(decode, cancel, |_| {}).map_err(|e| ExportError::Verify(e.to_string()))?;
+    let bytes = std::fs::metadata(&out)?.len();
+    unfinished.keep();
+    Ok(Exported {
+        path: out,
+        bytes,
+        frames: range.1 - range.0,
+        seconds: started.elapsed().as_secs_f64(),
+        render_fps: 0.0,
+        stage_ms: [0.0; 4],
+        encoder: "sound only",
+        sound: Some((heard.integrated(), heard.peak_db(), written)),
+    })
 }
 
 struct Encoder {
@@ -783,6 +926,9 @@ pub fn export(
     let work = exports.join(format!(".tmp-{}", std::process::id()));
     std::fs::create_dir_all(&work)?;
     let result = (|| {
+        if let Preset::Sound { format, stems, loudness } = job.preset {
+            return export_sound(job, &sequence, range, (format, stems, loudness), &work, cancel, progress, started);
+        }
         let has_sound = !matches!(job.preset, Preset::Gif { .. })
             && sequence.tracks.iter().any(|t| t.kind == sg_core::TrackKind::Audio && !t.clips.is_empty());
         let audio = work.join("audio.wav");
@@ -860,6 +1006,8 @@ pub fn export(
                 progress("making GIF", 0.5);
                 gif(&rendered, &out, *compression, cancel)?;
             }
+            // (Left above: a sound export renders no picture.)
+            Preset::Sound { .. } => {}
         }
         if !matches!(job.preset, Preset::Gif { .. }) {
             progress("checking", 0.5);
@@ -883,6 +1031,7 @@ pub fn export(
             render_fps,
             stage_ms,
             encoder: encoder_name,
+            sound: None,
         })
     })();
     let _ = std::fs::remove_dir_all(&work);

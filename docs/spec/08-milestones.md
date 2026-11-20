@@ -436,3 +436,22 @@ chain second version, M16 mixing and mastering.
     for the room and the echo; the tail after the last clip is cut off at
     the end of the sequence in an export.
 - [ ] M16 Mixing and mastering
+  - Built 2026-11-20:
+    - Loudness in LUFS (`sg_audio::loudness`, ITU-R BS.1770): the last
+      three seconds of the mix beside the master fader, and the whole
+      song with every sound export.
+    - "Sound only" in the export panel: WAV (24-bit), FLAC or MP3
+      (320 kbit/s); "As mixed", or brought to -14 or -9 LUFS (the song is
+      turned up or down by what is missing and mixed again; the limiter
+      on the master holds the peaks); optionally every track as a file of
+      its own in a folder beside the song, each as it sounds in the mix
+      (its effects, its reverb and echo, ducked as in the mix).
+    - `sg-bench export <project> sound[:wav|flac|mp3][:stems][:<LUFS>]`.
+  - Checked: a full-scale 997 Hz tone reads 0.0 LUFS as the standard
+    says; an export brought to -14 LUFS was measured by ffmpeg's own
+    meter (`ebur128`) at -14.0 LUFS.
+  - Still to do: group buses; an insert chain that can be reordered;
+    true-peak (oversampled) limiting: the limiter holds sample peaks at
+    full scale, so a loud master can read above 0 dB true peak; a
+    loudness target far above the mix is reached only as far as the
+    limiter allows (the result shows what was reached).

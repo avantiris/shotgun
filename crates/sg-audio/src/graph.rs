@@ -248,6 +248,7 @@ pub struct Rt {
     limbo: Option<Box<Graph>>,
     /// Frames of the current grain already played.
     grain_done: usize,
+    loudness: crate::loudness::ShortTerm,
 }
 
 impl Rt {
@@ -261,6 +262,7 @@ impl Rt {
             scratch: vec![0.0; MAX_BLOCK * 2],
             limbo: None,
             grain_done: 0,
+            loudness: crate::loudness::ShortTerm::default(),
         };
         (rt, slot)
     }
@@ -285,6 +287,11 @@ impl Rt {
             self.retire(graph);
         }
         if let Some(graph) = Slot::take(&self.slot.incoming) {
+            // (A graph that goes on from where the last one was, a fader
+            // or a clip having changed, keeps the meter's memory.)
+            if graph.start != self.position {
+                self.loudness.clear();
+            }
             self.position = graph.start;
             self.grain_done = 0;
             self.shared.running.store(graph.playing && graph.grain.is_none(), Ordering::Release);
@@ -366,6 +373,9 @@ impl Rt {
                 }
                 let peak = block.iter().fold(0.0f32, |m, s| m.max(s.abs()));
                 self.shared.master_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
+                if let (Some(loudness), None) = (self.loudness.add(block), grain) {
+                    self.shared.loudness.store(loudness.to_bits(), Ordering::Relaxed);
+                }
                 // The click is not part of the mix: after the master, and not when scrubbing.
                 if let (Some(click), None) = (&graph.click, grain) {
                     click.add(block, self.position + (chunk_start / 2) as i64);

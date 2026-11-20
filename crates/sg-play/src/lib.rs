@@ -253,6 +253,11 @@ impl Player {
     }
 
     /// Decibels the master limiter took off since the last call.
+    /// Loudness of the last three seconds of the mix, in LUFS.
+    pub fn loudness(&self) -> f32 {
+        self.meters.loudness()
+    }
+
     pub fn take_limiting(&self) -> f32 {
         self.meters.take_limiting()
     }
@@ -955,6 +960,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 state_file: root.join("plugins").join(format!("{}.state", track.id)),
             }),
             notes: track_notes(sequence, track),
+            unheard: false,
             // (Squared: the lower half of the control is the useful, quiet part.)
             reverb: track.mix.reverb * track.mix.reverb,
             echo: track.mix.echo * track.mix.echo,

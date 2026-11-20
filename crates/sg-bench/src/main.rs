@@ -353,7 +353,11 @@ fn bench_audio(target: Option<&str>, secs: u64, dir: &Path) -> anyhow::Result<()
         gain_keys: Vec::new(),
         warp: Vec::new(),
     };
-    engine.set_mix(Mix { tracks: vec![TrackMix::plain(vec![clip])], master_gain: 1.0, ..Mix::default() });
+    // The realtime thread's whole load: the track sends to the reverb and
+    // the echo, the metronome clicks and the loudness is measured.
+    let track = TrackMix { reverb: 0.2, echo: 0.2, ..TrackMix::plain(vec![clip]) };
+    let click = sg_audio::space::Click { beat: (24_000, 1), beats_per_bar: 4 };
+    engine.set_mix(Mix { tracks: vec![track], click: Some(click), ..Mix::default() });
 
     // Play start: from the call until the realtime thread renders the first block.
     let mut starts = Vec::new();
@@ -455,7 +459,19 @@ fn bench_export(root: &Path, preset: &str, range: Option<(i64, i64)>) -> anyhow:
         ["share", mb, rest @ ..] => {
             Preset::Share { megabytes: mb.parse().context("share:<megabytes>")?, compression: level(rest.first())? }
         }
-        _ => bail!("preset must be master, vertical, gif[:<0-4>] or share:<megabytes>[:<0-4>]"),
+        // sound:<wav|flac|mp3>[:stems][:<LUFS>]
+        ["sound", rest @ ..] => Preset::Sound {
+            format: match rest.first() {
+                Some(&"flac") => sg_export::SoundFormat::Flac,
+                Some(&"mp3") => sg_export::SoundFormat::Mp3,
+                _ => sg_export::SoundFormat::Wav,
+            },
+            stems: rest.contains(&"stems"),
+            loudness: rest.iter().find_map(|part| part.parse::<f32>().ok()),
+        },
+        _ => bail!(
+            "preset must be master, vertical, gif[:<0-4>], share:<megabytes>[:<0-4>] or sound[:<wav|flac|mp3>][:stems][:<LUFS>]"
+        ),
     };
     let opened = sg_project::open(root, || {})?;
     let project = opened.document.project().clone();
@@ -477,6 +493,18 @@ fn bench_export(root: &Path, preset: &str, range: Option<(i64, i64)>) -> anyhow:
             last = stage.to_owned();
         }
     })?;
+    if let Some((loudness, peak, stems)) = done.sound {
+        println!(
+            "{}: {} bytes in {:.1} s; {} LUFS, peak {:.1} dB, {} stems",
+            done.path.display(),
+            done.bytes,
+            done.seconds,
+            loudness.map_or("silent:".to_owned(), |l| format!("{l:.1}")),
+            peak,
+            stems
+        );
+        return Ok(());
+    }
     let seconds_of_video = {
         let seq = &job.project.sequences[0];
         done.frames as f64 * seq.rate.den() as f64 / seq.rate.num() as f64

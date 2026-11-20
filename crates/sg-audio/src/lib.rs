@@ -17,6 +17,7 @@
 mod disk;
 mod fx;
 pub mod graph;
+pub mod loudness;
 mod null;
 mod pw;
 pub mod record;
@@ -93,6 +94,9 @@ pub struct TrackMix {
     pub plugin: Option<PluginSpec>,
     /// Sorted by start.
     pub notes: Vec<NoteSpan>,
+    /// Worked out as always (a voice still ducks the others) but not
+    /// heard: how one track is exported alone, sounding as it does in the mix.
+    pub unheard: bool,
     /// How much of the track (after its fader) goes to the shared reverb
     /// and to the shared echo, as factors; 0 is none.
     pub reverb: f32,
@@ -215,6 +219,8 @@ pub(crate) struct Shared {
     /// Peak level per track since it was last read (f32 bits), then of the mix.
     meters: [AtomicU32; MAX_METERS],
     master_meter: AtomicU32,
+    /// Loudness of the last three seconds of the mix in LUFS (float bits).
+    loudness: AtomicU32,
     /// Lowest gain the limiter applied since it was last read (f32 bits; 1.0 when idle).
     limited: AtomicU32,
 }
@@ -242,6 +248,7 @@ impl Engine {
     pub fn start(backend: Backend) -> Result<Engine, AudioError> {
         let shared = Arc::new(Shared::default());
         shared.limited.store(1.0f32.to_bits(), Ordering::Relaxed);
+        shared.loudness.store((-120.0f32).to_bits(), Ordering::Relaxed);
         let (rt, slot) = graph::Rt::new(shared.clone());
         let (control, control_rx) = crossbeam_channel::unbounded();
         let (mut pipewire, mut null, mut manual) = (None, None, None);
@@ -408,6 +415,7 @@ impl TrackMix {
             tone: Tone::default(),
             plugin: None,
             notes: Vec::new(),
+            unheard: false,
             reverb: 0.0,
             echo: 0.0,
         }
@@ -428,6 +436,11 @@ impl Meters {
             *out = f32::from_bits(meter.swap(0, Ordering::Relaxed));
         }
         f32::from_bits(self.shared.master_meter.swap(0, Ordering::Relaxed))
+    }
+
+    /// Loudness of the last three seconds of the mix, in LUFS (-120: silence).
+    pub fn loudness(&self) -> f32 {
+        f32::from_bits(self.shared.loudness.load(Ordering::Relaxed))
     }
 
     /// How far the limiter on the master had to turn the mix down since

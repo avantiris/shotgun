@@ -548,6 +548,16 @@ impl Mixer {
                     if let Some(db) = fader(ui, self.master, sequence.master_db) {
                         ops.push(Op::SetMasterGain { id: sequence.id, db });
                     }
+                    // How loud the mix is as streaming services measure it.
+                    let loud = if view.playing && view.loudness > -70.0 {
+                        format!("{:.1} LUFS", view.loudness)
+                    } else {
+                        "- LUFS".to_owned()
+                    };
+                    ui.label(RichText::new(loud).size(11.0).color(theme::DIM)).on_hover_text(
+                        "Loudness of the last three seconds. Streaming services play songs at about -14 LUFS; \
+                         loud rap masters sit around -9. The sound export can bring the whole song to either.",
+                    );
                     // What the limiter took off, held a little so that it can be read.
                     self.limiting = if view.playing { view.limiting_db.max(self.limiting * 0.9) } else { 0.0 };
                     if self.limiting > 0.1 {

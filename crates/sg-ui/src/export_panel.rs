@@ -10,6 +10,8 @@ pub enum ExportPreset {
     Vertical,
     Share,
     Gif,
+    /// The sound alone.
+    Sound,
 }
 
 /// What to export, as the UI knows it; the application turns it into a job.
@@ -25,12 +27,27 @@ pub struct ExportRequest {
     pub range: Option<(i64, i64)>,
     /// Put the finished file on the clipboard.
     pub to_clipboard: bool,
+    /// Sound export: 0 WAV, 1 FLAC, 2 MP3; every track by itself as
+    /// well; and the loudness to bring the song to, in LUFS.
+    pub sound_format: u8,
+    pub stems: bool,
+    pub loudness: Option<f32>,
 }
 
 /// Progress and results coming back from the export thread.
 pub enum ExportUpdate {
-    Progress { stage: &'static str, fraction: f32 },
-    Done { path: String, bytes: u64, seconds: f64, on_clipboard: bool },
+    Progress {
+        stage: &'static str,
+        fraction: f32,
+    },
+    /// `note`: what else is worth knowing about the file (a song's loudness).
+    Done {
+        path: String,
+        bytes: u64,
+        seconds: f64,
+        on_clipboard: bool,
+        note: String,
+    },
     Failed(String),
 }
 
@@ -40,6 +57,9 @@ pub struct ExportPanel {
     megabytes: u32,
     compression: u8,
     to_clipboard: bool,
+    sound_format: u8,
+    stems: bool,
+    loudness: Option<f32>,
     /// Export the selection or marked stretch instead of everything.
     only_range: bool,
     running: Option<(&'static str, f32)>,
@@ -55,6 +75,9 @@ impl Default for ExportPanel {
             megabytes: 10,
             compression: 1,
             to_clipboard: true,
+            sound_format: 0,
+            stems: false,
+            loudness: None,
             only_range: false,
             running: None,
             result: None,
@@ -101,7 +124,7 @@ impl ExportPanel {
     pub fn update(&mut self, update: ExportUpdate) {
         match update {
             ExportUpdate::Progress { stage, fraction } => self.running = Some((stage, fraction)),
-            ExportUpdate::Done { path, bytes, seconds, on_clipboard } => {
+            ExportUpdate::Done { path, bytes, seconds, on_clipboard, note } => {
                 self.running = None;
                 let size = if bytes >= 1_000_000 {
                     format!("{:.1} MB", bytes as f64 / 1e6)
@@ -109,7 +132,8 @@ impl ExportPanel {
                     format!("{} kB", bytes / 1000)
                 };
                 let clipboard = if on_clipboard { ", copied to the clipboard" } else { "" };
-                self.result = Some(Ok(format!("{path}  ({size}, took {seconds:.1} s{clipboard})")));
+                let note = if note.is_empty() { note } else { format!("\n{note}") };
+                self.result = Some(Ok(format!("{path}  ({size}, took {seconds:.1} s{clipboard}){note}")));
             }
             ExportUpdate::Failed(error) => {
                 self.running = None;
@@ -152,6 +176,7 @@ impl ExportPanel {
                             ),
                             (ExportPreset::Share, "Share copy", "To send (H.264): compressed as chosen, never above a size you set"),
                             (ExportPreset::Gif, "GIF", "The selection or the stretch between markers"),
+                            (ExportPreset::Sound, "Sound only", "The song without picture: WAV, FLAC or MP3"),
                         ] {
                             ui.horizontal(|ui| {
                                 ui.radio_value(&mut self.preset, preset, name);
@@ -166,6 +191,21 @@ impl ExportPanel {
                             }
                             ExportPreset::Gif => {
                                 ui.checkbox(&mut self.to_clipboard, "copy the GIF to the clipboard");
+                            }
+                            ExportPreset::Sound => {
+                                for (level, name, tip) in [
+                                    (0, "WAV", "24-bit, no loss: for distributors and for mastering elsewhere."),
+                                    (1, "FLAC", "No loss, about half the size."),
+                                    (2, "MP3", "320 kbit/s: to send."),
+                                ] {
+                                    if ui.selectable_label(self.sound_format == level, name).on_hover_text(tip).clicked() {
+                                        self.sound_format = level;
+                                    }
+                                }
+                                ui.checkbox(&mut self.stems, "every track as a file of its own too").on_hover_text(
+                                    "In a folder beside the song: each track as it sounds in the mix, \
+                                     with its effects, its share of reverb and echo, and ducked as in the mix.",
+                                );
                             }
                             _ => {}
                         });
@@ -183,6 +223,20 @@ impl ExportPanel {
                                     let tip = if gif { as_gif } else { share };
                                     if ui.selectable_label(self.compression == level, name).on_hover_text(tip).clicked() {
                                         self.compression = level;
+                                    }
+                                }
+                            });
+                        }
+                        if self.preset == ExportPreset::Sound {
+                            ui.horizontal(|ui| {
+                                ui.label("Loudness");
+                                for (target, name, tip) in [
+                                    (None, "As mixed", "Nothing is changed: the file is as loud as the mixer made it."),
+                                    (Some(-14.0), "-14 LUFS", "What streaming services play at: nothing is turned down by them."),
+                                    (Some(-9.0), "-9 LUFS", "Loud, as rap masters are: the limiter holds the peaks, which costs some punch."),
+                                ] {
+                                    if ui.selectable_label(self.loudness == target, name).on_hover_text(tip).clicked() {
+                                        self.loudness = target;
                                     }
                                 }
                             });
@@ -226,6 +280,9 @@ impl ExportPanel {
                                         compression: self.compression,
                                         range,
                                         to_clipboard: clipboard,
+                                        sound_format: self.sound_format,
+                                        stems: self.stems,
+                                        loudness: self.loudness,
                                     }));
                                 }
                             }

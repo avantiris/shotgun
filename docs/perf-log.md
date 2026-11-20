@@ -410,3 +410,25 @@ Command: `sg-bench export /disk/shotgun-dev/tmp/lib-r9/pairs2 master 0 600`
 
 `scripts/bench-m5.sh` after the change to the player's decode workers:
 1797 frames, 0 late.
+
+## 2026-11-20, stage 3: recording, metronome, sends, loudness (after 726ec13)
+
+Commands: `cargo nextest run -p sg-audio --run-ignored only a_take_lands`
+(a loop without air: played into a null sink, recorded from its monitor);
+`sg-bench audio shotgun-null 20` (one track sending to the reverb and the
+echo, metronome on, loudness measured: everything the realtime thread
+can be asked to do); `sg-bench export <project> sound:flac:stems:-14`.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| A take against where it was played (engine alone) | 4 frames, 0.1 ms | PROPOSED: within 1 ms | pass |
+| The same through the whole application | 5 frames, 0.1 ms | | pass |
+| Recorded metronome clicks against their beats | 5 frames | | pass |
+| Worst realtime callback, quantum 256 (5.33 ms) | 125 us | under the quantum | pass |
+| Graph xruns, ring underruns over 20 s | 0, 0 | 0 | pass |
+| Audio start, p99 | 12.3 ms | <= 80 ms | pass |
+| Sound export to -14 LUFS, by ffmpeg `ebur128` | -14.0 LUFS | within 0.5 LU | pass |
+| 5 s song, FLAC with two tracks beside it | 0.8 s | | |
+
+Not measured: a real microphone and speakers (a device that reports its
+delay wrongly shifts takes by that error).

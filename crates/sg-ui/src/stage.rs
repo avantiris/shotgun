@@ -18,6 +18,8 @@ pub struct ViewerState {
     pub master_meter: f32,
     /// Decibels the master limiter took off since the last frame.
     pub limiting_db: f32,
+    /// Loudness of the last three seconds of the mix in LUFS (-120: silence).
+    pub loudness: f32,
     /// The camera angles side by side, while the sequence has camera tracks.
     pub angles: Option<AnglesView>,
     /// Lines for the performance overlay.

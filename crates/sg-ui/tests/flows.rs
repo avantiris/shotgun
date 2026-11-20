@@ -996,6 +996,7 @@ fn a_finished_export_offers_the_way_to_its_file() {
         bytes: 1,
         seconds: 1.0,
         on_clipboard: false,
+        note: String::new(),
     });
     harness.run_steps(2);
     click(&mut harness, "Show in folder");
@@ -1512,4 +1513,39 @@ fn the_metronome_needs_a_tempo_and_is_switched_with_its_button() {
     click(&mut harness, "Metronome on");
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Metronome(false))));
     assert!(harness.query_by_label("Metronome").is_some());
+}
+
+#[test]
+fn a_song_is_exported_as_sound_only_with_its_tracks_and_a_loudness() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    harness.key_press_modifiers(Modifiers::CTRL, Key::E);
+    harness.run_steps(3);
+    click(&mut harness, "Sound only");
+    click(&mut harness, "FLAC");
+    click(&mut harness, "every track as a file of its own too");
+    click(&mut harness, "-14 LUFS");
+    // (The button in the popover: the top bar has one of the same name.)
+    let buttons: Vec<_> = harness.get_all_by_label("Export").collect();
+    buttons.last().unwrap().click();
+    harness.run_steps(3);
+    let asked = harness.state().commands.iter().find_map(|c| match c {
+        Command::Export { request, .. } => Some(request.clone()),
+        _ => None,
+    });
+    let asked = asked.expect("an export was asked for");
+    assert_eq!(
+        (asked.preset, asked.sound_format, asked.stems, asked.loudness),
+        (sg_ui::ExportPreset::Sound, 1, true, Some(-14.0))
+    );
+    // What was measured is shown with the file.
+    harness.state_mut().shell.export_update(sg_ui::ExportUpdate::Done {
+        path: "/library/flows/exports/flows-sound-1.flac".to_owned(),
+        bytes: 3_000_000,
+        seconds: 2.0,
+        on_clipboard: false,
+        note: "Loudness -14.0 LUFS, highest peak -1.2 dB".to_owned(),
+    });
+    harness.run_steps(2);
+    assert!(harness.query_by_label_contains("Loudness -14.0 LUFS").is_some());
 }

@@ -191,6 +191,7 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
             x.clips == y.clips
                 && x.plugin == y.plugin
                 && x.notes == y.notes
+                && x.unheard == y.unheard
                 // (The reverb and echo exist only while some track sends to them.)
                 && (x.reverb > 0.0 || x.echo > 0.0) == (y.reverb > 0.0 || y.echo > 0.0)
                 && (x.denoise > 0.0) == (y.denoise > 0.0)
@@ -427,9 +428,12 @@ impl Disk {
             let (producer, ring) = rtrb::RingBuffer::new(RING_FRAMES * 2);
             let live = Live::new(track.gain, track.pan, track.mute);
             live.set_sends(track.reverb, track.echo);
-            let mut fader: Box<dyn Processor> = Box::new(Fader::new(live.clone()));
+            // An unheard track keeps its own fader for what it does to
+            // the others; what goes to the output is silence.
+            let heard = if track.unheard { Live::new(0.0, 0.0, true) } else { live.clone() };
+            let mut fader: Box<dyn Processor> = Box::new(Fader::new(heard.clone()));
             fader.prepare(SAMPLE_RATE, MAX_BLOCK);
-            tracks.push(Track { ring, chain: vec![fader], live: live.clone() });
+            tracks.push(Track { ring, chain: vec![fader], live: heard });
             self.feeds.push(Feed {
                 producer,
                 clips: track.clips.clone(),
