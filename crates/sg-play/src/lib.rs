@@ -826,6 +826,10 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                     scale: track.mix.tune_scale,
                     speed: track.mix.tune_speed,
                 },
+                level: track.mix.level,
+                drive: track.mix.drive,
+                voice: track.mix.voice,
+                duck_db: track.mix.duck_db,
             },
         })
         .collect();

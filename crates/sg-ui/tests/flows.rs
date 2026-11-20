@@ -1193,6 +1193,8 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
     assert!(harness.query_by_label("De-esser").is_some());
     // A rap verse is not pitch-corrected, but the key that was heard (A minor) is set for when it is turned up.
     assert_eq!((after.tune, after.tune_key, after.tune_scale), (0.0, 9, 2));
+    // It is a voice track now, levelled and a little saturated.
+    assert!(after.voice && after.level > 0.3 && after.drive > 0.1, "{after:?}");
     assert!(harness.query_by_label("Tune").is_some());
     // One undo brings the strip back as it was.
     harness.key_press(Key::Z);
@@ -1202,4 +1204,50 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
     harness.state_mut().shell.voice_measured(&root, track, None, Err("there is too little sound".to_owned()));
     harness.run_steps(2);
     assert_eq!(strip(&harness).1, before);
+}
+
+#[test]
+fn setting_a_voice_up_makes_the_other_tracks_duck_under_it() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    // The second take over the first, in time: it gets a pair of tracks of its own.
+    right_click(&mut harness, "second take");
+    harness.run_steps(1);
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    let dropped = harness.state_mut().shell.dev(sg_ui::DevStep::Drop(0, None, None));
+    assert!(dropped.is_empty());
+    harness.run_steps(2);
+    let audio = |harness: &Harness<'_, App>| -> Vec<(sg_core::TrackId, sg_core::TrackSettings)> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Audio).map(|t| (t.id, t.mix)).collect()
+    };
+    let before = audio(&harness);
+    assert_eq!(before.len(), 2);
+    let heard = sg_media::voice::VoiceStats {
+        loudness_db: -24.0,
+        loud_db: -8.0,
+        peak_db: -3.0,
+        noise_db: None,
+        pitch_hz: Some(180.0),
+        steadiness: 0.2,
+        bands_db: [-30.0, -2.0, 0.0, 0.0, -8.0, -14.0],
+        key: None,
+        sibilance_db: Some(-6.0),
+        seconds: 60.0,
+    };
+    let root = harness.state().root.clone();
+    harness.state_mut().shell.voice_measured(&root, before[0].0, None, Ok(heard));
+    harness.run_steps(3);
+    let after = audio(&harness);
+    // The voice track is one; the other, which has sound on it, goes down 3 dB under it.
+    assert!(after[0].1.voice && after[0].1.duck_db == 0.0);
+    assert!(!after[1].1.voice && after[1].1.duck_db == 3.0, "{:?}", after[1].1);
+    // The mixer shows each strip what belongs to it.
+    click(&mut harness, "Mixer");
+    assert!(harness.query_by_label("Duck under voice").is_some() && harness.query_by_label("De-esser").is_some());
+    // All of it is one step.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(audio(&harness), before);
 }

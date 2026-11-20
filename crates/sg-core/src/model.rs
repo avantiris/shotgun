@@ -202,6 +202,14 @@ pub struct TrackSettings {
     pub tune_key: u8,
     pub tune_scale: u8,
     pub tune_speed: f32,
+    /// Leveller, 0 to 1: phrases are pulled towards the track's average level.
+    pub level: f32,
+    /// Saturation, 0 to 1.
+    pub drive: f32,
+    /// A voice track: tracks with `duck_db` go down while it sounds.
+    pub voice: bool,
+    /// How far this track goes down under the voice tracks, in decibels.
+    pub duck_db: f32,
 }
 
 impl Default for TrackSettings {
@@ -225,6 +233,10 @@ impl Default for TrackSettings {
             tune_key: 0,
             tune_scale: 0,
             tune_speed: 0.2,
+            level: 0.0,
+            drive: 0.0,
+            voice: false,
+            duck_db: 0.0,
         }
     }
 }
@@ -253,6 +265,9 @@ impl TrackSettings {
             tune_key: self.tune_key % 12,
             tune_scale: self.tune_scale.min(2),
             tune_speed: finite(self.tune_speed, 0.0, 1.0),
+            level: finite(self.level, 0.0, 1.0),
+            drive: finite(self.drive, 0.0, 1.0),
+            duck_db: finite(self.duck_db, 0.0, 24.0),
             ..self
         }
     }

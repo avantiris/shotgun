@@ -529,3 +529,46 @@ fn a_changing_speed_reads_the_source_along_its_curve() {
         );
     }
 }
+
+#[test]
+fn a_track_that_ducks_goes_down_while_the_voice_sounds() {
+    let dir = tempfile::tempdir().unwrap();
+    // The beat: a steady level. The voice: silent, then sounding from 0.5 s to 1.2 s, then silent.
+    let beat = wav(dir.path(), "beat.wav", 1, 96_000, |_, _| 0.25);
+    let voice = wav(dir.path(), "voice.wav", 1, 96_000, |n, _| if (24_000..57_600).contains(&n) { 0.3 } else { 0.0 });
+    let span = |path: &PathBuf| ClipSpan {
+        start: 0,
+        len: 96_000,
+        src_in: 0,
+        wav: path.clone(),
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+        warp: Vec::new(),
+    };
+    let tone = |voice: bool, duck_db: f32| sg_audio::Tone { voice, duck_db, ..sg_audio::Tone::default() };
+    let mix = |duck_db: f32, voice_muted: bool| Mix {
+        tracks: vec![
+            TrackMix { tone: tone(false, duck_db), ..track(vec![span(&beat)]) },
+            TrackMix { tone: tone(true, 0.0), mute: voice_muted, ..track(vec![span(&voice)]) },
+        ],
+        master_gain: 1.0,
+    };
+    // What the beat contributes at a frame: the sum less the voice (0.3 while it sounds).
+    let beat_at = |v: &[f32], frame: usize| v[frame * 2] - if (24_000..57_600).contains(&frame) { 0.3 } else { 0.0 };
+    // Six decibels of ducking: before the voice the beat is as it is, under
+    // it half as loud, and a second after it has come back.
+    let ducked = rendered(mix(6.0, false), 96_000);
+    assert!((beat_at(&ducked, 12_000) - 0.25).abs() < 0.003, "{}", beat_at(&ducked, 12_000));
+    assert!((beat_at(&ducked, 48_000) - 0.125).abs() < 0.01, "{}", beat_at(&ducked, 48_000));
+    assert!((beat_at(&ducked, 95_000) - 0.25).abs() < 0.02, "{}", beat_at(&ducked, 95_000));
+    // It goes down within a tenth of a second of the voice coming in.
+    assert!(beat_at(&ducked, 24_000 + 4_800) < 0.14, "{}", beat_at(&ducked, 24_000 + 4_800));
+    // No ducking set: the beat is untouched under the voice. The voice muted: it ducks nothing.
+    let plain = rendered(mix(0.0, false), 96_000);
+    assert!((beat_at(&plain, 48_000) - 0.25).abs() < 0.003, "{}", beat_at(&plain, 48_000));
+    let muted = rendered(mix(6.0, true), 96_000);
+    assert!((muted[48_000 * 2] - 0.25).abs() < 0.003, "{}", muted[48_000 * 2]);
+}

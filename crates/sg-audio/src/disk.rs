@@ -132,6 +132,8 @@ struct Feed {
     denoise: f32,
     tone: crate::fx::Tone,
     live: Arc<Live>,
+    /// How far this feed is ducked right now, in decibels (0 or below).
+    ducked_db: f32,
 }
 
 struct Disk {
@@ -150,7 +152,16 @@ struct Disk {
     /// Scratch for one clip's stretch of a block before gain and fades.
     segment: Vec<f32>,
     offered: u64,
+    /// How loud the voice tracks are along the timeline, for the tracks
+    /// that duck under them: the peak of each stretch of [`DUCK_STEP`]
+    /// frames, and which stretch the slot holds (a slot is reused every
+    /// eleven seconds).
+    voice_level: Vec<(i64, f32)>,
 }
+
+/// Frames per entry of the voice level.
+const DUCK_STEP: i64 = 64;
+const DUCK_SLOTS: usize = 8192;
 
 /// True if going from `a` to `b` needs no new graph: the same clips on the
 /// same tracks, and noise reduction (which changes how far a feed reads
@@ -210,7 +221,15 @@ impl Disk {
 
     /// Writes up to `limit` frames into feed `index`.
     fn fill(&mut self, index: usize, limit: usize) {
-        let frames = (self.feeds[index].producer.slots() / 2).min(limit).min(MAX_BLOCK);
+        let mut frames = (self.feeds[index].producer.slots() / 2).min(limit).min(MAX_BLOCK);
+        let ducks = self.feeds[index].tone.duck_db > 0.0 && !self.feeds[index].tone.voice;
+        if ducks {
+            // Only as far as the voices have been laid down: their level there is needed.
+            let voices = self.feeds.iter().filter(|f| f.tone.voice);
+            if let Some(heard) = voices.map(|f| f.next).min() {
+                frames = frames.min((heard - self.feeds[index].next).max(0) as usize);
+            }
+        }
         if frames == 0 {
             return;
         }
@@ -219,6 +238,37 @@ impl Disk {
         let start = self.feeds[index].next + self.feeds[index].fx.delay() as i64;
         let mut block = std::mem::take(&mut self.block);
         self.render(index, start, &mut block, frames);
+        let at = self.feeds[index].next;
+        if self.feeds[index].tone.voice && !self.feeds[index].live.is_muted() {
+            // What the voice sounds like here, fader included, for the tracks that duck.
+            let gain = self.feeds[index].live.gain();
+            for (n, frame) in block.as_chunks::<2>().0.iter().enumerate() {
+                let step = (at + n as i64).div_euclid(DUCK_STEP);
+                let slot = &mut self.voice_level[step.rem_euclid(DUCK_SLOTS as i64) as usize];
+                if slot.0 != step {
+                    *slot = (step, 0.0);
+                }
+                slot.1 = slot.1.max(frame[0].abs().max(frame[1].abs()) * gain);
+            }
+        } else if ducks {
+            // Down within about 20 ms of the voice coming in, back up over
+            // about 300 ms: fully from -30 dB of voice, not at all below -50.
+            let rate = SAMPLE_RATE as f32;
+            let (down, up) = (1.0 - (-1.0 / (0.02 * rate)).exp(), 1.0 - (-1.0 / (0.3 * rate)).exp());
+            let depth = self.feeds[index].tone.duck_db.min(24.0);
+            let mut ducked = self.feeds[index].ducked_db;
+            for (n, frame) in block.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                let step = (at + n as i64).div_euclid(DUCK_STEP);
+                let slot = self.voice_level[step.rem_euclid(DUCK_SLOTS as i64) as usize];
+                let voice_db = if slot.0 == step { 20.0 * slot.1.max(1e-6).log10() } else { -120.0 };
+                let wanted = -depth * ((voice_db + 50.0) / 20.0).clamp(0.0, 1.0);
+                ducked += if wanted < ducked { down } else { up } * (wanted - ducked);
+                let gain = 10f32.powf(ducked / 20.0);
+                frame[0] *= gain;
+                frame[1] *= gain;
+            }
+            self.feeds[index].ducked_db = ducked;
+        }
         let feed = &mut self.feeds[index];
         if let Ok(mut chunk) = feed.producer.write_chunk(frames * 2) {
             let (a, b) = chunk.as_mut_slices();
@@ -231,8 +281,13 @@ impl Disk {
     }
 
     fn fill_all(&mut self, limit: usize) {
-        for index in 0..self.feeds.len() {
-            self.fill(index, limit);
+        // The voices first: the tracks that duck under them follow.
+        for voices in [true, false] {
+            for index in 0..self.feeds.len() {
+                if self.feeds[index].tone.voice == voices {
+                    self.fill(index, limit);
+                }
+            }
         }
     }
 
@@ -243,6 +298,8 @@ impl Disk {
         self.files.retain(|_, wav| wav.is_some());
         let mut tracks = Vec::with_capacity(self.mix.tracks.len());
         self.feeds.clear();
+        // (Positions start anew: what was heard of the voices before does not apply.)
+        self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
         for track in &self.mix.tracks {
             let (producer, ring) = rtrb::RingBuffer::new(RING_FRAMES * 2);
             let live = Live::new(track.gain, track.pan, track.mute);
@@ -258,6 +315,7 @@ impl Disk {
                 denoise: track.denoise,
                 tone: track.tone,
                 live,
+                ducked_db: 0.0,
             });
         }
         if playing {
@@ -385,6 +443,7 @@ pub fn run(
         raw: Vec::new(),
         segment: Vec::new(),
         offered: 0,
+        voice_level: vec![(i64::MIN, 0.0); DUCK_SLOTS],
     };
     loop {
         // Idle costs nothing: without playback the thread sleeps until told otherwise.

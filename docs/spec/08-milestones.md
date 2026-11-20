@@ -347,9 +347,21 @@ chain second version, M16 mixing and mastering.
   - Limits of the pitch correction: one voice at a time (no chords), 70
     to 400 Hz, the voice's colour moves with its pitch (no formant
     correction), nothing by ear yet.
-  - Still to do for M12: a second compressor, saturation, the ducking
-    of the beat under the voice, a strip that shows the chain as one thing with a few controls
-    instead of the raw fields, and listening again when the takes change.
+  - Built 2026-11-20: a leveller (the second compressor: phrases are
+    pulled towards the track's own average, no threshold), saturation, and
+    ducking: a track marked as voice makes every track with "Duck under
+    voice" go down while it sounds (down within about 20 ms, back over
+    300 ms). Listening marks the track as voice, sets leveller and
+    saturation for the style and lets the other sounding tracks duck 3 dB,
+    all in one undo step. On the strip the voice stages show on voice
+    tracks only and the ducking on the others; "Voice" sits at the top.
+  - Checked: the leveller brings 14 dB between two phrases to about 6 and
+    leaves pauses alone; a beat under a voice goes down by the set 6 dB to
+    within a hundredth and comes back; in the app a real rap vocal over a
+    music clip was listened to, set up and exported. Not checked: anything
+    by ear.
+  - Still to do for M12: listening again by itself when the takes change;
+    a meter that shows what each stage is doing.
 - [ ] M13 Recording
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
 - [ ] M15 Vocal chain, second version

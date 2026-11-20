@@ -1039,15 +1039,31 @@ impl Shell {
         let style = style.unwrap_or_else(|| sg_media::voice::VoiceStyle::guess(&stats));
         let set = sg_media::voice::suggest(&stats, style);
         let mix = mixer::with_voice(found.mix, &set);
-        match session.apply(Op::SetTrackMix { seq, track, mix }, None) {
+        let mut ops = vec![Op::SetTrackMix { seq, track, mix }];
+        // The beat makes room: every other sounding track that is not a
+        // voice itself and does not duck yet goes down a little under it.
+        let mut ducking = 0;
+        for other in project.sequences.first().into_iter().flat_map(|s| s.tracks.iter()) {
+            let beat = other.kind == sg_core::TrackKind::Audio && other.id != track && !other.mix.voice;
+            if beat && set.duck_db > 0.0 && other.mix.duck_db == 0.0 && !other.clips.is_empty() {
+                let mix = sg_core::TrackSettings { duck_db: set.duck_db, ..other.mix };
+                ops.push(Op::SetTrackMix { seq, track: other.id, mix });
+                ducking += 1;
+            }
+        }
+        match session.apply(Op::Batch(ops), None) {
             Ok(()) => {
+                let room = match ducking {
+                    0 => String::new(),
+                    n => format!(" {n} other track(s) now duck {:.0} dB under it.", set.duck_db),
+                };
                 let pitch = stats.pitch_hz.map_or(String::new(), |hz| format!(", voice around {hz:.0} Hz"));
                 let noise = match stats.noise_db {
                     Some(noise) => format!(", noise {:.0} dB under it", stats.loudness_db - noise),
                     None => String::new(),
                 };
                 session.notice = Some(format!(
-                    "{} set up as {}: heard {:.0} s at {:.0} dB{pitch}{noise}. Undo takes it back.",
+                    "{} set up as {}: heard {:.0} s at {:.0} dB{pitch}{noise}.{room} Undo takes it back.",
                     found.name,
                     style.name().to_lowercase(),
                     stats.seconds,

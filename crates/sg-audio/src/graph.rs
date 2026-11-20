@@ -60,6 +60,16 @@ impl Live {
         self.mute.store(mute, Ordering::Relaxed);
     }
 
+    /// The fader as a factor, and whether the track is muted (for the disk
+    /// thread's ducking: a muted voice ducks nothing).
+    pub fn gain(&self) -> f32 {
+        f32::from_bits(self.gain.load(Ordering::Relaxed))
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.mute.load(Ordering::Relaxed)
+    }
+
     /// Left and right factors (constant-power pan; centre is unity on both).
     fn factors(&self) -> [f32; 2] {
         if self.mute.load(Ordering::Relaxed) {

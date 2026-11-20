@@ -268,6 +268,32 @@ impl Mixer {
                                  Fader, pan, mute and solo stay as they are.",
                             );
                         });
+                        // The vocal chain's ear (09-daw.md): listen to what is on the track and set the strip.
+                        ui.scope(|ui| {
+                            ui.spacing_mut().button_padding = vec2(5.0, 3.0);
+                            let busy = self.listening == Some(track.id);
+                            let text = RichText::new(if busy { "Listening..." } else { "Voice" }).size(10.5);
+                            let button = egui::Button::new(text).min_size(vec2(STRIP_W - 8.0, 20.0));
+                            let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                                let auto = ui.button("Listen and set up").on_hover_text(
+                                    "Measures the voice on this track (level, noise between phrases, pitch, tone) and sets \
+                                     fader, low cut, noise reduction, equaliser and compressor for the style that fits.",
+                                );
+                                if auto.clicked() {
+                                    self.voice_request = Some((track.id, None));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                for style in sg_media::voice::VoiceStyle::ALL {
+                                    if ui.button(format!("As: {}", style.name())).clicked() {
+                                        self.voice_request = Some((track.id, Some(style)));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Voice"));
+                            response.on_hover_text("Set this strip up for a recorded voice by listening to it");
+                        });
                         if let Some(db) = fader(ui, self.levels[index], mix.gain_db) {
                             mix.gain_db = db;
                         }
@@ -313,32 +339,6 @@ impl Mixer {
                              Heard about half a second after a change.",
                         );
                         mix.denoise = percent / 100.0;
-                        // The vocal chain's ear (09-daw.md): listen to what is on the track and set the strip.
-                        ui.scope(|ui| {
-                            ui.spacing_mut().button_padding = vec2(5.0, 3.0);
-                            let busy = self.listening == Some(track.id);
-                            let text = RichText::new(if busy { "Listening..." } else { "Voice" }).size(10.5);
-                            let button = egui::Button::new(text).min_size(vec2(STRIP_W - 8.0, 20.0));
-                            let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                                let auto = ui.button("Listen and set up").on_hover_text(
-                                    "Measures the voice on this track (level, noise between phrases, pitch, tone) and sets \
-                                     fader, low cut, noise reduction, equaliser and compressor for the style that fits.",
-                                );
-                                if auto.clicked() {
-                                    self.voice_request = Some((track.id, None));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                for style in sg_media::voice::VoiceStyle::ALL {
-                                    if ui.button(format!("As: {}", style.name())).clicked() {
-                                        self.voice_request = Some((track.id, Some(style)));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Voice"));
-                            response.on_hover_text("Set this strip up for a recorded voice by listening to it");
-                        });
                         ui.add_space(4.0);
                         for (label, value, tip) in [
                             ("EQ low", &mut mix.eq_low_db, "Shelf below 120 Hz"),
@@ -353,58 +353,92 @@ impl Mixer {
                             egui::DragValue::new(&mut mix.eq_mid_hz).range(100.0..=10_000.0).speed(10.0).fixed_decimals(0).suffix(" Hz"),
                             "Centre of the mid band",
                         );
-                        let mut sharp = mix.deess * 100.0;
-                        field(
-                            ui,
-                            "De-esser",
-                            egui::DragValue::new(&mut sharp).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
-                            "Turns down the S sounds of a voice, by up to 12 dB at 100 %. It finds them itself, \
-                             whatever the level of the recording; vowels keep their brightness.",
-                        );
-                        mix.deess = sharp / 100.0;
-                        // Pitch correction: how much, the key, and how hard.
-                        ui.add_space(4.0);
-                        let mut tune = mix.tune * 100.0;
-                        field(
-                            ui,
-                            "Tune",
-                            egui::DragValue::new(&mut tune).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
-                            "Pitch correction: moves what is sung onto the notes of the key below. 0 is off, 100 all \
-                             the way. \"Voice\" proposes the key by listening.",
-                        );
-                        mix.tune = tune / 100.0;
-                        const NOTES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-                        const SCALES: [&str; 3] = ["all notes", "major", "minor"];
-                        ui.label(RichText::new("Key").size(10.5).color(theme::DIM));
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().button_padding = vec2(4.0, 2.0);
+                        // The voice chain's own stages: on voice tracks only, so that other strips stay short.
+                        if mix.voice {
+                            let mut sharp = mix.deess * 100.0;
+                            field(
+                                ui,
+                                "De-esser",
+                                egui::DragValue::new(&mut sharp).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                                "Turns down the S sounds of a voice, by up to 12 dB at 100 %. It finds them itself, \
+                                 whatever the level of the recording; vowels keep their brightness.",
+                            );
+                            mix.deess = sharp / 100.0;
+                            // Pitch correction: how much, the key, and how hard.
                             ui.add_space(4.0);
-                            egui::ComboBox::from_id_salt(("tune key", index))
-                                .width(34.0)
-                                .selected_text(NOTES[mix.tune_key as usize % 12])
-                                .show_ui(ui, |ui| {
-                                    for (n, name) in NOTES.iter().enumerate() {
-                                        ui.selectable_value(&mut mix.tune_key, n as u8, *name);
-                                    }
-                                });
-                            egui::ComboBox::from_id_salt(("tune scale", index))
-                                .width(44.0)
-                                .selected_text(SCALES[mix.tune_scale.min(2) as usize])
-                                .show_ui(ui, |ui| {
-                                    for (n, name) in SCALES.iter().enumerate() {
-                                        ui.selectable_value(&mut mix.tune_scale, n as u8, *name);
-                                    }
-                                });
-                        });
-                        let mut speed = mix.tune_speed * 100.0;
-                        field(
-                            ui,
-                            "Tune glide",
-                            egui::DragValue::new(&mut speed).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
-                            "How a note is pulled into place: 0 at once (the hard, robotic sound of rap hooks), \
-                             100 gently (natural singing).",
+                            let mut tune = mix.tune * 100.0;
+                            field(
+                                ui,
+                                "Tune",
+                                egui::DragValue::new(&mut tune).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                                "Pitch correction: moves what is sung onto the notes of the key below. 0 is off, 100 all \
+                                 the way. \"Voice\" proposes the key by listening.",
+                            );
+                            mix.tune = tune / 100.0;
+                            const NOTES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                            const SCALES: [&str; 3] = ["all notes", "major", "minor"];
+                            ui.label(RichText::new("Key").size(10.5).color(theme::DIM));
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().button_padding = vec2(4.0, 2.0);
+                                ui.add_space(4.0);
+                                egui::ComboBox::from_id_salt(("tune key", index))
+                                    .width(34.0)
+                                    .selected_text(NOTES[mix.tune_key as usize % 12])
+                                    .show_ui(ui, |ui| {
+                                        for (n, name) in NOTES.iter().enumerate() {
+                                            ui.selectable_value(&mut mix.tune_key, n as u8, *name);
+                                        }
+                                    });
+                                egui::ComboBox::from_id_salt(("tune scale", index))
+                                    .width(44.0)
+                                    .selected_text(SCALES[mix.tune_scale.min(2) as usize])
+                                    .show_ui(ui, |ui| {
+                                        for (n, name) in SCALES.iter().enumerate() {
+                                            ui.selectable_value(&mut mix.tune_scale, n as u8, *name);
+                                        }
+                                    });
+                            });
+                            let mut speed = mix.tune_speed * 100.0;
+                            field(
+                                ui,
+                                "Tune glide",
+                                egui::DragValue::new(&mut speed).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                                "How a note is pulled into place: 0 at once (the hard, robotic sound of rap hooks), \
+                                 100 gently (natural singing).",
+                            );
+                            mix.tune_speed = speed / 100.0;
+                            ui.add_space(4.0);
+                            let mut level = mix.level * 100.0;
+                            field(
+                                ui,
+                                "Leveller",
+                                egui::DragValue::new(&mut level).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                                "A hand on the fader: loud phrases are pulled down and quiet ones up, towards the track's \
+                                 own average. It needs no threshold.",
+                            );
+                            mix.level = level / 100.0;
+                            let mut drive = mix.drive * 100.0;
+                            field(
+                                ui,
+                                "Saturation",
+                                egui::DragValue::new(&mut drive).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                                "Rounds off the peaks: denser and a little rougher, as a voice through good hardware.",
+                            );
+                            mix.drive = drive / 100.0;
+                        }
+                        ui.add_space(4.0);
+                        ui.checkbox(&mut mix.voice, RichText::new("Voice track").size(10.5)).on_hover_text(
+                            "While a voice track sounds, the tracks that duck (the field below, on their strips) go down.",
                         );
-                        mix.tune_speed = speed / 100.0;
+                        if !mix.voice {
+                            field(
+                                ui,
+                                "Duck under voice",
+                                egui::DragValue::new(&mut mix.duck_db).range(0.0..=24.0).speed(0.1).fixed_decimals(1).suffix(" dB"),
+                                "How far this track goes down while a voice track sounds, so that the voice has room. \
+                                 0 is off; 2 to 4 dB is usual for the beat.",
+                            );
+                        }
                         ui.add_space(4.0);
                         field(
                             ui,
@@ -473,6 +507,10 @@ pub fn with_voice(mix: TrackSettings, set: &sg_media::voice::Suggestion) -> Trac
         tune_key: set.tune_key,
         tune_scale: set.tune_scale,
         tune_speed: set.tune_speed,
+        level: set.level,
+        drive: set.drive,
+        voice: true,
+        duck_db: 0.0,
         ..mix
     }
 }
@@ -498,6 +536,10 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "tunekey" => mix.tune_key = value as u8,
         "tunescale" => mix.tune_scale = value as u8,
         "tunespeed" => mix.tune_speed = value,
+        "level" => mix.level = value,
+        "drive" => mix.drive = value,
+        "voice" => mix.voice = value != 0.0,
+        "duck" => mix.duck_db = value,
         "hidden" => mix.hidden = value != 0.0,
         // The n-th preset of the list (0 is Flat).
         "preset" => match PRESETS.get(value as usize) {

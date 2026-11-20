@@ -117,6 +117,11 @@ pub struct Suggestion {
     pub tune_key: u8,
     pub tune_scale: u8,
     pub tune_speed: f32,
+    /// Leveller and saturation, 0 to 1.
+    pub level: f32,
+    pub drive: f32,
+    /// How far the other tracks should go down under this voice, in decibels.
+    pub duck_db: f32,
 }
 
 fn db(power: f64) -> f32 {
@@ -351,6 +356,22 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
         tune_key: stats.key.map_or(0, |(root, _)| root),
         tune_scale: stats.key.map_or(0, |(_, minor)| if minor { 2 } else { 1 }),
         tune_speed: 0.15,
+        // (Choices, not measurements: how even, how dense, and how much room the beat makes.)
+        level: match style {
+            VoiceStyle::RapLead => 0.6,
+            VoiceStyle::Doubles => 0.7,
+            VoiceStyle::SungHook => 0.5,
+        },
+        drive: match style {
+            VoiceStyle::RapLead => 0.25,
+            VoiceStyle::Doubles => 0.35,
+            VoiceStyle::SungHook => 0.15,
+        },
+        duck_db: match style {
+            VoiceStyle::RapLead => 3.0,
+            VoiceStyle::Doubles => 0.0,
+            VoiceStyle::SungHook => 2.0,
+        },
     }
 }
 

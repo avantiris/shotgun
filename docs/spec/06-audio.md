@@ -172,6 +172,18 @@ feed reads ahead like the noise reduction's; switching the correction on
 or off builds a new graph for that reason. What has no pitch passes
 unchanged.
 
+## Leveller, saturation, ducking (2026-11-20, stage 3)
+
+- After the compressor: a leveller (80 ms against a 3 s average of the
+  sounding parts, 60 % of the difference taken back, at most 9 dB either
+  way) and a saturation (`tanh`, unity gain for quiet sound).
+- Ducking is done on the disk thread, not with a sidechain input in the
+  realtime graph (`PROPOSED`): voice feeds are laid down first and leave
+  their level along the timeline (peak per 64 frames, fader included, a
+  muted voice none); a feed that ducks is filled only as far as the voices
+  have been and follows that level. The price is the same as for the other
+  disk-thread effects: a change is heard after the buffered half second.
+
 ## Scrub grains (added 2026-11-19)
 
 - A move of the playhead while paused lets a tenth of a second of the mix at

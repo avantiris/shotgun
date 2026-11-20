@@ -125,6 +125,17 @@ pub struct Tone {
     pub deess: f32,
     /// Pitch correction.
     pub tune: crate::tune::Tune,
+    /// Leveller, 0 (off) to 1: how much phrases are pulled towards the
+    /// track's own average level, loud ones down and quiet ones up.
+    pub level: f32,
+    /// Saturation, 0 (off) to 1: the peaks are rounded off, which adds
+    /// harmonics and density.
+    pub drive: f32,
+    /// This track is a voice: tracks that duck go down while it sounds.
+    pub voice: bool,
+    /// How far this track is turned down while a voice track sounds, in
+    /// decibels (0: not at all).
+    pub duck_db: f32,
 }
 
 impl Default for Tone {
@@ -138,6 +149,10 @@ impl Default for Tone {
             ratio: 3.0,
             deess: 0.0,
             tune: crate::tune::Tune { amount: 0.0, key: 0, scale: 0, speed: 0.2 },
+            level: 0.0,
+            drive: 0.0,
+            voice: false,
+            duck_db: 0.0,
         }
     }
 }
@@ -264,6 +279,9 @@ pub struct TrackFx {
     level_db: f32,
     deesser: DeEsser,
     corrector: Option<crate::tune::PitchCorrector>,
+    /// The leveller's view of the phrase (fast) and of the track (slow), in decibels.
+    phrase_db: f32,
+    average_db: f32,
 }
 
 impl TrackFx {
@@ -279,6 +297,8 @@ impl TrackFx {
             level_db: -120.0,
             deesser: DeEsser::new(),
             corrector: tune.then(crate::tune::PitchCorrector::new),
+            phrase_db: -120.0,
+            average_db: -120.0,
         }
     }
 
@@ -343,6 +363,38 @@ impl TrackFx {
                 frame[1] *= gain;
             }
         }
+        if tone.level > 0.0 {
+            // A hand on the fader: the phrase's level (about 80 ms) is
+            // compared with the track's own average while it sounds (about
+            // 3 s), and 60 % of the difference is taken back, at most 9 dB
+            // either way. No threshold: it works the same on a quiet take.
+            let rate = SAMPLE_RATE as f32;
+            let (fast, slow) = (1.0 - (-1.0 / (0.08 * rate)).exp(), 1.0 - (-1.0 / (3.0 * rate)).exp());
+            for frame in block.as_chunks_mut::<2>().0 {
+                let now_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
+                self.phrase_db += fast * (now_db - self.phrase_db);
+                // Pauses are neither part of the average nor raised.
+                let sounding = self.phrase_db > self.average_db - 25.0 && self.phrase_db > -70.0;
+                if self.average_db < -110.0 {
+                    self.average_db = self.phrase_db;
+                } else if sounding {
+                    self.average_db += slow * (self.phrase_db - self.average_db);
+                }
+                if sounding {
+                    let ride = (-(self.phrase_db - self.average_db) * 0.6 * tone.level.min(1.0)).clamp(-9.0, 9.0);
+                    let gain = 10f32.powf(ride / 20.0);
+                    frame[0] *= gain;
+                    frame[1] *= gain;
+                }
+            }
+        }
+        if tone.drive > 0.0 {
+            // Quiet sound passes as it is; the louder, the rounder.
+            let push = 1.0 + 4.0 * tone.drive.min(1.0);
+            for sample in block.iter_mut() {
+                *sample = (*sample * push).tanh() / push;
+            }
+        }
     }
 }
 
@@ -368,6 +420,47 @@ mod tests {
     fn rms(samples: impl Iterator<Item = f32>) -> f32 {
         let (sum, n) = samples.fold((0.0f64, 0usize), |(s, n), v| (s + (v * v) as f64, n + 1));
         (sum / n.max(1) as f64).sqrt() as f32
+    }
+
+    #[test]
+    fn the_leveller_evens_out_phrases_and_saturation_rounds_the_peaks() {
+        // A loud phrase, a quiet one, a pause; again and again. 14 dB between the two.
+        let phrases: Vec<f32> = (0..SAMPLE_RATE as usize * 12)
+            .flat_map(|i| {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                let level = match (t % 3.0) as u32 {
+                    0 => 0.5,
+                    1 => 0.1,
+                    _ => 0.0,
+                };
+                let v = level * (2.0 * std::f32::consts::PI * 200.0 * t).sin();
+                [v, v]
+            })
+            .collect();
+        let mut evened = phrases.clone();
+        let mut fx = TrackFx::new(false, false);
+        let tone = Tone { level: 1.0, ..Tone::default() };
+        for block in evened.chunks_mut(2 * 512) {
+            fx.process(block, 0.0, 0.0, &tone);
+        }
+        let level = |v: &[f32], from: f32, to: f32| {
+            let (a, b) = ((from * SAMPLE_RATE as f32) as usize * 2, (to * SAMPLE_RATE as f32) as usize * 2);
+            20.0 * rms(v[a..b].iter().copied()).max(1e-9).log10()
+        };
+        // Once it knows the track (the last round): the 14 dB between loud and quiet are about 6.
+        let before = level(&phrases, 9.4, 9.9) - level(&phrases, 10.4, 10.9);
+        let after = level(&evened, 9.4, 9.9) - level(&evened, 10.4, 10.9);
+        assert!((13.5..14.5).contains(&before) && (4.5..8.0).contains(&after), "{before} {after}");
+        // The pause stays a pause.
+        assert!(level(&evened, 11.3, 11.9) < -100.0);
+        // Saturation: a quiet tone passes nearly as it is, a loud one loses its peaks.
+        let tone = Tone { drive: 1.0, ..Tone::default() };
+        for (amplitude, kept) in [(0.02f32, 0.99..1.001), (0.9, 0.2..0.4)] {
+            let mut block: Vec<f32> = (0..4800).map(|i| amplitude * (i as f32 * 0.05).sin()).collect();
+            TrackFx::new(false, false).process(&mut block, 0.0, 0.0, &tone);
+            let peak = block.iter().fold(0.0f32, |m, s| m.max(s.abs())) / amplitude;
+            assert!(kept.contains(&peak), "{amplitude}: {peak}");
+        }
     }
 
     #[test]
