@@ -1146,3 +1146,52 @@ fn a_sequence_gets_a_tempo_and_clips_snap_to_its_beats() {
     harness.run_steps(3);
     assert_eq!(tempo(&harness), Some(sg_core::Tempo::DEFAULT));
 }
+
+#[test]
+fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    click(&mut harness, "Mixer");
+    let strip = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        (track.id, track.mix)
+    };
+    let (track, before) = strip(&harness);
+    // "Voice", "Listen and set up": the application is asked to listen to what the track's clips play.
+    click(&mut harness, "Voice");
+    click(&mut harness, "Listen and set up");
+    let asked = harness.state().commands.iter().find_map(|c| match c {
+        Command::MeasureVoice { track: asked, style: None, parts, .. } if *asked == track => Some(parts.clone()),
+        _ => None,
+    });
+    assert_eq!(asked, Some(vec![(AssetId(1), 0, 480_000)]));
+    assert!(harness.query_by_label("Voice").is_some());
+    // What it heard: a low, dull, noisy speaking voice. The strip follows; pan stays.
+    let heard = sg_media::voice::VoiceStats {
+        loudness_db: -26.0,
+        loud_db: -14.0,
+        peak_db: -9.0,
+        noise_db: Some(-58.0),
+        pitch_hz: Some(112.0),
+        steadiness: 0.2,
+        bands_db: [-30.0, 6.0, 1.0, 0.0, -12.0, -27.0],
+        seconds: 42.0,
+    };
+    let root = harness.state().root.clone();
+    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard));
+    harness.run_steps(3);
+    let (_, after) = strip(&harness);
+    assert_eq!(after.pan, before.pan);
+    assert_eq!((after.low_cut_hz, after.comp_ratio, after.eq_mid_hz), (90.0, 4.0, 220.0));
+    assert!(after.denoise > 0.3 && after.eq_mid_db < -1.0 && after.eq_high_db > 3.0, "{after:?}");
+    assert!(after.comp_threshold_db < -20.0 && after.gain_db > 3.0, "{after:?}");
+    // One undo brings the strip back as it was.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(strip(&harness).1, before);
+    // Nothing to hear is said, not guessed.
+    harness.state_mut().shell.voice_measured(&root, track, None, Err("there is too little sound".to_owned()));
+    harness.run_steps(2);
+    assert_eq!(strip(&harness).1, before);
+}

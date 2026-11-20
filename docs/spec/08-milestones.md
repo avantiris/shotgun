@@ -309,6 +309,23 @@ chain second version, M16 mixing and mastering.
     itself, not only in the inspector; a choice of grid (1/2 to 1/32,
     triplets); a time display in bars and beats under the viewer.
 - [ ] M12 Vocal chain, first version
+  - Built 2026-11-20, the listening half: "Voice" on a mixer strip
+    measures what the track's clips play (`sg_media::voice`: level, loud
+    phrases, noise between phrases, pitch and how still it holds, six
+    tonal bands) and sets the strip that exists (fader, low cut, noise
+    reduction, three-band equaliser, compressor) for a style: rap lead,
+    doubles and ad-libs, sung hook, guessed from the take or chosen. One
+    undo step; the bar at the bottom says what was heard.
+  - Checked: unit tests on made-up voices (a low dull noisy speaking
+    voice, a clean bright sung one), a headless flow, and a run in the app
+    on `media/f3/noisy.wav`. Not checked: any real voice, and nothing by ear.
+  - Known limits: a recording without pauses gives no noise measurement,
+    so noise reduction stays off; the targets of the styles are common
+    practice, not tuned against records.
+  - Still to do for M12: the stages the strip does not have (de-esser, a
+    second compressor, saturation), the ducking of the beat under the
+    voice, a strip that shows the chain as one thing with a few controls
+    instead of the raw fields, and listening again when the takes change.
 - [ ] M13 Recording
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
 - [ ] M15 Vocal chain, second version

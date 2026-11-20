@@ -20,6 +20,32 @@ fn sound(root: &Path, id: AssetId, cancel: &Cancel) -> Result<Vec<f32>, ToolErro
     Ok(mono)
 }
 
+/// Listens to the voice on a track (docs/spec/09-daw.md, vocal chain):
+/// `parts` are the stretches of assets its clips play, as (asset, first
+/// sample, length) at 48 kHz. Up to four minutes are measured.
+pub fn voice(
+    root: &Path,
+    parts: &[(AssetId, i64, i64)],
+    cancel: &Cancel,
+) -> Result<sg_media::voice::VoiceStats, ToolError> {
+    let mut loaded: std::collections::HashMap<AssetId, Vec<f32>> = std::collections::HashMap::new();
+    let mut heard: Vec<f32> = Vec::new();
+    for (id, from, len) in parts {
+        if !loaded.contains_key(id) {
+            loaded.insert(*id, sound(root, *id, cancel)?);
+        }
+        let Some(samples) = loaded.get(id) else { continue };
+        let first = (*from).clamp(0, samples.len() as i64) as usize;
+        let last = (*from + *len).clamp(first as i64, samples.len() as i64) as usize;
+        heard.extend_from_slice(&samples[first..last]);
+        if heard.len() >= analysis::RATE * 240 {
+            break;
+        }
+    }
+    sg_media::voice::measure(&heard)
+        .ok_or_else(|| ToolError::other("there is too little sound on this track to listen to"))
+}
+
 /// The beats of an asset's sound: read from the cache, or found and cached.
 pub fn beats(root: &Path, id: AssetId, cancel: &Cancel) -> Result<Beats, ToolError> {
     let file = cache::beats(root, id);

@@ -160,6 +160,14 @@ pub enum Command {
     Transport(Transport),
     /// Read the clipboard; the content comes back through [`Shell::incoming`].
     ReadClipboard,
+    /// Listen to the voice on a track; answered with [`Shell::voice_measured`].
+    /// `parts`: (asset, first sample, length) of what its clips play.
+    MeasureVoice {
+        root: PathBuf,
+        track: sg_core::TrackId,
+        style: Option<sg_media::voice::VoiceStyle>,
+        parts: Vec<(AssetId, i64, i64)>,
+    },
     /// Read the global folder; answered with [`Shell::global_listed`].
     ListGlobal,
     /// Copy an asset of the project into the global folder, then read the folder again.
@@ -224,6 +232,8 @@ pub enum DevStep {
     Song,
     /// Give the sequence a tempo in beats per minute (0: none), four to the bar.
     Bars(f32),
+    /// Listen to the voice on the n-th audio track and set its strip up.
+    Voice(usize),
     /// Global assets: `make` copies the selected asset there, `tab` shows
     /// the tab, `use:<n>` takes the n-th entry into the project.
     Global(String),
@@ -372,6 +382,15 @@ impl Shell {
                     scenario_choice = Some((asset, choice));
                 }
                 colour_requests = std::mem::take(&mut self.editor.colour_requests);
+                if let Some((track, style)) = self.editor.mixer.voice_request.take() {
+                    commands.extend(Shell::measure_voice(
+                        session,
+                        &mut self.editor.mixer,
+                        track,
+                        style,
+                        &mut self.error,
+                    ));
+                }
                 if let Some(asset) = self
                     .editor
                     .clip_panel
@@ -828,6 +847,23 @@ impl Shell {
             DevStep::Programme(beats) => self.programme_action(beats),
             DevStep::Sync(all) => self.sync_takes(all, &mut commands),
             DevStep::Tempo(tempo) => self.set_tempo(tempo),
+            DevStep::Voice(n) => {
+                if let Some(session) = &self.session {
+                    let track = session.project().sequences.first().and_then(|s| {
+                        s.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n).map(|t| t.id)
+                    });
+                    match track {
+                        Some(track) => commands.extend(Shell::measure_voice(
+                            session,
+                            &mut self.editor.mixer,
+                            track,
+                            None,
+                            &mut self.error,
+                        )),
+                        None => self.error = Some(format!("voice: no audio track {n}")),
+                    }
+                }
+            }
             DevStep::Bars(bpm) => {
                 if let Some(session) = &mut self.session
                     && let Some(id) = session.project().sequences.first().map(|s| s.id)
@@ -957,6 +993,69 @@ impl Shell {
 
     pub fn global_poster_loaded(&mut self, ctx: &egui::Context, file: PathBuf, rgba: Option<Vec<u8>>) {
         self.editor.assets.set_global_poster(ctx, file, rgba);
+    }
+
+    /// Asks for the voice on a track to be listened to: the stretches its
+    /// clips play, in order (at most the first 512 clips).
+    fn measure_voice(
+        session: &Session,
+        mixer: &mut mixer::Mixer,
+        track: sg_core::TrackId,
+        style: Option<sg_media::voice::VoiceStyle>,
+        error: &mut Option<String>,
+    ) -> Option<Command> {
+        let project = session.project();
+        let found = project.sequences.first().and_then(|s| s.track(track))?;
+        let parts: Vec<(AssetId, i64, i64)> =
+            found.clips.iter().take(512).map(|c| (c.asset, c.src_in, c.len)).collect();
+        if parts.is_empty() {
+            *error = Some(format!("There is nothing on {} to listen to yet.", found.name));
+            return None;
+        }
+        mixer.listening = Some(track);
+        Some(Command::MeasureVoice { root: session.root.clone(), track, style, parts })
+    }
+
+    /// The voice on a track was listened to: its strip is set for the
+    /// style asked for, or the one that fits. One undo step.
+    pub fn voice_measured(
+        &mut self,
+        root: &std::path::Path,
+        track: sg_core::TrackId,
+        style: Option<sg_media::voice::VoiceStyle>,
+        result: Result<sg_media::voice::VoiceStats, String>,
+    ) {
+        self.editor.mixer.listening = None;
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        let stats = match result {
+            Ok(stats) => stats,
+            Err(e) => {
+                self.error = Some(format!("Could not listen to the track: {e}"));
+                return;
+            }
+        };
+        let project = session.project().clone();
+        let Some((seq, found)) = project.sequences.first().and_then(|s| Some((s.id, s.track(track)?))) else { return };
+        let style = style.unwrap_or_else(|| sg_media::voice::VoiceStyle::guess(&stats));
+        let set = sg_media::voice::suggest(&stats, style);
+        let mix = mixer::with_voice(found.mix, &set);
+        match session.apply(Op::SetTrackMix { seq, track, mix }, None) {
+            Ok(()) => {
+                let pitch = stats.pitch_hz.map_or(String::new(), |hz| format!(", voice around {hz:.0} Hz"));
+                let noise = match stats.noise_db {
+                    Some(noise) => format!(", noise {:.0} dB under it", stats.loudness_db - noise),
+                    None => String::new(),
+                };
+                session.notice = Some(format!(
+                    "{} set up as {}: heard {:.0} s at {:.0} dB{pitch}{noise}. Undo takes it back.",
+                    found.name,
+                    style.name().to_lowercase(),
+                    stats.seconds,
+                    stats.loudness_db,
+                ));
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
     }
 
     /// Whether the mark of copied clips could be put on the clipboard.

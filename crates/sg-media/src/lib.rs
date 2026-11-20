@@ -15,6 +15,7 @@ pub mod peaks;
 pub mod probe;
 pub mod scan;
 pub mod tool;
+pub mod voice;
 
 pub use probe::{Probed, probe};
 pub use tool::{Cancel, ToolError};

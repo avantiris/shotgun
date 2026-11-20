@@ -74,6 +74,13 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 enum UserEvent {
+    /// A track's voice was listened to.
+    Voice {
+        root: PathBuf,
+        track: sg_core::TrackId,
+        style: Option<sg_media::voice::VoiceStyle>,
+        result: Result<sg_media::voice::VoiceStats, String>,
+    },
     /// The global folder as read, and what was just done there.
     Global(Result<Vec<sg_project::global::GlobalEntry>, String>, Option<String>),
     GlobalPoster {
@@ -316,6 +323,17 @@ impl App {
                 Command::CancelImport(job) => {
                     if let Some(importer) = &self.importer {
                         importer.cancel(job);
+                    }
+                }
+                Command::MeasureVoice { root, track, style, parts } => {
+                    self.pending_jobs += 1;
+                    let cancel = sg_media::Cancel::new();
+                    let spawned = std::thread::Builder::new().name("sg-analysis".into()).spawn(move || {
+                        let result = sg_project::analysis::voice(&root, &parts, &cancel).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Voice { root, track, style, result });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
                     }
                 }
                 Command::LoadBeats { root, id } => {
@@ -903,6 +921,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Script(step, ack) => self.script_step(step, ack),
             UserEvent::Import(event) => self.import_event(event),
+            UserEvent::Voice { root, track, style, result } => {
+                self.shell.voice_measured(&root, track, style, result);
+                self.job_done();
+            }
             UserEvent::Beats { root, id, beats } => {
                 self.shell.beats_loaded(&root, id, beats);
                 self.job_done();

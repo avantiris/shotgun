@@ -23,6 +23,11 @@ pub struct Mixer {
     limiting: f32,
     /// Undo group of the drag in progress: one drag of a fader is one step.
     group: Option<u64>,
+    /// A track whose voice should be listened to and set up, for a style
+    /// or (`None`) the one that fits best; taken by the shell.
+    pub voice_request: Option<(sg_core::TrackId, Option<sg_media::voice::VoiceStyle>)>,
+    /// The track being listened to right now.
+    pub listening: Option<sg_core::TrackId>,
 }
 
 /// Settings to start from (feedback F4.3): low cut, noise reduction,
@@ -308,6 +313,32 @@ impl Mixer {
                              Heard about half a second after a change.",
                         );
                         mix.denoise = percent / 100.0;
+                        // The vocal chain's ear (09-daw.md): listen to what is on the track and set the strip.
+                        ui.scope(|ui| {
+                            ui.spacing_mut().button_padding = vec2(5.0, 3.0);
+                            let busy = self.listening == Some(track.id);
+                            let text = RichText::new(if busy { "Listening..." } else { "Voice" }).size(10.5);
+                            let button = egui::Button::new(text).min_size(vec2(STRIP_W - 8.0, 20.0));
+                            let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                                let auto = ui.button("Listen and set up").on_hover_text(
+                                    "Measures the voice on this track (level, noise between phrases, pitch, tone) and sets \
+                                     fader, low cut, noise reduction, equaliser and compressor for the style that fits.",
+                                );
+                                if auto.clicked() {
+                                    self.voice_request = Some((track.id, None));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                for style in sg_media::voice::VoiceStyle::ALL {
+                                    if ui.button(format!("As: {}", style.name())).clicked() {
+                                        self.voice_request = Some((track.id, Some(style)));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Voice"));
+                            response.on_hover_text("Set this strip up for a recorded voice by listening to it");
+                        });
                         ui.add_space(4.0);
                         for (label, value, tip) in [
                             ("EQ low", &mut mix.eq_low_db, "Shelf below 120 Hz"),
@@ -369,6 +400,23 @@ impl Mixer {
                 *error = Some(e.to_string());
             }
         }
+    }
+}
+
+/// A track's settings with what listening to its voice proposed put on.
+/// Pan, mute and solo stay.
+pub fn with_voice(mix: TrackSettings, set: &sg_media::voice::Suggestion) -> TrackSettings {
+    TrackSettings {
+        gain_db: set.gain_db,
+        low_cut_hz: set.low_cut_hz,
+        denoise: set.denoise,
+        eq_low_db: set.eq_low_db,
+        eq_mid_db: set.eq_mid_db,
+        eq_mid_hz: set.eq_mid_hz,
+        eq_high_db: set.eq_high_db,
+        comp_threshold_db: set.comp_threshold_db,
+        comp_ratio: set.comp_ratio,
+        ..mix
     }
 }
 
