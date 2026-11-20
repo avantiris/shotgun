@@ -30,6 +30,8 @@ pub enum Action {
     SelectUnder,
     /// Select every clip of the sequence.
     SelectAll,
+    /// Make a group of the selected clips, or dissolve the group they are.
+    Group,
     Copy,
     /// Copy the selected clips and take them out, leaving the gap.
     Cut,
@@ -134,6 +136,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, true, false, Key::X, Action::Cut),
     bind(Scope::Editor, false, false, Key::V, Action::PasteClips),
     bind(Scope::Editor, false, false, Key::G, Action::Marker),
+    bind(Scope::Editor, false, true, Key::G, Action::Group),
     bind(Scope::Editor, false, true, Key::A, Action::PrevCut),
     bind(Scope::Editor, false, true, Key::D, Action::NextCut),
     bind(Scope::Editor, true, false, Key::S, Action::Checkpoint),
@@ -377,6 +380,7 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::Delete => ("Cutting", "delete, leave the gap (or remove the selected asset)"),
         Action::SelectUnder => ("Cutting", "select the clip under the playhead (again: next track)"),
         Action::SelectAll => ("Cutting", "select every clip (or drag a box over empty timeline)"),
+        Action::Group => ("Cutting", "group the selected clips: a click on one selects all (again: ungroup)"),
         Action::Copy => ("Cutting", "copy the selected clips"),
         Action::Cut => ("Cutting", "cut the selected clips: copy them and take them out"),
         Action::PasteClips => ("Cutting", "paste them at the playhead"),

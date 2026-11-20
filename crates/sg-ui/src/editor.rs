@@ -267,6 +267,7 @@ impl Editor {
                     (true, Action::Transition, "Whip-pan"),
                     (true, Action::AddTitle, "Title"),
                     (true, Action::Marker, "Marker"),
+                    (selected, Action::Group, "Group"),
                 ] {
                     if actions::enabled_button(ui, enabled, action, label) {
                         self.actions.push(action);

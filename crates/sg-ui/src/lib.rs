@@ -625,6 +625,7 @@ impl Shell {
             | Action::RippleDelete
             | Action::SelectUnder
             | Action::SelectAll
+            | Action::Group
             | Action::PasteClips
             | Action::Marker
             | Action::Nudge(_)

@@ -424,6 +424,24 @@ impl Timeline {
         let mut picked = vec![Sel { track: track.id, start: clip.start, id: clip.id }];
         if !alone {
             picked.extend(Timeline::partners(sequence, track, clip));
+            // The groups these clips are in come along (feedback F10.1).
+            // This looks at every clip once, on a click only, and only when
+            // a clicked clip is grouped at all.
+            let group_of =
+                |sel: &Sel| sequence.track(sel.track).and_then(|t| t.props_of(sel.id)).map_or(0, |p| p.group);
+            let groups: Vec<u64> = picked.iter().map(group_of).filter(|g| *g != 0).collect();
+            if !groups.is_empty() {
+                for other in &sequence.tracks {
+                    for member in other.clips.iter() {
+                        if other.props_of(member.id).is_some_and(|p| groups.contains(&p.group)) {
+                            let sel = Sel { track: other.id, start: member.start, id: member.id };
+                            if !picked.contains(&sel) && picked.len() < SELECT_MOST {
+                                picked.push(sel);
+                            }
+                        }
+                    }
+                }
+            }
         }
         if !add {
             self.selection.clear();
@@ -784,6 +802,7 @@ impl Timeline {
                     (Action::KeyframeSet, "Keyframe at the playhead"),
                     (Action::KeyframeRemove, "Remove the keyframe here"),
                     (Action::Transition, "Whip-pan on the nearest cut"),
+                    (Action::Group, "Group the selected clips, or ungroup"),
                     (Action::Delete, "Delete clip"),
                 ] {
                     if crate::actions::entry(ui, action, label) {
@@ -1578,6 +1597,10 @@ impl Timeline {
                         // (Roughly the room the name takes, so that the volume line starts after it.)
                         name_w = (name.chars().count() as f32 * 6.5 + 12.0).min((x1 - x0) * 0.5);
                     }
+                    // In a group: a light bar down the clip's left edge.
+                    if track.props_of(clip.id).is_some_and(|p| p.group != 0) && x1 - x0 >= 6.0 {
+                        instances.push(Instance::new(quad(x0, y0 + 2.0, x0 + 2.5, y1 - 2.0), theme::TEXT, 0.0, 0.0));
+                    }
                     // The volume line: pulled up or down to make the clip louder or quieter.
                     if track.kind == TrackKind::Audio && row_h >= GAIN_MIN_ROW && x1 - x0 >= GAIN_MIN_WIDTH {
                         let db = track.props_of(clip.id).map_or(0.0, |p| p.gain_db.at(0));
@@ -1897,6 +1920,31 @@ impl Timeline {
                     *error = Some(format!("Selected the first {SELECT_MOST} clips: more cannot be selected at once."));
                 }
             }
+            Action::Group => {
+                let members: Vec<(Sel, ClipProps)> = self
+                    .selection
+                    .iter()
+                    .filter_map(|sel| {
+                        let track = sequence.track(sel.track)?;
+                        track.clips.get(sel.start)?;
+                        Some((*sel, track.props_of(sel.id).map(|p| ClipProps::clone(p)).unwrap_or_default()))
+                    })
+                    .collect();
+                // Already one group, all of them: the key dissolves it.
+                let one = members.first().map_or(0, |(_, p)| p.group);
+                let grouped = one != 0 && members.iter().all(|(_, p)| p.group == one);
+                if members.len() < 2 && !grouped {
+                    *error = Some("Select two or more clips to make a group of them.".to_owned());
+                } else {
+                    // (Any number no other group has; clip ids are handed out once.)
+                    let group = if grouped { 0 } else { session.new_clip_id().0.max(1) };
+                    for (sel, mut props) in members {
+                        props.group = group;
+                        let props = (props != ClipProps::default()).then(|| Box::new(props));
+                        ops.push(Op::SetClipProps { seq, track: sel.track, clip: sel.id, props });
+                    }
+                }
+            }
             Action::Copy => self.copy(&sequence),
             Action::PasteClips => {
                 self.selection.clear();
@@ -1910,6 +1958,8 @@ impl Timeline {
                 rows.sort_unstable();
                 rows.dedup();
                 let mut placed: Vec<(TrackId, Clip)> = Vec::new();
+                // Copies of grouped clips form groups of their own, not one with the originals.
+                let mut regrouped: HashMap<u64, u64> = HashMap::new();
                 let mut taken: Vec<TrackId> = Vec::new();
                 let mut inserts: Vec<Op> = Vec::new();
                 let mut added = [0usize; 2];
@@ -1958,7 +2008,12 @@ impl Timeline {
                         inserts.push(Op::InsertClip { seq, track, clip });
                         // The copy keeps what the original was given: volume, fades, placement.
                         if let Some(props) = &copied.props {
-                            inserts.push(Op::SetClipProps { seq, track, clip: clip.id, props: Some(props.clone()) });
+                            let mut props = props.clone();
+                            if props.group != 0 {
+                                props.group =
+                                    *regrouped.entry(props.group).or_insert_with(|| session.new_clip_id().0.max(1));
+                            }
+                            inserts.push(Op::SetClipProps { seq, track, clip: clip.id, props: Some(props) });
                         }
                         placed.push((track, clip));
                     }

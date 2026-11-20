@@ -1061,3 +1061,42 @@ fn a_box_or_ctrl_a_selects_clips_and_backspace_deletes_them() {
     drag(&mut harness, ruler, ruler + vec2(120.0, 0.0));
     assert!(transport(&harness).len() > sent);
 }
+
+#[test]
+fn shift_g_groups_the_selected_clips_and_again_ungroups_them() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    playhead(&mut harness, 600);
+    place(&mut harness, "second take");
+    assert_eq!((clips(&harness, 0).len(), clips(&harness, 1).len()), (2, 2));
+    let end = clips(&harness, 0)[1].0 + 600;
+    // Where the two takes lie on screen: the timeline shows a little more than the sequence.
+    let rect = harness.get_by_label("Timeline").rect();
+    let x_of = |frame: i64| frame as f32 / (end as f32 * 1.15).max(1200.0) * (rect.width() - 120.0);
+    let (first, corner, empty) =
+        (on_timeline(&harness, x_of(100), 0), on_timeline(&harness, x_of(900), 4), on_timeline(&harness, x_of(300), 4));
+    let click_at = |harness: &mut Harness<'_, App>, pos: egui::Pos2, _: bool| {
+        pointer(harness, pos, egui::PointerButton::Primary);
+    };
+    // Both takes selected with a box, then Shift+G.
+    drag(&mut harness, corner, first);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::G);
+    harness.run_steps(3);
+    // A click on one of them now takes all four clips: Backspace empties the timeline.
+    click_at(&mut harness, empty, false);
+    click_at(&mut harness, first, false);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!((clips(&harness, 0), clips(&harness, 1)), (vec![], vec![]));
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    // The group, selected by a click, is dissolved by the same key: a click takes one take again.
+    click_at(&mut harness, first, false);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::G);
+    harness.run_steps(3);
+    click_at(&mut harness, empty, false);
+    click_at(&mut harness, first, false);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!((clips(&harness, 0).len(), clips(&harness, 1).len()), (1, 1));
+}

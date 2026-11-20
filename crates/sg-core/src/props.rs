@@ -252,6 +252,14 @@ pub struct ClipProps {
     pub transition: Option<Transition>,
     /// Set on title clips: the text to draw instead of an asset.
     pub title: Option<Title>,
+    /// Clips with the same number here (not 0) form a group: selecting one
+    /// selects them all. Nothing else follows from it.
+    #[serde(skip_serializing_if = "is_no_group")]
+    pub group: u64,
+}
+
+fn is_no_group(group: &u64) -> bool {
+    *group == 0
 }
 
 impl Default for ClipProps {
@@ -273,6 +281,7 @@ impl Default for ClipProps {
             stabilise: false,
             exposure: 0.0,
             warmth: 0.0,
+            group: 0,
         }
     }
 }

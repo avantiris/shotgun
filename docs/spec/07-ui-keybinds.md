@@ -121,6 +121,7 @@ Cutting
 | X | ripple delete selection |
 | Shift + X, Backspace, Del | delete, leave gap (Backspace asked for in F8.1) |
 | Ctrl + A | select every clip |
+| Shift + G | make a group of the selected clips; with one whole group selected, dissolve it (feedback F10.1). A click on a grouped clip selects the whole group (Alt + click: that clip alone), so it moves, copies and deletes as one. Grouped clips carry a light bar on their left edge. Also a button above the timeline and in the clip's menu |
 | W | select clip under playhead (repeat: next track up) |
 | C / V | copy selected clips / paste them at the playhead, on the same tracks, with what they were given (volume, fades, placement). A paste covers nothing (feedback F7.2): clips copied from one track go to that track if they fit at the playhead, otherwise to the nearest track of the kind with room there, otherwise to a new track. The copies stay selected |
 | Ctrl + C / Ctrl + X | copy / cut (copy and take out, leaving the gap) the selected clips (feedback F4.4) |

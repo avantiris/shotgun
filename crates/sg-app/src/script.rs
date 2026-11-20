@@ -40,6 +40,8 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "ripplee" => Step::Dev(DevStep::Act(Action::RippleEnd)),
         "xdel" => Step::Dev(DevStep::Act(Action::RippleDelete)),
         "select" => Step::Dev(DevStep::Act(Action::SelectUnder)),
+        "selectall" => Step::Dev(DevStep::Act(Action::SelectAll)),
+        "group" => Step::Dev(DevStep::Act(Action::Group)),
         "copy" => Step::Dev(DevStep::Act(Action::Copy)),
         // global:make (the selected asset), global:tab, global:use:<n>
         "global" => Step::Dev(DevStep::Global(need()?)),
