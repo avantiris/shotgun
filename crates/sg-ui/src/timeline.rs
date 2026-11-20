@@ -802,6 +802,7 @@ impl Timeline {
                     (Action::KeyframeSet, "Keyframe at the playhead"),
                     (Action::KeyframeRemove, "Remove the keyframe here"),
                     (Action::Transition, "Whip-pan on the nearest cut"),
+                    (Action::Blackout, "Dip to black on the nearest cut"),
                     (Action::Group, "Group the selected clips, or ungroup"),
                     (Action::Delete, "Delete clip"),
                 ] {
@@ -2216,6 +2217,7 @@ impl Timeline {
         &mut self,
         session: &mut Session,
         playhead: i64,
+        kind: sg_core::TransitionKind,
         error: &mut Option<String>,
     ) -> Option<i64> {
         let project = session.project().clone();
@@ -2259,7 +2261,7 @@ impl Timeline {
                     earlier = track.clips.last_before(c.start);
                 }
                 let angle = previous.map_or(0.0, |p| (p.angle + 180.0).rem_euclid(360.0));
-                Some(sg_core::Transition { angle, ..Default::default() })
+                Some(sg_core::Transition { angle, ..sg_core::Transition::of(kind) })
             }
         };
         let props = (props != ClipProps::default()).then(|| Box::new(props));

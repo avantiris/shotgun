@@ -688,10 +688,14 @@ impl Shell {
                     self.editor.colour.toggle(session, action == Action::ToggleMatch, &mut self.error);
                 }
             }
-            Action::Transition => {
+            Action::Transition | Action::Blackout => {
                 if let Some(session) = &mut self.session {
                     self.editor.mixer.open = false;
-                    self.editor.timeline.toggle_transition(session, self.playhead, &mut self.error);
+                    let kind = match action {
+                        Action::Blackout => sg_core::TransitionKind::Black,
+                        _ => sg_core::TransitionKind::Whip,
+                    };
+                    self.editor.timeline.toggle_transition(session, self.playhead, kind, &mut self.error);
                 }
             }
             Action::Angle(n) => self.switch_angle(n as usize),

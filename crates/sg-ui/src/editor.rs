@@ -265,6 +265,7 @@ impl Editor {
                     (selected, Action::KeyframeRemove, "Remove keyframe"),
                     (selected, Action::LiveRecord, "Record movement"),
                     (true, Action::Transition, "Whip-pan"),
+                    (true, Action::Blackout, "Dip to black"),
                     (true, Action::AddTitle, "Title"),
                     (true, Action::Marker, "Marker"),
                     (selected, Action::Group, "Group"),

@@ -596,9 +596,12 @@ fn transition_rows(ui: &mut egui::Ui, transition: &mut Option<sg_core::Transitio
     };
     ui.horizontal(|ui| {
         label(ui, "Kind");
-        for (kind, name) in
-            [(TransitionKind::Whip, "Whip"), (TransitionKind::Slide, "Slide"), (TransitionKind::Zoom, "Zoom")]
-        {
+        for (kind, name) in [
+            (TransitionKind::Whip, "Whip"),
+            (TransitionKind::Slide, "Slide"),
+            (TransitionKind::Zoom, "Zoom"),
+            (TransitionKind::Black, "Black"),
+        ] {
             if ui.selectable_label(t.kind == kind, name).clicked() && t.kind != kind {
                 // The numbers that suit the kind; the direction stays.
                 *t = Transition { angle: t.angle, ..Transition::of(kind) };
@@ -612,6 +615,18 @@ fn transition_rows(ui: &mut egui::Ui, transition: &mut Option<sg_core::Transitio
             t.frames = ((frames.clamp(2, 16) + 1) / 2 * 2) as u8;
         }
     });
+    if t.kind == TransitionKind::Black {
+        // Nothing moves in a dip to black: only how soon it goes dark.
+        ui.horizontal(|ui| {
+            label(ui, "Darkens");
+            ui.add(egui::DragValue::new(&mut t.ease).range(1.0..=6.0).speed(0.02).max_decimals(2))
+                .on_hover_text("1 darkens evenly; larger goes dark sooner and stays dark longer around the cut");
+        });
+        if ui.button("Remove transition").clicked() {
+            *transition = None;
+        }
+        return *transition != before;
+    }
     if t.kind != TransitionKind::Zoom {
         ui.horizontal(|ui| {
             label(ui, "Moves");

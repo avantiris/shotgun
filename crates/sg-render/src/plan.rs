@@ -217,6 +217,26 @@ fn plan_transitions(project: &Project, sequence: &Sequence, track: &Track, frame
         let (before, after) = (track.clips.at(at - 1), track.clips.at(at));
         out.extend(before.and_then(|c| layer(project, sequence, track, &c, frame, motion(false))));
         out.extend(after.and_then(|c| layer(project, sequence, track, &c, frame, motion(true))));
+    } else if transition.kind == TransitionKind::Black {
+        // The picture stays where it is and goes dark towards the cut. Dark,
+        // not transparent: tracks underneath do not show through. A title
+        // has no grade, so it fades instead.
+        let light = transition.light(progress);
+        out.extend(layer(project, sequence, track, &clip, frame, None).map(|mut layer| {
+            if matches!(layer.source, Source::Title) {
+                let mut props = layer.props.as_deref().cloned().unwrap_or_default();
+                props.opacity = sg_core::Param::constant(props.opacity.at(layer.at) * light);
+                layer.props = Some(Arc::new(props));
+            } else {
+                let grade = layer.grade.get_or_insert(Grade {
+                    correction: sg_core::Correction::NONE,
+                    look: Vec::new(),
+                    lut: None,
+                });
+                grade.correction.gain = grade.correction.gain.map(|gain| gain * light);
+            }
+            layer
+        }));
     } else {
         out.extend(layer(project, sequence, track, &clip, frame, motion(incoming)));
     }
@@ -352,6 +372,26 @@ mod tests {
         // No transition without a clip before it to come from.
         let lonely = apply(&slide, &Op::RemoveClip { seq: seq.id, track: TRACK, start: 0 }).unwrap().0;
         assert_eq!(sources(&lonely, 100), vec![(2, 50)]);
+    }
+
+    #[test]
+    fn a_dip_to_black_darkens_one_picture_at_a_time_around_the_cut() {
+        let black = cut(Some(Transition::of(TransitionKind::Black)));
+        let seq = &black.sequences[0];
+        // How bright the one layer of a frame is (1 where nothing is done to it).
+        let light = |frame: i64| {
+            let layers = plan(&black, seq, frame);
+            assert_eq!(layers.len(), 1, "frame {frame}");
+            assert!(layers[0].motion.is_none());
+            layers[0].grade.as_ref().map_or(1.0, |g| g.correction.gain[0])
+        };
+        // Eight frames, 96..104, around the cut at 100: the first take goes
+        // dark, the second comes up; each shows its own frames as without it.
+        assert_eq!((light(95), light(104)), (1.0, 1.0));
+        assert!(light(97) < 1.0 && light(99) < light(97));
+        assert_eq!(light(100), 0.0);
+        assert!(light(101) > 0.0 && light(103) > light(101) && light(103) < 1.0);
+        assert_eq!((sources(&black, 99), sources(&black, 100)), (vec![(1, 99)], vec![(2, 50)]));
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub enum Action {
     Angle(u8),
     /// Put a transition on the nearest cut, or remove the one there.
     Transition,
+    /// The same with a dip to black.
+    Blackout,
     /// Move the selected clips by this many frames.
     Nudge(i8),
     /// Show the whole sequence in the timeline.
@@ -153,6 +155,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::J, Action::ToggleLook),
     bind(Scope::Editor, false, true, Key::J, Action::ToggleMatch),
     bind(Scope::Editor, false, false, Key::B, Action::Transition),
+    bind(Scope::Editor, false, true, Key::B, Action::Blackout),
     bind(Scope::Editor, false, false, Key::Num1, Action::Angle(1)),
     bind(Scope::Editor, false, false, Key::Num2, Action::Angle(2)),
     bind(Scope::Editor, false, false, Key::Num3, Action::Angle(3)),
@@ -392,6 +395,7 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::InsertAsset => ("Making", "put the selected asset on the timeline"),
         Action::AddTitle => ("Making", "add a title"),
         Action::Transition => ("Making", "whip-pan on the nearest cut (again: remove it)"),
+        Action::Blackout => ("Making", "dip to black on the nearest cut (again: remove it)"),
         Action::KeyframeSet => ("Making", "keyframe for the selected clip at the playhead"),
         Action::KeyframeRemove => ("Making", "remove that keyframe"),
         Action::LiveRecord => ("Making", "record the picture's movement while playing"),

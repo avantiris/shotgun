@@ -328,6 +328,15 @@ fn b_puts_a_whip_on_the_cut_and_the_inspector_changes_its_kind() {
     // The clip is selected: its transition can be changed in the inspector.
     click(&mut harness, "Slide");
     assert_eq!(transition(&harness).map(|t| (t.kind, t.frames)), Some((sg_core::TransitionKind::Slide, 8)));
+    // "Black" in the same row makes it a dip to black; its button and Shift+B put one on a cut directly.
+    click(&mut harness, "Black");
+    assert_eq!(transition(&harness).map(|t| t.kind), Some(sg_core::TransitionKind::Black));
+    assert!(harness.query_by_label("Darkens").is_some() && harness.query_by_label("Blur").is_none());
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::B);
+    harness.run_steps(3);
+    assert_eq!(transition(&harness), None);
+    click(&mut harness, "Dip to black");
+    assert_eq!(transition(&harness).map(|t| (t.kind, t.frames)), Some((sg_core::TransitionKind::Black, 8)));
     click(&mut harness, "Remove transition");
     assert_eq!(transition(&harness), None);
 }

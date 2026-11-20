@@ -427,6 +427,9 @@ pub enum TransitionKind {
     Slide,
     /// As the whip, but into and out of the picture instead of across it.
     Zoom,
+    /// A dip to black: the outgoing picture goes dark into the cut, the
+    /// incoming one comes up out of it. Nothing moves.
+    Black,
 }
 
 /// A transition on the cut at the start of a clip, centred on the cut.
@@ -491,7 +494,21 @@ impl Transition {
                 Transition { kind, frames: 8, blur: 0.0, amount: 1.0, ease: 2.0, ..Transition::default() }
             }
             TransitionKind::Zoom => Transition { kind, amount: 0.6, ..Transition::default() },
+            TransitionKind::Black => {
+                Transition { kind, frames: 8, blur: 0.0, amount: 0.0, ease: 1.5, ..Transition::default() }
+            }
         }
+    }
+
+    /// How bright the picture is at `progress` through the transition
+    /// (0 at its first instant, 1 at its last; the cut is at 0.5): 1
+    /// except in a dip to black, which is dark at the cut. `ease` above 1
+    /// makes it go dark sooner and stay dark a little longer.
+    pub fn light(&self, progress: f32) -> f32 {
+        if self.kind != TransitionKind::Black {
+            return 1.0;
+        }
+        (2.0 * progress.clamp(0.0, 1.0) - 1.0).abs().powf(self.ease)
     }
 
     /// Displacement of the outgoing (`incoming == false`) or incoming
@@ -518,6 +535,7 @@ impl Transition {
                     Shift { zoom: 1.0 + travelled.abs() * self.amount, ..Shift::REST }
                 }
             }
+            TransitionKind::Black => Shift::REST,
             TransitionKind::Slide => {
                 // One frame width or height of travel, eased at both ends.
                 let eased =
@@ -531,6 +549,16 @@ impl Transition {
 #[cfg(test)]
 mod transition_tests {
     use super::*;
+
+    #[test]
+    fn a_dip_to_black_is_dark_at_the_cut_and_moves_nothing() {
+        let black = Transition::of(TransitionKind::Black);
+        assert_eq!((black.light(0.0), black.light(0.5), black.light(1.0)), (1.0, 0.0, 1.0));
+        assert!(black.light(0.25) < 0.5 && black.light(0.25) == black.light(0.75));
+        assert_eq!((black.shift(0.3, false), black.shift(0.8, true)), (Shift::REST, Shift::REST));
+        // The others leave the light alone.
+        assert_eq!(Transition::default().light(0.5), 1.0);
+    }
 
     #[test]
     fn whip_leaves_and_arrives_in_the_same_direction() {

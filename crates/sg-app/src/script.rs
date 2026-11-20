@@ -74,6 +74,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "hero" => Step::Dev(DevStep::Hero),
         "lut" => Step::Dev(DevStep::Lut(need()?)),
         "transition" => Step::Dev(DevStep::Act(Action::Transition)),
+        "blackout" => Step::Dev(DevStep::Act(Action::Blackout)),
         "song" => Step::Dev(DevStep::Song),
         "cutstobeats" => Step::Dev(DevStep::Programme(true)),
         "whipall" => Step::Dev(DevStep::Programme(false)),
