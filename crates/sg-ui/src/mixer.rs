@@ -353,6 +353,15 @@ impl Mixer {
                             egui::DragValue::new(&mut mix.eq_mid_hz).range(100.0..=10_000.0).speed(10.0).fixed_decimals(0).suffix(" Hz"),
                             "Centre of the mid band",
                         );
+                        let mut sharp = mix.deess * 100.0;
+                        field(
+                            ui,
+                            "De-esser",
+                            egui::DragValue::new(&mut sharp).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
+                            "Turns down the S sounds of a voice, by up to 12 dB at 100 %. It finds them itself, \
+                             whatever the level of the recording; vowels keep their brightness.",
+                        );
+                        mix.deess = sharp / 100.0;
                         ui.add_space(4.0);
                         field(
                             ui,
@@ -416,6 +425,7 @@ pub fn with_voice(mix: TrackSettings, set: &sg_media::voice::Suggestion) -> Trac
         eq_high_db: set.eq_high_db,
         comp_threshold_db: set.comp_threshold_db,
         comp_ratio: set.comp_ratio,
+        deess: set.deess,
         ..mix
     }
 }
@@ -436,6 +446,7 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "eqhigh" => mix.eq_high_db = value,
         "threshold" => mix.comp_threshold_db = value,
         "ratio" => mix.comp_ratio = value,
+        "deess" => mix.deess = value,
         "hidden" => mix.hidden = value != 0.0,
         // The n-th preset of the list (0 is Flat).
         "preset" => match PRESETS.get(value as usize) {

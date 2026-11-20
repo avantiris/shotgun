@@ -36,6 +36,15 @@ Asked when stage 3 began; his answers, in his words where he wrote any:
      the recording and sets itself up for a style; German rap first; the
      beat ducking under the voice is part of it.
 
+6. **Pitch correction and de-esser** (2026-11-20, his words): "I also
+   want an automatic autotuner / suggestor and a deesser that finds the S
+   sounds and a compressor etc".
+   - So: pitch correction that proposes key and scale by itself and can
+     be left to it ("automatic") or steered; a de-esser that finds the S
+     sounds itself instead of being aimed by hand; the compressor.
+   - State when he asked: one compressor per track and a limiter on the
+     master existed; no de-esser, no pitch correction.
+
 Carried over from 01-product.md (agreed earlier): note editor, audio
 tracks, recording, mixing and mastering, effect chains, plugin hosting,
 sidechaining; one realtime engine; PipeWire native; low measured latency;
@@ -175,10 +184,10 @@ above). No Wine prefix exists yet, and nothing is bridged.
 | | What works at the end |
 |---|---|
 | M11 | Tempo and bars: a sequence has a tempo; the ruler shows bars and beats; clips snap to the grid; a metronome clicks while playing. |
-| M12 | Vocal chain, first version: on a track of recorded or imported voice it measures the takes and sets itself up for a style (German rap lead first); de-esser, two compressors, saturation, ducking of the beat; in the export. |
+| M12 | Vocal chain, first version: on a track of recorded or imported voice it measures the takes and sets itself up for a style (German rap lead first); a de-esser that finds the S sounds, two compressors, saturation, ducking of the beat; pitch correction that proposes key and scale; in the export. |
 | M13 | Recording: arm, count-in, record, takes; latency measured and compensated; monitoring. |
 | M14 | Plugins: VST3 hosting, Kontakt through the bridge found and set up by Shotgun; then CLAP and LV2. Instrument tracks, note clips and the piano roll come with it, with a built-in sampler so that notes sound without any plugin. |
-| M15 | Vocal chain, second version: pitch correction, delay and reverb sends, more styles, tuned against his references. |
+| M15 | Vocal chain, second version: delay and reverb sends, more styles, pitch correction by hand per note, tuned against his references. |
 | M16 | Mixing and mastering: editable insert chains, buses and sends, loudness metering, sound-only export and stems. |
 
 Order changed on 2026-11-20 after his fifth answer: the voice first

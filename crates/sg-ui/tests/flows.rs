@@ -1176,6 +1176,7 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
         pitch_hz: Some(112.0),
         steadiness: 0.2,
         bands_db: [-30.0, 6.0, 1.0, 0.0, -12.0, -27.0],
+        sibilance_db: Some(-5.0),
         seconds: 42.0,
     };
     let root = harness.state().root.clone();
@@ -1186,6 +1187,9 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
     assert_eq!((after.low_cut_hz, after.comp_ratio, after.eq_mid_hz), (90.0, 4.0, 220.0));
     assert!(after.denoise > 0.3 && after.eq_mid_db < -1.0 && after.eq_high_db > 3.0, "{after:?}");
     assert!(after.comp_threshold_db < -20.0 && after.gain_db > 3.0, "{after:?}");
+    // Its S sounds were loud, and the added air makes them sharper: the de-esser is well in.
+    assert!(after.deess >= 0.9, "{after:?}");
+    assert!(harness.query_by_label("De-esser").is_some());
     // One undo brings the strip back as it was.
     harness.key_press(Key::Z);
     harness.run_steps(3);

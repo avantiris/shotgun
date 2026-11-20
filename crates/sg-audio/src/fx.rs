@@ -32,7 +32,12 @@ struct HighPass {
 
 impl HighPass {
     fn set(&mut self, hz: f32) {
-        let w = 2.0 * std::f32::consts::PI * hz.clamp(10.0, 2000.0) / SAMPLE_RATE as f32;
+        self.set_at(hz.clamp(10.0, 2000.0));
+    }
+
+    /// The same without the low cut's range: any corner frequency.
+    fn set_at(&mut self, hz: f32) {
+        let w = 2.0 * std::f32::consts::PI * hz / SAMPLE_RATE as f32;
         let (sin, cos) = w.sin_cos();
         let alpha = sin / std::f32::consts::SQRT_2;
         let a0 = 1.0 + alpha;
@@ -116,11 +121,13 @@ pub struct Tone {
     pub threshold_db: f32,
     /// How strongly: 4 lets one decibel through for every four above the threshold.
     pub ratio: f32,
+    /// De-esser, 0 (off) to 1: how much the S sounds are turned down.
+    pub deess: f32,
 }
 
 impl Default for Tone {
     fn default() -> Tone {
-        Tone { low_db: 0.0, mid_db: 0.0, mid_hz: 1000.0, high_db: 0.0, threshold_db: 0.0, ratio: 3.0 }
+        Tone { low_db: 0.0, mid_db: 0.0, mid_hz: 1000.0, high_db: 0.0, threshold_db: 0.0, ratio: 3.0, deess: 0.0 }
     }
 }
 
@@ -179,6 +186,63 @@ impl Band {
     }
 }
 
+/// Where the S sounds of a voice live: above this.
+const SIBILANT_HZ: f32 = 4500.0;
+/// The most the de-esser takes off them, in decibels.
+const DEESS_MOST_DB: f32 = 12.0;
+
+/// A de-esser that finds the S sounds itself: they are the moments at
+/// which most of the sound lies above [`SIBILANT_HZ`], whatever the level
+/// of the recording, so there is no threshold to set. Only the part above
+/// that frequency is turned down, and only during those moments; vowels,
+/// however bright, keep their top.
+struct DeEsser {
+    split: [HighPass; 2],
+    /// Followers of the level above the split and of the whole, on the sum of the channels.
+    high: f32,
+    whole: f32,
+    /// The reduction in force, in decibels (0 or below).
+    gain_db: f32,
+    /// What turns the top down: a shelf whose depth follows `gain_db`.
+    shelf: Band,
+}
+
+impl DeEsser {
+    fn new() -> DeEsser {
+        let mut split = [HighPass::default(); 2];
+        split.iter_mut().for_each(|f| f.set_at(SIBILANT_HZ));
+        DeEsser { split, high: 0.0, whole: 0.0, gain_db: 0.0, shelf: Band::default() }
+    }
+
+    fn process(&mut self, block: &mut [f32], amount: f32) {
+        let rate = SAMPLE_RATE as f32;
+        // The followers rise within a millisecond and fall within thirty;
+        // the reduction comes on within two and lets go within sixty.
+        let (rise, fall) = (1.0 - (-1.0 / (0.001 * rate)).exp(), 1.0 - (-1.0 / (0.03 * rate)).exp());
+        let (on, off) = (1.0 - (-1.0 / (0.002 * rate)).exp(), 1.0 - (-1.0 / (0.06 * rate)).exp());
+        for (n, frame) in block.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            let top = [self.split[0].run(frame[0]), self.split[1].run(frame[1])];
+            let (h, w) = ((top[0] + top[1]).abs() * 0.5, (frame[0] + frame[1]).abs() * 0.5);
+            self.high += if h > self.high { rise } else { fall } * (h - self.high);
+            self.whole += if w > self.whole { rise } else { fall } * (w - self.whole);
+            // An S: more than a third of the sound is up there (a vowel has
+            // a few percent), and it is not just the hiss of a pause.
+            let share = if self.whole > 1e-4 { self.high / self.whole } else { 0.0 };
+            let sharp = ((share - 0.35) / 0.3).clamp(0.0, 1.0);
+            let wanted = -DEESS_MOST_DB * amount * sharp;
+            self.gain_db += if wanted < self.gain_db { on } else { off } * (wanted - self.gain_db);
+            // The shelf follows in steps of a third of a millisecond. It
+            // runs all the time, at 0 dB between the S sounds, so that it
+            // comes in without a click.
+            if n % 16 == 0 {
+                self.shelf.set(2, SIBILANT_HZ, (self.gain_db * 4.0).round() / 4.0);
+            }
+            frame[0] = self.shelf.run(0, frame[0]);
+            frame[1] = self.shelf.run(1, frame[1]);
+        }
+    }
+}
+
 /// The clean-up and tone of one track.
 pub struct TrackFx {
     filters: [HighPass; 2],
@@ -187,6 +251,7 @@ pub struct TrackFx {
     bands: [Band; 3],
     /// The compressor's view of the level, in decibels.
     level_db: f32,
+    deesser: DeEsser,
 }
 
 impl TrackFx {
@@ -199,6 +264,7 @@ impl TrackFx {
             denoiser: denoise.then(Denoiser::new),
             bands: [Band::default(); 3],
             level_db: -120.0,
+            deesser: DeEsser::new(),
         }
     }
 
@@ -236,6 +302,11 @@ impl TrackFx {
                     frame[1] = band.run(1, frame[1]);
                 }
             }
+        }
+        // After the equaliser (which may have added air and with it S), before
+        // the compressor (which would otherwise pump on every S).
+        if tone.deess > 0.0 {
+            self.deesser.process(block, tone.deess.clamp(0.0, 1.0));
         }
         if tone.threshold_db < 0.0 {
             // Level follower: up within about 5 ms, down within about 120 ms.
@@ -278,6 +349,55 @@ mod tests {
     fn rms(samples: impl Iterator<Item = f32>) -> f32 {
         let (sum, n) = samples.fold((0.0f64, 0usize), |(s, n), v| (s + (v * v) as f64, n + 1));
         (sum / n.max(1) as f64).sqrt() as f32
+    }
+
+    #[test]
+    fn the_de_esser_finds_the_s_sounds_and_leaves_the_vowels() {
+        // Half a second of a bright vowel, then a fifth of a second of S
+        // (noise above 5 kHz), again and again; the whole thing 20 dB quieter
+        // the second time: the de-esser must not care about the level.
+        let mut seed = 0x9e37_79b9u32;
+        let mut sharp = HighPass::default();
+        sharp.set_at(5500.0);
+        let dry: Vec<f32> = (0..SAMPLE_RATE as usize * 4)
+            .flat_map(|i| {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let hiss = sharp.run(seed as f32 / u32::MAX as f32 * 2.0 - 1.0);
+                let phase = 2.0 * std::f32::consts::PI * 140.0 * t;
+                let vowel: f32 = (1..=30).map(|h| (phase * h as f32).sin() / h as f32).sum();
+                let s = (t % 0.7) >= 0.5;
+                let quiet = if t >= 2.1 { 0.1 } else { 1.0 };
+                let v = quiet * if s { 0.25 * hiss } else { 0.2 * vowel };
+                [v, v]
+            })
+            .collect();
+        let mut wet = dry.clone();
+        let mut fx = TrackFx::new(false);
+        let tone = Tone { deess: 1.0, ..Tone::default() };
+        for block in wet.chunks_mut(2 * 480) {
+            fx.process(block, 0.0, 0.0, &tone);
+        }
+        let level = |v: &[f32], from: f32, to: f32| {
+            let (a, b) = ((from * SAMPLE_RATE as f32) as usize * 2, (to * SAMPLE_RATE as f32) as usize * 2);
+            20.0 * rms(v[a..b].iter().copied()).max(1e-9).log10()
+        };
+        // The S sounds lose most of the twelve decibels, loud and quiet alike...
+        for (from, to) in [(0.55, 0.69), (1.25, 1.39), (2.65, 2.79), (3.35, 3.49)] {
+            let lost = level(&dry, from, to) - level(&wet, from, to);
+            assert!((8.0..=12.5).contains(&lost), "S at {from}: {lost} dB");
+        }
+        // ...the vowels nothing to speak of (after the moment the reduction needs to let go).
+        for (from, to) in [(0.15, 0.45), (0.85, 1.15), (2.25, 2.55)] {
+            let lost = level(&dry, from, to) - level(&wet, from, to);
+            assert!(lost.abs() < 0.3, "vowel at {from}: {lost} dB");
+        }
+        // Off is off: not a sample changes.
+        let mut untouched = dry.clone();
+        TrackFx::new(false).process(&mut untouched, 0.0, 0.0, &Tone::default());
+        assert_eq!(untouched, dry);
     }
 
     #[test]

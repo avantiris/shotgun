@@ -322,9 +322,17 @@ chain second version, M16 mixing and mastering.
   - Known limits: a recording without pauses gives no noise measurement,
     so noise reduction stays off; the targets of the styles are common
     practice, not tuned against records.
-  - Still to do for M12: the stages the strip does not have (de-esser, a
-    second compressor, saturation), the ducking of the beat under the
-    voice, a strip that shows the chain as one thing with a few controls
+  - Built 2026-11-20: a de-esser on every audio track (`deess` in the
+    track's settings, "De-esser" on the strip). It finds the S sounds
+    itself: the moments at which more than a third of the sound lies above
+    4.5 kHz, whatever the level, and turns only the top down, by up to
+    12 dB. Listening measures how loud the S sounds are against the voice
+    and sets it. Measured in an exported file (a vowel with bursts of
+    noise): the bursts 5.7 dB quieter (their part above 4.5 kHz by 12),
+    the vowel unchanged to a hundredth of a decibel.
+  - Still to do for M12: pitch correction that proposes key and scale
+    (asked for 2026-11-20), a second compressor, saturation, the ducking
+    of the beat under the voice, a strip that shows the chain as one thing with a few controls
     instead of the raw fields, and listening again when the takes change.
 - [ ] M13 Recording
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes

@@ -148,6 +148,16 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
   pulling it (07-ui-keybinds.md). A clip with volume keyframes moves as a
   whole: every keyframe by the same amount.
 
+## De-esser (2026-11-20, stage 3)
+
+Per track, on the disk thread after the equaliser and before the
+compressor (so that added air is tamed and the compressor does not pump on
+every S). `PROPOSED` method: the sound above 4.5 kHz and the whole are
+followed (1 ms up, 30 ms down); where the top is more than about a third
+of the whole it is an S, and a high shelf at 4.5 kHz goes down by up to
+12 dB times the amount (2 ms in, 60 ms out). A ratio, not a level: nothing
+to aim, and the same on a quiet take as on a loud one.
+
 ## Scrub grains (added 2026-11-19)
 
 - A move of the playhead while paused lets a tenth of a second of the mix at

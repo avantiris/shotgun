@@ -191,6 +191,9 @@ pub struct TrackSettings {
     /// turns the sound down (0 is off), and by what ratio.
     pub comp_threshold_db: f32,
     pub comp_ratio: f32,
+    /// De-esser: how much the S sounds of a voice are turned down, 0 (off)
+    /// to 1 (by up to 12 dB). It finds them itself.
+    pub deess: f32,
 }
 
 impl Default for TrackSettings {
@@ -209,6 +212,7 @@ impl Default for TrackSettings {
             eq_high_db: 0.0,
             comp_threshold_db: 0.0,
             comp_ratio: 3.0,
+            deess: 0.0,
         }
     }
 }
@@ -232,6 +236,7 @@ impl TrackSettings {
             eq_high_db: finite(self.eq_high_db, -18.0, 18.0),
             comp_threshold_db: finite(self.comp_threshold_db, -60.0, 0.0),
             comp_ratio: if self.comp_ratio.is_finite() { self.comp_ratio.clamp(1.0, 20.0) } else { 3.0 },
+            deess: finite(self.deess, 0.0, 1.0),
             ..self
         }
     }

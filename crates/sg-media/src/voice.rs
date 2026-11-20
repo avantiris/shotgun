@@ -33,6 +33,9 @@ pub struct VoiceStats {
     /// Energy of the six bands (rumble, body, box, middle, presence, air)
     /// relative to the middle band, in decibels.
     pub bands_db: [f32; 6],
+    /// How loud the S sounds are against the voice as a whole, in
+    /// decibels; `None` if none were found.
+    pub sibilance_db: Option<f32>,
     /// Seconds of sounding voice that were measured.
     pub seconds: f32,
 }
@@ -90,6 +93,8 @@ pub struct Suggestion {
     pub eq_high_db: f32,
     pub comp_threshold_db: f32,
     pub comp_ratio: f32,
+    /// De-esser, 0 to 1.
+    pub deess: f32,
 }
 
 fn db(power: f64) -> f32 {
@@ -127,6 +132,8 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
     let mut power = 0.0f64;
     let mut bands = [0.0f64; 6];
     let mut peaks: Vec<f32> = Vec::with_capacity(sounding.len());
+    // Power of the frames that are S sounds: most of their energy lies above 4.5 kHz.
+    let (mut sharp_power, mut sharp_frames) = (0.0f64, 0usize);
     let mut buffer = vec![Complex32::default(); SIZE];
     for &f in &sounding {
         let part = &samples[f * HOP..f * HOP + SIZE];
@@ -136,6 +143,12 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
             *slot = Complex32::new(sample * w, 0.0);
         }
         fft.process(&mut buffer);
+        let above: f64 = buffer[bin(4500.0)..SIZE / 2].iter().map(|c| c.norm_sqr() as f64).sum();
+        let all: f64 = buffer[1..SIZE / 2].iter().map(|c| c.norm_sqr() as f64).sum();
+        if above > all * 0.5 {
+            sharp_power += part.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / SIZE as f64;
+            sharp_frames += 1;
+        }
         for (band, energy) in bands.iter_mut().enumerate() {
             let (low, high) = (bin(EDGES[band]), bin(EDGES[band + 1]));
             *energy += buffer[low..high.max(low + 1)].iter().map(|c| c.norm_sqr() as f64).sum::<f64>();
@@ -148,8 +161,10 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
     let noise_db = (gaps.len() >= 20).then(|| percentile(&gaps, 0.5).max(-110.0));
     let (pitch_hz, steadiness) = pitch(samples, &sounding);
     let middle = bands[3].max(1e-12);
+    let loudness_db = db(power / sounding.len() as f64);
     Some(VoiceStats {
-        loudness_db: db(power / sounding.len() as f64),
+        sibilance_db: (sharp_frames >= 5).then(|| db(sharp_power / sharp_frames as f64) - loudness_db),
+        loudness_db,
         loud_db: percentile(&peaks, 0.9),
         peak_db: *peaks.last()?,
         noise_db,
@@ -243,6 +258,9 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
     let average_loss = ((stats.loudness_db + 3.0 - comp_threshold_db).max(0.0) * slope).min(reduction);
     let gain_db = (level_target - (stats.loudness_db - average_loss)).clamp(-12.0, 12.0);
     let round = |v: f32| (v * 10.0).round() / 10.0;
+    // S sounds 14 dB under the voice are as they should be; as loud as the
+    // voice, the de-esser works at full depth. Added air makes them sharper.
+    let deess = stats.sibilance_db.map_or(0.0, |s| ((s + eq_high_db.max(0.0) + 14.0) / 12.0).clamp(0.0, 1.0));
     Suggestion {
         style,
         gain_db: round(gain_db),
@@ -254,6 +272,7 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
         eq_high_db: round(eq_high_db),
         comp_threshold_db: round(comp_threshold_db),
         comp_ratio: ratio,
+        deess: (deess * 20.0).round() / 20.0,
     }
 }
 
@@ -266,6 +285,11 @@ mod tests {
     /// falling off by `tilt` decibels per octave, hiss at `hiss` (linear).
     /// `glide` makes the pitch wander as in speech.
     fn take(pitch: f32, tilt: f32, hiss: f32, glide: bool) -> Vec<f32> {
+        take_with_s(pitch, tilt, hiss, glide, 0.0)
+    }
+
+    /// The same with S sounds of amplitude `sharp` at the end of each phrase.
+    fn take_with_s(pitch: f32, tilt: f32, hiss: f32, glide: bool, sharp: f32) -> Vec<f32> {
         let mut seed = 0x2545_f491u32;
         let mut noise = move || {
             seed ^= seed << 13;
@@ -285,6 +309,12 @@ mod tests {
                     .filter(|h| hz * (*h as f32) < 10_000.0)
                     .map(|h| (phase * h as f32).sin() * 10f32.powf(-tilt * (h as f32).log2() / 20.0))
                     .sum();
+                // The last tenth of a second of each phrase is an S, if asked for.
+                let s = sounding && t.fract() >= 0.65;
+                if s && sharp > 0.0 {
+                    // (The difference of two noise samples has its energy at the top.)
+                    return sharp * (noise() - noise()) + hiss * noise();
+                }
                 (if sounding { 0.12 * voice } else { 0.0 }) + hiss * noise()
             })
             .collect()
@@ -324,6 +354,21 @@ mod tests {
         assert_eq!(set.denoise, 0.0, "{set:?}");
         assert!(set.eq_high_db <= 0.0, "{set:?}");
         assert_eq!(set.comp_ratio, 3.0);
+    }
+
+    #[test]
+    fn sharp_s_sounds_are_found_and_the_de_esser_set_by_how_loud_they_are() {
+        // No S at all: nothing found, de-esser off.
+        let plain = measure(&take(115.0, 9.0, 0.0, true)).unwrap();
+        assert_eq!(plain.sibilance_db, None, "{plain:?}");
+        assert_eq!(suggest(&plain, VoiceStyle::RapLead).deess, 0.0);
+        // Mild ones, well under the voice: little; as loud as the voice: a lot.
+        let mild = measure(&take_with_s(115.0, 9.0, 0.0, true, 0.02)).unwrap();
+        let harsh = measure(&take_with_s(115.0, 9.0, 0.0, true, 0.2)).unwrap();
+        let (m, h) = (mild.sibilance_db.unwrap(), harsh.sibilance_db.unwrap());
+        assert!(m < -8.0 && h > -3.0, "{m} {h}");
+        let (little, much) = (suggest(&mild, VoiceStyle::RapLead).deess, suggest(&harsh, VoiceStyle::RapLead).deess);
+        assert!(little < much && much >= 0.9, "{little} {much}");
     }
 
     #[test]

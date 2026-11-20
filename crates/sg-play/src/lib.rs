@@ -819,6 +819,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 high_db: track.mix.eq_high_db,
                 threshold_db: track.mix.comp_threshold_db,
                 ratio: track.mix.comp_ratio,
+                deess: track.mix.deess,
             },
         })
         .collect();
