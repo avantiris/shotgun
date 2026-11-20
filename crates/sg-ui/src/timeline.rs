@@ -1938,6 +1938,9 @@ impl Timeline {
                             let count = sequence.tracks.iter().filter(|t| t.kind == home.kind).count() + added[kind];
                             let (index, name) = match home.kind {
                                 TrackKind::Video => (0, format!("V{}", count + 1)),
+                                // Right under the video track this paste made, if it made one
+                                // (picture and sound of a take stay together); else at the bottom.
+                                TrackKind::Audio if added[0] > 0 && added[1] == 0 => (1, format!("A{}", count + 1)),
                                 TrackKind::Audio => {
                                     (sequence.tracks.len() + added[0] + added[1], format!("A{}", count + 1))
                                 }
@@ -2841,17 +2844,34 @@ mod tests {
             session.drop_asset(&asset, 100, row, None).unwrap();
             assert_eq!(
                 tracks(&session),
+                // The new pair lies together on top: the sound right under its picture.
                 vec![
                     (TrackKind::Video, "V2".to_owned(), vec![100]),
+                    (TrackKind::Audio, "A2".to_owned(), vec![100]),
                     (TrackKind::Video, "V1".to_owned(), vec![0, 600]),
                     (TrackKind::Audio, "A1".to_owned(), vec![0, 600]),
-                    (TrackKind::Audio, "A2".to_owned(), vec![100]),
                 ]
             );
             assert!(session.undo().unwrap());
             assert_eq!(*session.project(), with_asset);
         }
-        assert!(session.undo().unwrap());
+        // With two pairs there: a take stays within one pair. Where both are
+        // free it takes the lower one; pointed at the sound track of the
+        // upper one, that pair; where neither has room, a third pair is made.
+        session.drop_asset(&asset, 100, None, None).unwrap();
+        let seq = session.project().sequences[0].clone();
+        let pair = |row, frame| {
+            let planned = place_at(&seq, &asset, frame, row, None);
+            (planned.video, planned.audio)
+        };
+        assert_eq!(pair(None, 2000), (Some(Slot::Row(2)), Some(Slot::Row(3))));
+        assert_eq!(pair(Some(1), 2000), (Some(Slot::Row(0)), Some(Slot::Row(1))));
+        assert_eq!(pair(None, 150), (Some(Slot::New), Some(Slot::New)));
+        // Only the lower pair is taken at 1300: the take goes to the upper one, whole.
+        assert_eq!(pair(Some(2), 1150), (Some(Slot::Row(0)), Some(Slot::Row(1))));
+        for _ in 0..2 {
+            assert!(session.undo().unwrap());
+        }
         assert_eq!(*session.project(), before);
     }
 

@@ -228,7 +228,9 @@ impl Session {
 pub enum Slot {
     /// Row of an existing track (tracks are stored top first).
     Row(usize),
-    /// A track that the drop creates: video on top, audio at the bottom.
+    /// A track that the drop creates. Next to the track the other part of
+    /// the take goes to (the sound directly under its picture); a part on
+    /// its own gets video on top, audio at the bottom.
     New,
 }
 
@@ -248,6 +250,10 @@ pub struct Placement {
 /// of the right kind; if there is none, a new track. A drop therefore never
 /// fails for lack of room and nobody has to make tracks by hand first.
 /// `only` limits the drop to the picture or the sound of the asset.
+///
+/// Picture and sound of one take stay together (feedback F9.1): they go
+/// to a video track and the audio track directly under it, if such a pair
+/// is free there, and a new track is made next to the other part's.
 pub fn place_at(
     sequence: &sg_core::Sequence,
     asset: &Asset,
@@ -288,11 +294,32 @@ pub fn place_at(
         }
         rows.first().map_or(Slot::New, |index| Slot::Row(*index))
     };
+    let (wants_video, wants_audio) = (
+        asset.video.is_some() && only != Some(TrackKind::Audio),
+        asset.audio.is_some() && only != Some(TrackKind::Video),
+    );
+    if wants_video && wants_audio {
+        // A video track with an audio track right under it, both free and in use for takes.
+        let pair = |upper: usize| {
+            let (Some(above), Some(below)) = (sequence.tracks.get(upper), sequence.tracks.get(upper + 1)) else {
+                return false;
+            };
+            above.kind == TrackKind::Video && below.kind == TrackKind::Audio && free(above) && free(below)
+        };
+        let open =
+            |upper: usize| pair(upper) && !sequence.tracks[upper].mix.hidden && !sequence.tracks[upper + 1].mix.mute;
+        // The pair under the pointer (either of its tracks), else the lowest free one.
+        let pointed = row.and_then(|r| [Some(r), r.checked_sub(1)].into_iter().flatten().find(|upper| pair(*upper)));
+        let upper = pointed.or_else(|| (0..sequence.tracks.len()).rev().find(|upper| open(*upper)));
+        if let Some(upper) = upper {
+            return Placement { start, frames, video: Some(Slot::Row(upper)), audio: Some(Slot::Row(upper + 1)) };
+        }
+    }
     Placement {
         start,
         frames,
-        video: (asset.video.is_some() && only != Some(TrackKind::Audio)).then(|| slot(TrackKind::Video)),
-        audio: (asset.audio.is_some() && only != Some(TrackKind::Video)).then(|| slot(TrackKind::Audio)),
+        video: wants_video.then(|| slot(TrackKind::Video)),
+        audio: wants_audio.then(|| slot(TrackKind::Audio)),
     }
 }
 
@@ -360,18 +387,31 @@ impl Session {
         let Some(sequence) = project.sequences.first() else { return Ok(None) };
         let rate = sequence.rate;
         let mut ops = Vec::new();
-        let mut len = sequence.tracks.len();
-        let mut track_of = |session: &mut Session, slot: Slot, kind: TrackKind, ops: &mut Vec<Op>| match slot {
-            Slot::Row(index) => sequence.tracks.get(index).map(|t| t.id),
-            Slot::New => {
-                let (op, id) = session.add_track_op(sequence, kind, len);
-                len += 1;
-                ops.push(op);
-                Some(id)
-            }
+        // A new track goes next to the other part of the take: the sound
+        // directly under its picture. A part on its own: video on top,
+        // audio at the bottom.
+        let (video_at, audio_at) = match (placement.video, placement.audio) {
+            (Some(Slot::New), Some(Slot::New)) => (Some(0), Some(1)),
+            (Some(Slot::New), Some(Slot::Row(sound))) => (Some(sound), None),
+            (Some(Slot::Row(picture)), Some(Slot::New)) => (None, Some(picture + 1)),
+            _ => (None, None),
         };
-        let video = placement.video.and_then(|slot| track_of(self, slot, TrackKind::Video, &mut ops));
-        let audio = placement.audio.and_then(|slot| track_of(self, slot, TrackKind::Audio, &mut ops));
+        let mut len = sequence.tracks.len();
+        let mut track_of =
+            |session: &mut Session, slot: Slot, kind: TrackKind, at: Option<usize>, ops: &mut Vec<Op>| match slot {
+                Slot::Row(index) => sequence.tracks.get(index).map(|t| t.id),
+                Slot::New => {
+                    let (mut op, id) = session.add_track_op(sequence, kind, len);
+                    if let (Some(at), Op::AddTrack { index, .. }) = (at, &mut op) {
+                        *index = at;
+                    }
+                    len += 1;
+                    ops.push(op);
+                    Some(id)
+                }
+            };
+        let video = placement.video.and_then(|slot| track_of(self, slot, TrackKind::Video, video_at, &mut ops));
+        let audio = placement.audio.and_then(|slot| track_of(self, slot, TrackKind::Audio, audio_at, &mut ops));
         if let Some(track) = video {
             let clip =
                 Clip { id: self.ids.clip(), asset: asset.id, start: placement.start, len: placement.frames, src_in: 0 };

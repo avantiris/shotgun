@@ -260,6 +260,15 @@ Status:
   that had failed one time in four: the race was met twice, retried, and
   no error reached the log.
 
+- **Known problem, not looked into (2026-11-20).** Exporting a 60 fps
+  sequence made of a 30 fps H.264 test clip (`media/m2/av.mp4`) decodes at
+  33.8 ms per frame: 28 frames a second in the render pass, 0.44x realtime
+  for a 1080p master, where a project of 60 fps takes renders at 165
+  frames a second on the same build. Composite and encode are as fast as
+  ever, so it is the decoder on this source (a seek per frame is the
+  suspicion; a source at half the sequence's rate asks for every picture
+  twice). Preview of the same project was not measured.
+
 - **Reviewed 2026-11-19.** Three independent reads of the night's code
   found the defects fixed in commits `2cd9e73`, `0395eae` and the one after.
   Left as they are, known:
