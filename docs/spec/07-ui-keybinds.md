@@ -144,6 +144,7 @@ Animation and creation
 |-----|--------|
 | F | add / update keyframe for the selected layer at the playhead |
 | Shift + F | remove keyframe at playhead |
+| Shift + R | record sound: plays from the playhead and records the microphone; again, or pause, ends the take, which is laid on the timeline where it was played (stage 3, M13) |
 | R | live record: plays; drag the selected clip's picture in the viewer and the motion is recorded as keyframes. R again or pause ends it |
 | T | add a 3 s title at the playhead, on the topmost video track that is free there (a new track if none is) |
 | B | whip-pan on the cuts of the selected clips (feedback F12.1): the cuts between two selected clips; if no two of them touch, the cut at the start of each, or at its end if nothing touches its start. If they all have it already, it is taken off. Another kind there is replaced. With nothing selected: the cut nearest the playhead |

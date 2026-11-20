@@ -363,6 +363,26 @@ chain second version, M16 mixing and mastering.
   - Still to do for M12: listening again by itself when the takes change;
     a meter that shows what each stage is doing.
 - [ ] M13 Recording
+  - Built 2026-11-20: Shift+R or "Record sound" above the timeline plays
+    from the playhead and records the default input (`SHOTGUN_AUDIO_IN`
+    names another) until it is pressed again or playback is paused. The
+    take is written by a thread of its own, imported into the project as
+    an asset and laid, to the sample, where it was played: on the lowest
+    audio track that is free there, or on a new one. Playback runs on past
+    the end of the sequence while recording.
+  - Where a take belongs: its first frame gets the position that was being
+    heard when it arrived, less its buffer and the input's reported delay
+    (`sg_audio::record`).
+  - Measured on a loop without air (played into a null sink, recorded
+    from that sink's monitor): the recorded sound lies 4 to 5 frames
+    (0.1 ms) from where it was played, in the engine alone and through
+    the whole application.
+  - Not checked: a real microphone and real speakers (the measured loop
+    has no converters and no air in it; a device that reports its delay
+    wrongly would shift takes by that error), anything by ear.
+  - Still to do: count-in and metronome, choosing the input in the
+    program, monitoring the input through the engine, takes stacked on
+    one track (a new take goes to a free track instead), punch in and out.
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
   - Built 2026-11-20:
     - `sg-plug`: every plugin runs in a process of its own

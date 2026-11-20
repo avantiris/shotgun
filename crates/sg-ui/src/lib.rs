@@ -171,6 +171,13 @@ pub enum Command {
         style: Option<sg_media::voice::VoiceStyle>,
         parts: Vec<(AssetId, i64, i64)>,
     },
+    /// Start playing and recording sound into a file in this project;
+    /// when it ends, [`Shell::take_recorded`] is told.
+    Record {
+        root: PathBuf,
+    },
+    /// End the recording (and the playback it runs with).
+    StopRecording,
     /// Show the window of the plugin on this track.
     PluginEditor {
         track: sg_core::TrackId,
@@ -299,6 +306,9 @@ pub struct Shell {
     /// Files dropped on the timeline: where the next imported assets go
     /// (frame, track row) and how many imports are still expected there.
     dropped_at: Option<(i64, Option<usize>, usize)>,
+    /// Recorded takes being imported: the file and the timeline sample it starts at.
+    takes: Vec<(PathBuf, i64)>,
+    spent_takes: Vec<PathBuf>,
     /// The key reference is showing.
     help: bool,
     /// Undo group of the angle switches of the playback pass in progress.
@@ -707,6 +717,16 @@ impl Shell {
                     self.timeline_action(action, commands);
                 } else if let Some(id) = self.editor.assets.selected {
                     self.remove_asset(id);
+                }
+            }
+            Action::RecordSound => {
+                if let Some(session) = &self.session {
+                    if self.editor.recording_sound {
+                        commands.push(Command::StopRecording);
+                    } else {
+                        self.editor.recording_sound = true;
+                        commands.push(Command::Record { root: session.root.clone() });
+                    }
                 }
             }
             Action::KeyframeSet | Action::KeyframeRemove | Action::AddTitle | Action::LiveRecord => {
@@ -1319,7 +1339,10 @@ impl Shell {
             }
             ImportEvent::Usable { .. } | ImportEvent::Derived { .. } | ImportEvent::Missing { .. } => {}
         }
-        if let Some(id) = placed {
+        // A recorded take goes where it was played; anything else where it was dropped.
+        if let Some(id) = placed
+            && !self.place_take(id)
+        {
             self.place_dropped(id);
         }
     }
@@ -1468,6 +1491,60 @@ impl Shell {
         let media = commands.iter().filter(|c| matches!(c, Command::Import { .. })).count();
         self.dropped_at = target.filter(|_| media > 0).map(|(frame, row)| (frame, row, media));
         commands
+    }
+
+    /// A recording has ended: its file is taken into the project, and laid
+    /// on the timeline where it was played (`start`, in timeline samples)
+    /// once it is there.
+    pub fn take_recorded(&mut self, path: PathBuf, start: i64, frames: u64, lost: u64) -> Vec<Command> {
+        self.editor.recording_sound = false;
+        if frames == 0 {
+            self.error = Some("Nothing was recorded: no sound arrived from the input.".to_owned());
+            return Vec::new();
+        }
+        if lost > 0 {
+            self.error = Some(format!("{lost} samples of the take were lost: the disk could not keep up."));
+        }
+        self.takes.push((path.clone(), start));
+        self.incoming(Incoming::Paths(vec![path]))
+    }
+
+    /// A recording could not be started or was lost.
+    pub fn recording_failed(&mut self, why: String) {
+        self.editor.recording_sound = false;
+        self.error = Some(why);
+    }
+
+    /// If this asset is a take that was just recorded: puts it where it
+    /// was played and says so.
+    fn place_take(&mut self, id: AssetId) -> bool {
+        let Some(session) = &mut self.session else { return false };
+        let Some(asset) = session.project().assets.get(&id).cloned() else { return false };
+        // The import names an asset after its file: that is how the take is known again.
+        let Some(index) = self
+            .takes
+            .iter()
+            .position(|(path, _)| path.file_stem().is_some_and(|stem| stem.to_string_lossy() == asset.label))
+        else {
+            return false;
+        };
+        let (path, start) = self.takes.remove(index);
+        // (The file in the project is a copy; the one it was recorded into has done its work.)
+        self.spent_takes.push(path);
+        match session.place_take(&asset, start) {
+            Ok(Some((track, clip))) => {
+                self.editor.timeline.select_only(track, &clip);
+                session.notice = Some(format!("Recorded {:.1} s.", clip.len as f64 / 48_000.0));
+            }
+            Ok(None) => {}
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        true
+    }
+
+    /// Recorded files that are in the project now and can be deleted; taken by the application.
+    pub fn take_spent_takes(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.spent_takes)
     }
 
     /// Places an asset that came from a drop on the timeline.

@@ -1454,3 +1454,45 @@ fn a_note_clip_is_made_on_an_audio_track_and_its_notes_drawn_in_the_piano_roll()
     harness.run_steps(3);
     assert!(harness.query_by_label("Piano roll").is_none());
 }
+
+#[test]
+fn sound_is_recorded_while_playing_and_the_take_laid_where_it_was_played() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    // Shift+R (or the button): the application is asked to play and record.
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::R);
+    harness.run_steps(3);
+    let root = harness.state().root.clone();
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Record { root: r } if *r == root)));
+    // While it runs the button ends it.
+    click(&mut harness, "Stop recording");
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::StopRecording)));
+    // The take arrives: its file is imported like any other...
+    let file = root.join(".shotgun/takes/take-5.wav");
+    let imports = harness.state_mut().shell.take_recorded(file.clone(), 12_345, 96_000, 0);
+    assert!(imports.iter().any(|c| {
+        matches!(c, Command::Import { source: sg_project::ImportSource::Path(path), .. } if *path == file)
+    }));
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Record sound").is_some());
+    // ...and once it is an asset it lies on a free audio track, to the sample where it was played.
+    let mut asset = take(9, "take-5");
+    asset.kind = AssetKind::Audio;
+    asset.video = None;
+    asset.audio = Some(AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 2, samples: 96_000 });
+    harness.state_mut().shell.import_event(ImportEvent::Usable { job: 9, root: root.clone(), asset: Box::new(asset) });
+    harness.run_steps(3);
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let placed: Vec<(String, i64, i64)> = project.sequences[0]
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter().filter(|c| c.asset == AssetId(9)).map(|c| (t.name.clone(), c.start, c.len)))
+        .collect();
+    // (A1 holds the first take's sound there: the take gets a track of its own.)
+    assert_eq!(placed, [("A2".to_owned(), 12_345, 96_000)]);
+    assert_eq!(harness.state_mut().shell.take_spent_takes(), [file]);
+    // One undo takes the clip and its track away again.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(tracks(&harness).len(), 2);
+}

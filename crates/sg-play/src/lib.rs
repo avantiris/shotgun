@@ -55,6 +55,11 @@ enum Command {
     PluginEditor(u64),
     /// Have the plugins' states written to their files, then reply.
     SavePlugins(crossbeam_channel::Sender<()>),
+    /// Record from a sound input into this file while playing; ends when playback does.
+    Record {
+        path: PathBuf,
+        source: Option<String>,
+    },
     Quit,
 }
 
@@ -75,6 +80,8 @@ pub struct PlayStats {
     pub decode_error: Option<String>,
     /// Messages about plugins not yet shown to the user.
     pub plugin_news: Vec<String>,
+    /// Recordings that have ended and wait to be put into the project.
+    pub takes: Vec<sg_audio::record::Take>,
 }
 
 struct Shared {
@@ -127,6 +134,7 @@ impl Player {
         let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(notify);
         let pool = Pool::new(result_tx)?;
         let mut state = State {
+            recording: None,
             device,
             queue,
             compositor,
@@ -263,6 +271,18 @@ impl Player {
         let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
     }
 
+    /// Starts playing and recording from `source` (`None`: the default
+    /// input) into the file at `path`. The recording ends when playback
+    /// is stopped; the take is then found with [`Player::take_recordings`].
+    pub fn record(&self, path: PathBuf, source: Option<String>) {
+        self.send(Command::Record { path, source });
+    }
+
+    /// The recordings that have ended since the last call.
+    pub fn take_recordings(&self) -> Vec<sg_audio::record::Take> {
+        std::mem::take(&mut self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).takes)
+    }
+
     /// Messages about plugins since the last call (one that did not load or stopped working).
     pub fn take_plugin_news(&self) -> Vec<String> {
         std::mem::take(&mut self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).plugin_news)
@@ -290,6 +310,8 @@ impl Open {
 }
 
 struct State {
+    /// The recording in progress.
+    recording: Option<sg_audio::record::Recording>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     compositor: Compositor,
@@ -363,7 +385,7 @@ impl State {
             return;
         }
         // At the end: play again from the start.
-        if self.frame >= self.length() {
+        if self.frame >= self.length() && self.recording.is_none() {
             self.set_frame(0);
         }
         self.playing = true;
@@ -384,6 +406,14 @@ impl State {
         self.shared.playing.store(false, Ordering::Relaxed);
         // Nothing is asked of the decoders beyond this frame any more.
         self.pool.new_epoch();
+        // A recording ends with the playback it was made to.
+        if let Some(recording) = self.recording.take() {
+            match recording.stop() {
+                Ok(take) => self.stats(|s| s.takes.push(take)),
+                Err(e) => self.stats(|s| s.plugin_news.push(format!("The recording was lost: {e}"))),
+            }
+            (self.notify)();
+        }
     }
 
     fn jump(&mut self, frame: i64) {
@@ -463,6 +493,21 @@ impl State {
                 self.compositor.clear_luts();
                 self.rendered = None;
             }
+            Command::Record { path, source } => {
+                if self.recording.is_none() && self.project.is_some() {
+                    // The input first, so that nothing of the performance is missed; the take begins with the playback.
+                    match self.audio.record(path, source) {
+                        Ok(recording) => {
+                            self.recording = Some(recording);
+                            self.start_playing();
+                        }
+                        Err(e) => {
+                            self.stats(|s| s.plugin_news.push(format!("Cannot record: {e}")));
+                            (self.notify)();
+                        }
+                    }
+                }
+            }
             Command::PluginEditor(key) => self.audio.open_plugin_editor(key),
             Command::SavePlugins(reply) => {
                 self.audio.save_plugin_states();
@@ -495,7 +540,8 @@ impl State {
                 self.stats(|s| push_sample(&mut s.play_start_ms, ms));
             }
             let frame = self.frame_of(self.audio.position());
-            if frame >= self.length() {
+            // (While recording the clock runs on past the end: the take may be the first thing there.)
+            if frame >= self.length() && self.recording.is_none() {
                 self.stop_playing();
                 self.set_frame(self.length());
             } else {

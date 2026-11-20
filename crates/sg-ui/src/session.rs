@@ -340,6 +340,39 @@ impl Session {
         self.apply(Op::Batch(ops), None)
     }
 
+    /// Puts a recorded take on the timeline so that its first frame lies at
+    /// timeline sample `start`, to the sample (a drop only knows frames):
+    /// on the lowest audio track that is free there, or on a new one. What
+    /// was recorded before the start of the timeline is left out. Returns
+    /// the track and the clip.
+    pub fn place_take(&mut self, asset: &Asset, start: i64) -> Result<Option<(sg_core::TrackId, Clip)>, OpError> {
+        let project = self.project().clone();
+        let (Some(sequence), Some(info)) = (project.sequences.first(), &asset.audio) else { return Ok(None) };
+        let samples = (info.samples as i128 * SAMPLE_RATE as i128 / info.sample_rate.max(1) as i128) as i64;
+        let before = (-start).max(0);
+        let (start, len) = (start.max(0), samples - before);
+        if len <= 0 {
+            return Ok(None);
+        }
+        let free =
+            sequence.tracks.iter().rev().find(|t| {
+                t.kind == TrackKind::Audio && !t.mix.mute && t.clips.range(start, start + len).next().is_none()
+            });
+        let mut ops = Vec::new();
+        let track = match free {
+            Some(track) => track.id,
+            None => {
+                let (op, id) = self.add_track_op(sequence, TrackKind::Audio, sequence.tracks.len());
+                ops.push(op);
+                id
+            }
+        };
+        let clip = Clip { id: self.ids.clip(), asset: asset.id, start, len, src_in: before };
+        ops.push(Op::InsertClip { seq: sequence.id, track, clip });
+        self.apply(Op::Batch(ops), None)?;
+        Ok(Some((track, clip)))
+    }
+
     /// Adds a track: video on top, audio at the bottom.
     pub fn add_track(&mut self, kind: TrackKind) -> Result<(), OpError> {
         let project = self.project().clone();

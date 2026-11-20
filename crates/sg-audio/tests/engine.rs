@@ -631,3 +631,60 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     let news = engine.plugin_news();
     assert!(news.len() == 1 && news[0].contains("nothing.vst3"), "{news:?}");
 }
+
+/// Recording against the real sound server. Not run by default: it adds a
+/// null sink to the session for its duration (nothing is played through
+/// the speakers or taken from a microphone). Run it with
+/// `cargo nextest run -p sg-audio --run-ignored only a_take_lands`.
+#[test]
+#[ignore = "adds a null sink to the session's PipeWire graph"]
+fn a_take_lands_on_the_timeline_where_it_was_heard() {
+    let pactl = |args: &[&str]| std::process::Command::new("pactl").args(args).output().unwrap();
+    let loaded = pactl(&["load-module", "module-null-sink", "sink_name=shotgun-test-record"]);
+    let module = String::from_utf8_lossy(&loaded.stdout).trim().to_owned();
+    assert!(loaded.status.success() && !module.is_empty(), "no null sink: {loaded:?}");
+    let result = std::panic::catch_unwind(|| {
+        let dir = tempfile::tempdir().unwrap();
+        // Silence, and a burst of tone from 1.0 s to 1.2 s.
+        let played = wav(dir.path(), "burst.wav", 1, 144_000, |n, _| {
+            if (48_000..57_600).contains(&n) { 0.5 * ((n as f32) * 0.2).sin() } else { 0.0 }
+        });
+        let span = ClipSpan {
+            start: 0,
+            len: 144_000,
+            src_in: 0,
+            wav: played,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            speed: (1, 1),
+            gain_keys: Vec::new(),
+            warp: Vec::new(),
+        };
+        let engine =
+            Engine::start(Backend::PipeWire { target: Some("shotgun-test-record".into()), quantum: 256 }).unwrap();
+        engine.set_mix(Mix { tracks: vec![track(vec![span])], master_gain: 1.0 });
+        engine.play(0);
+        // What the sink plays is recorded: a loop without air in it.
+        let recording = engine.record(dir.path().join("take.wav"), Some("shotgun-test-record.monitor".into())).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let take = recording.stop().unwrap();
+        engine.pause();
+        let bytes = std::fs::read(&take.path).unwrap();
+        let samples: Vec<f32> =
+            bytes[44..].chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        assert_eq!(samples.len() as u64, take.frames * 2);
+        assert!(take.frames > 48_000 && take.lost == 0, "{take:?}");
+        // Where the burst begins in the take, put on the timeline, against where it was played from.
+        let first = samples.iter().step_by(2).position(|s| s.abs() > 0.05).expect("the burst was recorded") as i64;
+        let landed = take.start + first;
+        eprintln!(
+            "burst played at 48000, recorded at {landed}: {} frames = {:.1} ms off",
+            landed - 48_000,
+            (landed - 48_000) as f64 / 48.0
+        );
+        assert!((landed - 48_000).abs() < 1_024, "{landed}");
+    });
+    pactl(&["unload-module", &module]);
+    result.unwrap();
+}

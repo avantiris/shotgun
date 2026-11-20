@@ -19,6 +19,7 @@ mod fx;
 pub mod graph;
 mod null;
 mod pw;
+pub mod record;
 mod synth;
 pub mod tune;
 
@@ -136,6 +137,27 @@ pub enum Backend {
     /// No device: the caller pulls blocks with [`Engine::pull`]. For tests
     /// and for running without any audio output.
     Manual,
+}
+
+/// The timeline sample being heard right now: only atomics are read, so
+/// the realtime threads may ask too.
+fn heard(shared: &Shared) -> i64 {
+    if !shared.running.load(Ordering::Relaxed) {
+        return shared.parked_pos.load(Ordering::Relaxed);
+    }
+    loop {
+        let before = shared.seq.load(Ordering::Acquire);
+        let pos = shared.clock_pos.load(Ordering::Relaxed);
+        let ns = shared.clock_ns.load(Ordering::Relaxed);
+        let delay = shared.clock_delay.load(Ordering::Relaxed);
+        if before.is_multiple_of(2) && shared.seq.load(Ordering::Acquire) == before {
+            let elapsed = monotonic_ns().saturating_sub(ns) as i128;
+            // Do not run ahead more than a short while if callbacks stall.
+            let advanced = (elapsed * SAMPLE_RATE as i128 / 1_000_000_000).min(SAMPLE_RATE as i128 / 4) as i64;
+            return pos + advanced - delay;
+        }
+        std::hint::spin_loop();
+    }
 }
 
 /// Numbers for the performance overlay.
@@ -297,22 +319,19 @@ impl Engine {
 
     /// The timeline sample being heard right now.
     pub fn position(&self) -> i64 {
-        if !self.shared.running.load(Ordering::Relaxed) {
-            return self.shared.parked_pos.load(Ordering::Relaxed);
+        heard(&self.shared)
+    }
+
+    /// Starts recording from `source` (a PipeWire node, `None` for the
+    /// default input) into the file at `path`. Needs a sound device: the
+    /// backends without one cannot record.
+    pub fn record(&self, path: PathBuf, source: Option<String>) -> Result<record::Recording, AudioError> {
+        if self.backend.is_none() {
+            return Err(AudioError::PipeWire("there is no sound device to record from in this mode".into()));
         }
-        loop {
-            let before = self.shared.seq.load(Ordering::Acquire);
-            let pos = self.shared.clock_pos.load(Ordering::Relaxed);
-            let ns = self.shared.clock_ns.load(Ordering::Relaxed);
-            let delay = self.shared.clock_delay.load(Ordering::Relaxed);
-            if before.is_multiple_of(2) && self.shared.seq.load(Ordering::Acquire) == before {
-                let elapsed = monotonic_ns().saturating_sub(ns) as i128;
-                // Do not run ahead more than a short while if callbacks stall.
-                let advanced = (elapsed * SAMPLE_RATE as i128 / 1_000_000_000).min(SAMPLE_RATE as i128 / 4) as i64;
-                return pos + advanced - delay;
-            }
-            std::hint::spin_loop();
-        }
+        let shared = self.shared.clone();
+        let playing = move || shared.running.load(Ordering::Relaxed).then(|| heard(&shared));
+        record::Recording::start(path, source, Box::new(playing))
     }
 
     pub fn stats(&self) -> Stats {

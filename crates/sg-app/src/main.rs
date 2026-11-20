@@ -530,6 +530,22 @@ impl App {
                         }
                     }
                 }
+                Command::Record { root } => match &self.player {
+                    Some(player) => {
+                        // Recorded beside the project's caches, then imported like any file.
+                        let stamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs());
+                        let path = root.join(".shotgun/takes").join(format!("take-{stamp}.wav"));
+                        player.record(path, std::env::var("SHOTGUN_AUDIO_IN").ok());
+                    }
+                    None => self.shell.recording_failed("There is no sound engine to record with.".to_owned()),
+                },
+                Command::StopRecording => {
+                    if let Some(player) = &self.player {
+                        player.pause();
+                    }
+                }
                 Command::PluginEditor { track } => {
                     if let Some(player) = &self.player {
                         player.open_plugin_editor(track.0);
@@ -734,8 +750,27 @@ impl App {
     fn sync_player(&mut self) {
         let Some(player) = &self.player else { return };
         for news in player.take_plugin_news() {
-            self.shell.report_error(news);
+            if news.starts_with("Cannot record") || news.starts_with("The recording") {
+                self.shell.recording_failed(news);
+            } else {
+                self.shell.report_error(news);
+            }
         }
+        let takes = player.take_recordings();
+        let mut imports = Vec::new();
+        for take in takes {
+            imports.extend(self.shell.take_recorded(take.path, take.start, take.frames, take.lost));
+        }
+        for spent in self.shell.take_spent_takes() {
+            self.reads.run(move || {
+                let _ = std::fs::remove_file(spent);
+            });
+        }
+        if !imports.is_empty() {
+            self.run_commands(imports);
+            return self.sync_player();
+        }
+        let Some(player) = &self.player else { return };
         let current = self.shell.session().map(|s| (s.root.clone(), s.project().clone()));
         let same = match (&self.synced, &current) {
             (Some((root, project)), Some((new_root, new_project))) => {
