@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::model::Project;
 use crate::ops::{Op, OpError, apply};
 
+// `Do` holds two operations and is by far the largest variant, but it is
+// also nearly every record there is: boxing it would cost an allocation
+// per edit to save space only in the rare undo and redo records.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Record {
