@@ -47,7 +47,7 @@ Editor layout (single window; panels resize but do not float or re-dock):
 | Left / Right arrow | move the selected clips one frame earlier / later; with Shift ten frames (`PROPOSED`, added 2026-11-19) |
 | Drag clip edge | trim (Ctrl = ripple) |
 | Drag the small mark at a top corner of a selected clip | its fade in (left) or fade out (right); all selected clips follow, so picture and sound of a take fade together. The fade is drawn on the clip (`PROPOSED`, added 2026-11-19) |
-| Drag in viewer | move the selected clip's picture; its corner handles size it, the knob above it turns it (added 2026-11-19) |
+| Drag in viewer | move the selected clip's picture or title; its corner handles size it, the knob above it turns it (pictures 2026-11-19, titles 2026-11-20) |
 | Drag an asset from the panel onto the timeline | place it where it is let go: picture on the video track under the pointer, sound on an audio track; snaps like a moved clip (Alt disables). Where the spot is taken, or outside the tracks, it goes to the next free track, and a new track is made if there is none. Picture and sound of one take stay on two tracks next to each other (feedback F9.1): a video track and the audio track directly under it, the pair under the pointer or else the lowest free pair; a new pair is made on top, and a single new track right beside the other part's. A ghost shows the result before the button is released |
 | Drop files from another application onto the timeline | import them and place them there, one after the other |
 | `+ Video` / `+ Audio` above the track names | add a track (video on top, audio at the bottom) |

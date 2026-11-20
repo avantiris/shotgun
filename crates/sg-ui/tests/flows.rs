@@ -1251,3 +1251,40 @@ fn setting_a_voice_up_makes_the_other_tracks_duck_under_it() {
     harness.run_steps(3);
     assert_eq!(audio(&harness), before);
 }
+
+#[test]
+fn a_title_is_turned_sized_and_moved_with_its_handles_in_the_viewer() {
+    let mut harness = editor();
+    harness.key_press(Key::T);
+    harness.run_steps(3);
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    let props = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| !t.clips.is_empty()).unwrap().clone();
+        let p = track.props_of(track.clips.iter().next().unwrap().id).unwrap().clone();
+        (p.scale.at(0), p.rotation.at(0), p.x.at(0), p.y.at(0))
+    };
+    assert_eq!(props(&harness), (1.0, 0.0, 0.0, 0.0));
+    // The title has an outline of its own size, with the same handles as a picture.
+    let corners: Vec<egui::Rect> = harness.get_all_by_label("Size handle").map(|n| n.rect()).collect();
+    assert_eq!(corners.len(), 4);
+    let middle = (corners.iter().fold(egui::Vec2::ZERO, |sum, r| sum + r.center().to_vec2()) / 4.0).to_pos2();
+    // Its box is as wide as the word, not as the frame.
+    let width = corners.iter().map(|r| r.center().x).fold(f32::MIN, f32::max)
+        - corners.iter().map(|r| r.center().x).fold(f32::MAX, f32::min);
+    assert!((60.0..500.0).contains(&width), "{width}");
+    // The knob pulled to the right turns it clockwise.
+    let knob = harness.get_by_label("Turn handle").rect().center();
+    drag(&mut harness, knob, knob + vec2(40.0, 0.0));
+    let (_, rotation, ..) = props(&harness);
+    assert!(rotation > 10.0, "{rotation}");
+    // A corner pulled away from the middle makes it larger.
+    let corner = harness.get_all_by_label("Size handle").next().unwrap().rect().center();
+    drag(&mut harness, corner, corner + (corner - middle) * 0.5);
+    assert!(props(&harness).0 > 1.2, "{:?}", props(&harness));
+    // Dragged by its middle it moves.
+    drag(&mut harness, middle, middle + vec2(90.0, 40.0));
+    let (_, _, x, y) = props(&harness);
+    assert!(x > 0.03 && y > 0.02, "{x} {y}");
+}

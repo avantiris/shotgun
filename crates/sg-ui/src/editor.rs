@@ -139,24 +139,45 @@ impl Editor {
                         .is_some_and(|c| c.asset == on_air.asset && c.src_in - c.start == on_air.src_in - on_air.start)
                 })
             });
-        // Where the selected picture lies, for the handles in the viewer.
-        // (Titles are drawn at their own size; they are moved, not sized.)
+        // Where the selected picture or title lies, for the handles in the
+        // viewer: drag inside to move it, a corner to size it, the knob to turn it.
         let outline = target
             .as_ref()
-            .filter(|t| t.track.kind == sg_core::TrackKind::Video && !t.track.mix.hidden && t.props.title.is_none())
+            .filter(|t| t.track.kind == sg_core::TrackKind::Video && !t.track.mix.hidden)
             .and_then(|t| {
-                let video = project.assets.get(&t.clip.asset)?.video.as_ref()?;
-                let (w, h) =
-                    if video.rotation % 180 == 90 { (video.height, video.width) } else { (video.width, video.height) };
-                // Fitted into the frame at scale 1.
-                let fit = (sequence.width as f32 / w.max(1) as f32).min(sequence.height as f32 / h.max(1) as f32)
-                    * t.props.scale.at(t.at);
+                let scale = t.props.scale.at(t.at);
+                let (w, h) = match &t.props.title {
+                    // A title is as large as its letters: measured with the
+                    // built-in font (the one titles use unless another is
+                    // chosen, for which this is close enough for a handle).
+                    Some(title) => {
+                        let px = (title.size * sequence.height as f32).clamp(4.0, 2000.0);
+                        let size = ui.fonts_mut(|fonts| {
+                            let font = FontId::proportional(px);
+                            title.text.lines().fold(vec2(0.0, 0.0), |sum, line| {
+                                let line = fonts.layout_no_wrap(line.to_owned(), font.clone(), egui::Color32::WHITE);
+                                vec2(sum.x.max(line.size().x), sum.y + line.size().y)
+                            })
+                        });
+                        (size.x.max(px) * scale, size.y.max(px) * scale)
+                    }
+                    None => {
+                        let video = project.assets.get(&t.clip.asset)?.video.as_ref()?;
+                        let (w, h) = if video.rotation % 180 == 90 {
+                            (video.height, video.width)
+                        } else {
+                            (video.width, video.height)
+                        };
+                        // Fitted into the frame at scale 1.
+                        let fit = (sequence.width as f32 / w.max(1) as f32)
+                            .min(sequence.height as f32 / h.max(1) as f32)
+                            * scale;
+                        (w as f32 * fit, h as f32 * fit)
+                    }
+                };
                 Some(stage::Outline {
                     centre: egui::vec2(t.props.x.at(t.at), t.props.y.at(t.at)),
-                    half: egui::vec2(
-                        w as f32 * fit / sequence.width as f32 / 2.0,
-                        h as f32 * fit / sequence.height as f32 / 2.0,
-                    ),
+                    half: egui::vec2(w / sequence.width as f32 / 2.0, h / sequence.height as f32 / 2.0),
                     turn: t.props.rotation.at(t.at),
                 })
             });
