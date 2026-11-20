@@ -140,3 +140,45 @@ fn editor(name: &str) {
     assert!(!String::from_utf8_lossy(&clients.stdout).contains("\"title\": \"Surge XT\""));
     assert!(plugin.process(&mut block, &[]));
 }
+
+/// A Windows plugin behind the bridge (yabridge under Wine). Not part of
+/// the usual run: it needs a Wine prefix with a plugin in it, bridged
+/// into a `.vst3` bundle that `SHOTGUN_TEST_BRIDGED` names, and a display
+/// for Wine (a virtual X server will do). docs/spikes has the steps.
+#[test]
+#[ignore = "needs a bridged Windows plugin"]
+fn a_bridged_windows_instrument_plays_and_keeps_its_state() {
+    // SAFETY: as in `bundle`.
+    unsafe { std::env::set_var("SHOTGUN_PLUGIN_HOST", env!("CARGO_BIN_EXE_shotgun-plugin")) };
+    let path = PathBuf::from(std::env::var_os("SHOTGUN_TEST_BRIDGED").unwrap());
+    let started = std::time::Instant::now();
+    let mut plugin = Client::start(&path).unwrap();
+    println!("loaded {:?} in {:.1} s", plugin.loaded, started.elapsed().as_secs_f64());
+    assert!(plugin.loaded.instrument, "{:?}", plugin.loaded);
+    let mut block = vec![0.0f32; 2 * 4800];
+    assert!(plugin.process(&mut block, &[]));
+    assert!(level(&block) < -90.0, "{}", level(&block));
+    let on = NoteEvent { offset: 2400, on: true, pitch: 60, velocity: 100 };
+    assert!(plugin.process(&mut block, &[on]));
+    assert!(level(&block[..2 * 2400]) < -90.0, "{}", level(&block[..2 * 2400]));
+    assert!(level(&block[2 * 2400..]) > -50.0, "{}", level(&block[2 * 2400..]));
+    // How long a block takes through the bridge: it has to stay well under real time.
+    let started = std::time::Instant::now();
+    let mut blocks = vec![0.0f32; 2 * 512];
+    for _ in 0..200 {
+        assert!(plugin.process(&mut blocks, &[]));
+    }
+    println!("512 frames take {:.0} us", started.elapsed().as_secs_f64() * 1e6 / 200.0);
+    let state = plugin.state().unwrap();
+    assert!(!state.is_empty());
+    let mut twin = Client::start(&path).unwrap();
+    assert!(twin.set_state(&state));
+    assert!(!twin.is_dead());
+    if plugin.loaded.has_editor {
+        assert!(plugin.open_editor());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        assert!(plugin.process(&mut blocks, &[]));
+        plugin.close_editor();
+        assert!(!plugin.is_dead());
+    }
+}

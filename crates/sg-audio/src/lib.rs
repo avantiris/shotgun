@@ -258,10 +258,10 @@ impl Engine {
             Backend::PipeWire { target, quantum } => pipewire = Some(pw::PipeWire::start(rt, target, quantum)?),
         }
         let activate = pipewire.as_ref().map(|p| p.activator()).or_else(|| null.as_ref().map(|n| n.activator()));
-        let disk_shared = shared.clone();
+        let (disk_shared, loaded) = (shared.clone(), control.clone());
         let disk_thread = std::thread::Builder::new()
             .name("sg-audio-disk".into())
-            .spawn(move || disk::run(control_rx, slot, disk_shared, activate))?;
+            .spawn(move || disk::run(control_rx, loaded, slot, disk_shared, activate))?;
         Ok(Engine { control, shared, disk_thread: Some(disk_thread), backend: pipewire, null, manual })
     }
 
@@ -378,7 +378,8 @@ impl Engine {
     pub fn settle(&self) {
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.send(disk::Control::Settle(tx));
-        let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // (Plugins that are still starting are waited for: an export must not begin without them.)
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(300));
     }
 }
 

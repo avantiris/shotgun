@@ -30,6 +30,8 @@ pub enum Control {
     Editor(u64),
     /// Write every plugin's state to its file, then reply.
     SaveStates(Sender<()>),
+    /// From a loader thread: the plugin for this track has started, or has not (`None`).
+    Loaded(crate::PluginSpec, Option<Box<sg_plug::Client>>),
     Quit,
 }
 
@@ -141,6 +143,8 @@ struct Feed {
     ducked_db: f32,
     /// The key of the track's plugin, if it runs.
     plugin: Option<u64>,
+    /// The track has a plugin that is still starting.
+    awaiting: bool,
     /// Note starts (sorted by time) and note ends (sorted by time): (sample, pitch, velocity).
     note_ons: Vec<(i64, u8, u8)>,
     note_offs: Vec<(i64, u8)>,
@@ -172,6 +176,16 @@ struct Disk {
     /// The plugins that run, by their track's key: where each came from,
     /// where its state is kept, and its process.
     plugins: HashMap<u64, (crate::PluginSpec, sg_plug::Client)>,
+    /// Plugins being started on threads of their own (a sample library
+    /// takes its time; the sound of the other tracks must not wait), and
+    /// those that did not start: neither is started again while the mix
+    /// keeps asking for the same one.
+    loading: HashMap<u64, PathBuf>,
+    failed: HashMap<u64, PathBuf>,
+    /// For the loader threads to report back with.
+    control: Sender<Control>,
+    /// Asked to settle while plugins were still starting: answered when they have.
+    settles: Vec<Sender<()>>,
     events: Vec<sg_plug::NoteEvent>,
 }
 
@@ -216,26 +230,43 @@ impl Disk {
     }
 
     /// Starts the plugins the mix asks for and ends those it no longer
-    /// names. A plugin that is new gets its state from its file.
+    /// names. Each starts on a thread of its own, gets its state from its
+    /// file there and joins the sound when it is ready ([`Control::Loaded`]).
     fn sync_plugins(&mut self) {
         let wanted: Vec<crate::PluginSpec> = self.mix.tracks.iter().filter_map(|t| t.plugin.clone()).collect();
-        self.plugins.retain(|key, (spec, _)| wanted.iter().any(|w| w.key == *key && w.path == spec.path));
+        let still = |key: &u64, path: &PathBuf| wanted.iter().any(|w| w.key == *key && w.path == *path);
+        self.plugins.retain(|key, (spec, _)| still(key, &spec.path));
+        self.loading.retain(|key, path| still(key, path));
+        self.failed.retain(|key, path| still(key, path));
         for spec in wanted {
-            if self.plugins.contains_key(&spec.key) {
+            let known = |map: &HashMap<u64, PathBuf>| map.contains_key(&spec.key);
+            if self.plugins.contains_key(&spec.key) || known(&self.loading) || known(&self.failed) {
                 continue;
             }
-            let mut news = self.shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner);
-            match sg_plug::Client::start(&spec.path) {
-                Ok(mut client) => {
-                    if let Ok(state) = std::fs::read(&spec.state_file)
-                        && !client.set_state(&state)
-                    {
-                        news.push(format!("{} did not take its saved settings.", client.loaded.name));
+            self.loading.insert(spec.key, spec.path.clone());
+            let (shared, control) = (self.shared.clone(), self.control.clone());
+            let say = |shared: &Shared, text: String| {
+                shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner).push(text);
+            };
+            let load = move || {
+                let client = match sg_plug::Client::start(&spec.path) {
+                    Ok(mut client) => {
+                        if let Ok(state) = std::fs::read(&spec.state_file)
+                            && !client.set_state(&state)
+                        {
+                            say(&shared, format!("{} did not take its saved settings.", client.loaded.name));
+                        }
+                        Some(Box::new(client))
                     }
-                    drop(news);
-                    self.plugins.insert(spec.key, (spec, client));
-                }
-                Err(e) => news.push(format!("{}: {e}", spec.path.display())),
+                    Err(e) => {
+                        say(&shared, format!("{}: {e}", spec.path.display()));
+                        None
+                    }
+                };
+                let _ = control.send(Control::Loaded(spec, client));
+            };
+            if let Err(e) = std::thread::Builder::new().name("sg-audio-plugin-load".into()).spawn(load) {
+                log::error!("cannot start a thread to load a plugin: {e}");
             }
         }
     }
@@ -279,6 +310,10 @@ impl Disk {
         // (A note that ends where the next of its pitch begins: the end first.)
         self.events.sort_by_key(|e| (e.offset, e.on));
         let Some((_, client)) = plugin else {
+            if feed.awaiting {
+                // Its instrument is still starting: not the built-in one in its place.
+                return;
+            }
             let events: Vec<(u32, bool, u8, u8)> =
                 self.events.iter().map(|e| (e.offset, e.on, e.pitch, e.velocity)).collect();
             feed.synth.process(block, &events);
@@ -445,6 +480,7 @@ impl Disk {
                 live,
                 ducked_db: 0.0,
                 plugin: track.plugin.as_ref().map(|p| p.key).filter(|key| self.plugins.contains_key(key)),
+                awaiting: track.plugin.as_ref().is_some_and(|p| self.loading.contains_key(&p.key)),
                 note_ons: track.notes.iter().map(|n| (n.start, n.pitch, n.velocity)).collect(),
                 note_offs: {
                     let mut ends: Vec<(i64, u8)> = track.notes.iter().map(|n| (n.start + n.len, n.pitch)).collect();
@@ -500,6 +536,7 @@ impl Disk {
                 let said = match opened {
                     Some((true, _)) => None,
                     Some((false, name)) => Some(format!("{name} has no window of its own.")),
+                    None if self.loading.contains_key(&key) => Some("The plugin is still starting.".to_owned()),
                     None => Some("The plugin is not running.".to_owned()),
                 };
                 if let Some(said) = said {
@@ -563,6 +600,33 @@ impl Disk {
                 // A good moment: nothing is heard that this could disturb.
                 self.save_plugin_states();
             }
+            Control::Loaded(spec, client) => {
+                // (Taken off its track meanwhile: it is ended again by being dropped.)
+                if self.loading.get(&spec.key) == Some(&spec.path) {
+                    self.loading.remove(&spec.key);
+                    match client {
+                        Some(client) => {
+                            self.plugins.insert(spec.key, (spec, *client));
+                        }
+                        None => {
+                            self.failed.insert(spec.key, spec.path);
+                        }
+                    }
+                    if self.playing {
+                        // It joins from what the callback will render next.
+                        let pos = self.shared.clock_pos.load(Ordering::Relaxed)
+                            + self.shared.quantum.load(Ordering::Relaxed) as i64;
+                        self.rebuild(pos, true, None);
+                    }
+                }
+                if self.loading.is_empty() {
+                    for reply in std::mem::take(&mut self.settles) {
+                        self.fill_all(usize::MAX);
+                        let _ = reply.send(());
+                    }
+                }
+            }
+            Control::Settle(reply) if !self.loading.is_empty() => self.settles.push(reply),
             Control::Settle(reply) => {
                 self.fill_all(usize::MAX);
                 // With a live backend, wait until the callback has the newest graph.
@@ -587,6 +651,7 @@ impl Disk {
 
 pub fn run(
     control: Receiver<Control>,
+    sender: Sender<Control>,
     slot: Arc<Slot>,
     shared: Arc<Shared>,
     activate: Option<Box<dyn Fn(bool) + Send>>,
@@ -607,6 +672,10 @@ pub fn run(
         offered: 0,
         voice_level: vec![(i64::MIN, 0.0); DUCK_SLOTS],
         plugins: HashMap::new(),
+        loading: HashMap::new(),
+        failed: HashMap::new(),
+        control: sender,
+        settles: Vec::new(),
         events: Vec::new(),
     };
     loop {

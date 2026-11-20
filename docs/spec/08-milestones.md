@@ -441,8 +441,23 @@ chain second version, M16 mixing and mastering.
     engine reads half a second ahead, so a note played by hand would
     sound that late: it needs a live path of its own);
     velocity editing; copy and paste of notes; plugin parameters as
-    keyframes; more than one plugin per track; a plugin that hangs (not
-    crashes) stalls the sound of all tracks until it answers.
+    keyframes; more than one plugin per track.
+  - Slow and hung plugins (2026-11-21): a plugin starts on a thread of
+    its own and joins the sound when it is ready (a sample library takes
+    its time; the other tracks play meanwhile, and an export waits for
+    it). One that does not answer a block within 4 s (3 minutes for
+    loading and for its whole state, and for a block while its window is
+    open) is ended like one that crashed: its track plays without it and
+    the program says so. Checked with a stand-in host that loads and then
+    never answers (`crates/sg-plug/tests/hang.rs`).
+  - The bridge that comes with the program is the one used (2026-11-21):
+    `yabridgectl` and a bridged plugin's loader both look for yabridge in
+    the folders `NIX_PROFILES` names, which on this machine found the
+    yabridge of the system profile (built against another Wine) and on a
+    machine without one would find none. Both are now pointed at the
+    bridge on the program's `PATH`. Checked: `yabridgectl sync` then
+    names the loaders of the bundled bridge. Not checked: a bridged
+    plugin making sound (docs/spikes/s7-plugin-host.md, "The bridge").
 - [ ] M15 Vocal chain, second version
   - Built 2026-11-20: a reverb and an echo shared by all tracks, with a
     "Reverb" and an "Echo" amount on every mixer strip (after the fader).

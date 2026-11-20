@@ -123,6 +123,17 @@ fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
+/// The folder holding `bin/yabridge-host.exe` and `lib/libyabridge-*.so`
+/// of the bridge on the `PATH` (the same search as `sg_plug::bridge_root`,
+/// which the plugin's own process uses when it loads a bridged plugin).
+fn bridge_root() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|dir| dir.join("yabridge-host.exe").is_file())
+        .filter_map(|dir| dir.parent().map(Path::to_path_buf))
+        .find(|root| root.join("lib/libyabridge-vst3.so").is_file())
+}
+
 /// The folder Windows VST3 plugins are installed to, in a prefix.
 fn windows_vst3(prefix: &Path) -> PathBuf {
     prefix.join("drive_c/Program Files/Common Files/VST3")
@@ -194,12 +205,21 @@ pub fn bridge(prefix: &Path, cancel: &Cancel, mut on_line: impl FnMut(&str)) -> 
     if !folder.is_dir() {
         return Err(ToolError::other("no plugins are installed yet: install them in Native Access first"));
     }
-    let mut add = Command::new("yabridgectl");
-    add.arg("add").arg(&folder).env("WINEPREFIX", prefix);
+    let tool = |arg: &str| {
+        let mut command = Command::new("yabridgectl");
+        command.arg(arg).env("WINEPREFIX", prefix);
+        // The bridge that came with the program, not one a system profile
+        // happens to hold (built against another Wine), and one at all
+        // where the system has none: yabridgectl looks in these folders.
+        if let Some(root) = bridge_root() {
+            command.env("NIX_PROFILES", root);
+        }
+        command
+    };
+    let mut add = tool("add");
+    add.arg(&folder);
     run_lines(add, cancel, |line| on_line(line))?;
-    let mut sync = Command::new("yabridgectl");
-    sync.arg("sync").env("WINEPREFIX", prefix);
-    run_lines(sync, cancel, |line| on_line(line))
+    run_lines(tool("sync"), cancel, |line| on_line(line))
 }
 
 #[cfg(test)]

@@ -56,3 +56,37 @@ editor window (X11) belongs to that process and not to the Wayland
 window of the program. Blocks are processed on the disk thread like the
 other track effects, ahead of playback, so no plugin code runs in the
 realtime callback. CLAP and LV2 come after VST3.
+
+## The bridge (2026-11-21)
+
+Looked at with a throwaway Wine prefix (the Wine of ni-wine, inside a
+virtual X server so that nothing appeared on the desktop) and the free
+Dexed synthesiser's Windows VST3 in it, with a temporary `HOME`.
+
+- `yabridgectl sync` printed that it set the plugin up with the loaders
+  in `/etc/profiles/per-user/linus/lib`: the yabridge installed on the
+  system (5.1.1), not the one of Shotgun's package (built against
+  ni-wine's Wine). It finds them by going through `NIX_PROFILES`.
+- The loader inside a bridged `.vst3` finds `libyabridge-vst3.so` the
+  same way when the plugin is loaded, and that library looks for
+  `yabridge-host.exe` on the `PATH`.
+- So on a machine without a system yabridge neither would find anything,
+  and on this one the wrong build would run against the prefix.
+
+Fix: `sg_project::plugins::bridge` (for `yabridgectl`) and
+`sg_plug::Client::start` (for the plugin's process) set `NIX_PROFILES`
+to the yabridge found on the `PATH`. With that, `yabridgectl sync`
+names the loaders of the bundled bridge.
+
+**Not tried:** loading the bridged plugin and playing a note through it.
+The run was stopped by the permission check of the session (it would
+have executed a downloaded Windows program under Wine). The test is
+there for when a prefix with a plugin exists:
+
+```
+SHOTGUN_TEST_BRIDGED=~/.vst3/yabridge/<Plugin>.vst3 \
+  nix develop --command cargo test -p sg-plug --test host -- --ignored bridged --nocapture
+```
+
+It loads the plugin, plays a note, times 512-frame blocks through the
+bridge, moves the state into a second instance and opens the window.

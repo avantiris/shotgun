@@ -1464,7 +1464,9 @@ fn sound_is_recorded_while_playing_and_the_take_laid_where_it_was_played() {
     harness.key_press_modifiers(Modifiers::SHIFT, Key::R);
     harness.run_steps(3);
     let root = harness.state().root.clone();
-    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Record { root: r, source: None } if *r == root)));
+    assert!(
+        harness.state().commands.iter().any(|c| matches!(c, Command::Record { root: r, source: None } if *r == root))
+    );
     // While it runs the button ends it.
     click(&mut harness, "Stop recording");
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::StopRecording)));
@@ -1523,22 +1525,27 @@ fn the_input_to_record_from_is_chosen_beside_the_record_button() {
     // Opening the menu asks which inputs there are now.
     click(&mut harness, "Input: default");
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::ListInputs)));
-    harness
-        .state_mut()
-        .shell
-        .inputs_listed(vec![("alsa_input.usb-scarlett".to_owned(), "Scarlett 2i2".to_owned())]);
+    harness.state_mut().shell.inputs_listed(vec![("alsa_input.usb-scarlett".to_owned(), "Scarlett 2i2".to_owned())]);
     harness.run_steps(3);
     click(&mut harness, "Scarlett 2i2");
     // The choice is remembered, shown on the button, and the next take comes from there.
-    assert!(harness.state().commands.iter().any(
-        |c| matches!(c, Command::SaveInput(Some(name)) if name == "alsa_input.usb-scarlett")
-    ));
+    assert!(
+        harness
+            .state()
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::SaveInput(Some(name)) if name == "alsa_input.usb-scarlett"))
+    );
     assert!(harness.query_by_label("Input: Scarlett 2i2").is_some());
     harness.key_press_modifiers(Modifiers::SHIFT, Key::R);
     harness.run_steps(3);
-    assert!(harness.state().commands.iter().any(
-        |c| matches!(c, Command::Record { source: Some(name), .. } if name == "alsa_input.usb-scarlett")
-    ));
+    assert!(
+        harness
+            .state()
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Record { source: Some(name), .. } if name == "alsa_input.usb-scarlett"))
+    );
 }
 
 #[test]

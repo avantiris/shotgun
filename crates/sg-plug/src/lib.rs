@@ -8,7 +8,9 @@
 //!
 //! This library is the engine's side: the protocol and [`Client`]. It
 //! blocks on the pipe, so it is for the disk thread and job threads, never
-//! for the realtime callback or the UI thread.
+//! for the realtime callback or the UI thread. It never blocks for good:
+//! a plugin that does not answer within its time ([`Patience`]) is ended
+//! like one that crashed.
 
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -72,11 +74,82 @@ pub fn host_program() -> PathBuf {
     beside.unwrap_or_else(|| PathBuf::from("shotgun-plugin"))
 }
 
+/// How long a plugin may take to answer before it counts as hung.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Patience {
+    /// Loading it, and reading or setting its whole state: sample
+    /// libraries take their time.
+    pub slow: std::time::Duration,
+    /// A block of sound, a reset, its window.
+    pub block: std::time::Duration,
+}
+
+impl Default for Patience {
+    fn default() -> Patience {
+        // Long against any honest block (they take microseconds to a few
+        // milliseconds), short against waiting for sound that never comes.
+        Patience { slow: std::time::Duration::from_secs(180), block: std::time::Duration::from_secs(4) }
+    }
+}
+
+/// One end of the pipe to the plugin's process that gives up waiting
+/// after `patience` instead of blocking for good.
+struct Patient<T> {
+    inner: T,
+    patience: std::time::Duration,
+}
+
+impl<T: std::os::fd::AsRawFd> Patient<T> {
+    fn wait(&self, events: libc::c_short) -> std::io::Result<()> {
+        let mut fd = libc::pollfd { fd: self.inner.as_raw_fd(), events, revents: 0 };
+        let deadline = std::time::Instant::now() + self.patience;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            // SAFETY: `fd` is one valid pollfd for the duration of the call.
+            let ready = unsafe { libc::poll(&mut fd, 1, left.as_millis().min(i32::MAX as u128) as i32) };
+            match ready {
+                0 => return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no answer in time")),
+                n if n > 0 => return Ok(()),
+                _ => {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<T: Read + std::os::fd::AsRawFd> Read for Patient<T> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.wait(libc::POLLIN)?;
+        self.inner.read(buf)
+    }
+}
+
+impl<T: Write + std::os::fd::AsRawFd> Write for Patient<T> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // (A process that has stopped reading lets the pipe fill up.)
+        self.wait(libc::POLLOUT)?;
+        // What the pipe takes without blocking, so that a large block cannot hang half-written.
+        self.inner.write(&buf[..buf.len().min(4096)])
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// One plugin in its own process.
 pub struct Client {
     child: Child,
-    to: BufWriter<ChildStdin>,
-    from: BufReader<ChildStdout>,
+    to: BufWriter<Patient<ChildStdin>>,
+    from: BufReader<Patient<ChildStdout>>,
+    patience: Patience,
+    /// Its window is open: a plugin may hold everything up while a dialog
+    /// of its own is on screen, which is not hanging.
+    editor_open: bool,
     pub loaded: Loaded,
     /// The process is gone or stopped answering: sound passes untouched from then on.
     dead: bool,
@@ -102,15 +175,41 @@ fn read_flag(from: &mut impl Read) -> std::io::Result<bool> {
     Ok(byte[0] != 0)
 }
 
+/// Where the bridge to Windows plugins (yabridge) that comes with the
+/// program is: the folder holding `bin/yabridge-host.exe` and
+/// `lib/libyabridge-*.so`, found through the `PATH`.
+///
+/// A bridged plugin is a small loader that looks for the bridge itself in
+/// the folders `NIX_PROFILES` names, and `yabridgectl` looks there for
+/// the loaders. Both must find the bridge built against the Wine the
+/// plugins were installed with, not whichever one a profile of the system
+/// happens to hold, and must find one at all on a system without any.
+pub fn bridge_root() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|dir| dir.join("yabridge-host.exe").is_file())
+        .filter_map(|dir| dir.parent().map(Path::to_path_buf))
+        .find(|root| root.join("lib/libyabridge-vst3.so").is_file())
+}
+
 impl Client {
     /// Starts the host program and loads the plugin at `plugin` (a
     /// `.vst3` bundle or `.clap` file) into it. Takes as long as the plugin takes to load.
     pub fn start(plugin: &Path) -> Result<Client, PlugError> {
+        Client::start_with(plugin, Patience::default())
+    }
+
+    /// As [`Client::start`], with other limits for a plugin that does not answer.
+    pub fn start_with(plugin: &Path, patience: Patience) -> Result<Client, PlugError> {
         let program = host_program();
         if program.components().count() > 1 && !program.is_file() {
             return Err(PlugError::NoHost(program));
         }
-        let mut child = Command::new(&program)
+        let mut command = Command::new(&program);
+        if let Some(root) = bridge_root() {
+            command.env("NIX_PROFILES", root);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // What a plugin prints goes where the application's own messages go.
@@ -120,7 +219,8 @@ impl Client {
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(PlugError::Load("no pipes".to_owned()));
         };
-        let (mut to, mut from) = (BufWriter::new(stdin), BufReader::new(stdout));
+        let mut to = BufWriter::new(Patient { inner: stdin, patience: patience.slow });
+        let mut from = BufReader::new(Patient { inner: stdout, patience: patience.slow });
         let path = plugin.to_string_lossy();
         let sent = (|| {
             to.write_all(&[tag::LOAD])?;
@@ -137,6 +237,8 @@ impl Client {
                 child,
                 to,
                 from,
+                patience,
+                editor_open: false,
                 loaded: Loaded { name, instrument, has_editor },
                 dead: false,
                 scratch: Vec::new(),
@@ -163,12 +265,20 @@ impl Client {
         self.child.id()
     }
 
+    /// How long the next answers may take.
+    fn allow(&mut self, patience: std::time::Duration) {
+        self.to.get_mut().patience = patience;
+        self.from.get_mut().patience = patience;
+    }
+
     fn gone<T>(&mut self, result: std::io::Result<T>) -> Option<T> {
         match result {
             Ok(value) => Some(value),
             Err(e) => {
                 if !self.dead {
                     log::error!("plugin {}: its process stopped answering ({e})", self.loaded.name);
+                    // Hung rather than gone: ended, so that nothing of it lingers.
+                    let _ = self.child.kill();
                 }
                 self.dead = true;
                 None
@@ -183,6 +293,7 @@ impl Client {
         if self.dead {
             return false;
         }
+        self.allow(if self.editor_open { self.patience.slow } else { self.patience.block });
         let mut done = true;
         // (Longer blocks go in pieces; the events are split by their offsets.)
         let mut start = 0usize;
@@ -229,6 +340,7 @@ impl Client {
         if self.dead {
             return None;
         }
+        self.allow(self.patience.block);
         let result = (|| {
             self.to.write_all(&[request])?;
             self.to.flush()?;
@@ -244,11 +356,13 @@ impl Client {
 
     /// Shows the plugin's own window. `false` if it has none.
     pub fn open_editor(&mut self) -> bool {
-        self.simple(tag::EDITOR_OPEN).unwrap_or(false)
+        self.editor_open = self.simple(tag::EDITOR_OPEN).unwrap_or(false);
+        self.editor_open
     }
 
     pub fn close_editor(&mut self) {
         self.simple(tag::EDITOR_CLOSE);
+        self.editor_open = false;
     }
 
     /// Everything the plugin is set to, as it wants to store it.
@@ -256,6 +370,7 @@ impl Client {
         if self.dead {
             return None;
         }
+        self.allow(self.patience.slow);
         let result = (|| {
             self.to.write_all(&[tag::GET_STATE])?;
             self.to.flush()?;
@@ -268,6 +383,7 @@ impl Client {
         if self.dead {
             return false;
         }
+        self.allow(self.patience.slow);
         let result = (|| {
             self.to.write_all(&[tag::SET_STATE])?;
             self.to.write_all(&(state.len() as u32).to_le_bytes())?;

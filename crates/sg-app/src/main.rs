@@ -270,7 +270,7 @@ impl App {
                             let _ = sg_project::save_project_poster(&root, asset);
                         }
                         let _ = proxy.send_event(scan_library(&library));
-            let _ = proxy.send_event(UserEvent::Settings(sg_project::settings::load(&library)));
+                        let _ = proxy.send_event(UserEvent::Settings(sg_project::settings::load(&library)));
                     });
                 }
                 Command::Export { root, project, request } => {

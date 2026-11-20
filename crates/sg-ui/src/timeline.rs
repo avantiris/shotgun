@@ -2672,7 +2672,10 @@ pub enum GridStep {
     Bar,
     /// A note value: 1/`den` of a whole note (a beat is a quarter note);
     /// as a triplet, two thirds of that.
-    Note { den: u8, triplet: bool },
+    Note {
+        den: u8,
+        triplet: bool,
+    },
 }
 
 impl GridStep {

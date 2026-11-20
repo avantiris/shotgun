@@ -751,7 +751,8 @@ impl Shell {
                         commands.push(Command::StopRecording);
                     } else {
                         self.editor.recording_sound = true;
-                        commands.push(Command::Record { root: session.root.clone(), source: self.editor.input.clone() });
+                        commands
+                            .push(Command::Record { root: session.root.clone(), source: self.editor.input.clone() });
                     }
                 }
             }
