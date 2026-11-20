@@ -66,7 +66,8 @@
             in !(pkgs.lib.hasPrefix "docs" rel || pkgs.lib.hasPrefix "spikes" rel || pkgs.lib.hasPrefix "scripts" rel);
         };
         cargoLock.lockFile = ./Cargo.lock;
-        cargoBuildFlags = [ "-p" "sg-app" ];
+        # The program, and the process its plugins run in (found beside it).
+        cargoBuildFlags = [ "-p" "sg-app" "-p" "sg-plug" ];
         # The tests want media, a GPU and a sound server; they run in the dev shell.
         doCheck = false;
         nativeBuildInputs = with pkgs; [ pkg-config clang mold makeWrapper ];
@@ -138,6 +139,8 @@
           export CARGO_TARGET_DIR=''${CARGO_TARGET_DIR:-/disk/shotgun-dev/target}
           export SHOTGUN_DEV_DIR=/disk/shotgun-dev
           export SHOTGUN_LIBRARY=''${SHOTGUN_LIBRARY:-/disk/shotgun}
+          # A native plugin (instrument and effect) for the plugin host's tests.
+          export SHOTGUN_TEST_VST3=${pkgs.surge-xt}/lib/vst3
           mkdir -p "$CARGO_TARGET_DIR" "$SHOTGUN_DEV_DIR/media" 2>/dev/null || true
         '';
       };
