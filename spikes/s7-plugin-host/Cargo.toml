@@ -1,0 +1,10 @@
+[package]
+name = "s7-plugin-host"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+vst3 = "0.3"
+libloading = "0.8"
