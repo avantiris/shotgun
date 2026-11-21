@@ -414,7 +414,7 @@ pub struct Rt {
     /// and could not be parked yet.
     monitor: Option<Box<rtrb::Consumer<f32>>>,
     monitor_limbo: Option<Box<rtrb::Consumer<f32>>>,
-    /// Peak of each side of the monitored input over the last seconds.
+    /// Mean square of each side of the monitored input over the last second or so of sound.
     monitor_sides: [f32; 2],
 }
 
@@ -668,12 +668,12 @@ impl Rt {
         let mut peak = 0.0f32;
         // An input that sounds on one side only is heard on both, as its take
         // will be: judged from the last seconds, so that it does not flip.
-        let lone = crate::record::lone_side(self.monitor_sides);
-        let mut sides = self.monitor_sides.map(|p| p * 0.999);
+        let lone = crate::record::lone_side(self.monitor_sides.map(f32::sqrt));
+        let mut energy = [0.0f32; 2];
         let mut arriving = a.iter().chain(b);
         for frame in out.chunks_exact_mut(2) {
             let (Some(&left), Some(&right)) = (arriving.next(), arriving.next()) else { break };
-            sides = [sides[0].max(left.abs()), sides[1].max(right.abs())];
+            energy = [energy[0] + left * left, energy[1] + right * right];
             peak = peak.max(left.abs()).max(right.abs());
             let (left, right) = match lone {
                 Some(0) => (left, left),
@@ -685,7 +685,11 @@ impl Rt {
                 frame[1] = (frame[1] + right).clamp(-1.0, 1.0);
             }
         }
-        self.monitor_sides = sides;
+        // (Mean square of each side, eased over about a second; a pause does not undo it.)
+        let frames = (out.len() / 2).max(1) as f32;
+        if energy[0].max(energy[1]) / frames > 1e-6 {
+            self.monitor_sides = [0, 1].map(|n| self.monitor_sides[n] * 0.99 + energy[n] / frames * 0.01);
+        }
         chunk.commit_all();
         self.shared.input_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
     }

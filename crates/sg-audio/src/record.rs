@@ -197,14 +197,16 @@ fn header(frames: u64) -> Vec<u8> {
     bytes
 }
 
-/// Which side alone carries the sound, given the peak of each: a
-/// microphone on one input of a two-input interface arrives on the left
-/// (or the right) only, and would be recorded and heard in one ear
-/// (feedback F16.12). The other side must be 50 dB below it, which the
-/// noise of an unused input is and a quiet stereo side is not.
-pub(crate) fn lone_side(peaks: [f32; 2]) -> Option<usize> {
-    let loud = if peaks[0] >= peaks[1] { 0 } else { 1 };
-    (peaks[loud] > 1e-3 && peaks[1 - loud] < peaks[loud] * 0.003).then_some(loud)
+/// Which side alone carries the sound, given the level (RMS) of each: a
+/// microphone on one input of a two-input device arrives on the left (or
+/// the right) only, and would be recorded and heard in one ear (feedback
+/// F16.12). The other side is not silent: on the user's on-board input
+/// it carries the first at 10 to 40 dB less (measured on his takes,
+/// F16.14). So: one side at less than half the level of the other. The
+/// two sides of a stereo microphone are closer than that.
+pub(crate) fn lone_side(levels: [f32; 2]) -> Option<usize> {
+    let loud = if levels[0] >= levels[1] { 0 } else { 1 };
+    (levels[loud] > 1e-3 && levels[1 - loud] < levels[loud] * 0.5).then_some(loud)
 }
 
 /// Puts the sound of one side of a take's file on both sides.
@@ -244,7 +246,8 @@ fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::
     file.write_all(&header(0))?;
     let mut samples = 0u64;
     let mut bytes = Vec::new();
-    let mut peaks = [0.0f32; 2];
+    // The energy of each side over the whole take.
+    let mut energy = [0.0f64; 2];
     loop {
         let stopping = meeting.stop.load(Ordering::Acquire);
         let ready = ring.slots();
@@ -255,7 +258,7 @@ fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::
             let (a, b) = chunk.as_slices();
             for (index, sample) in a.iter().chain(b).enumerate() {
                 let side = (samples as usize + index) % 2;
-                peaks[side] = peaks[side].max(sample.abs());
+                energy[side] += (*sample as f64) * (*sample as f64);
             }
             bytes.extend(a.iter().chain(b).flat_map(|s| s.to_le_bytes()));
             chunk.commit_all();
@@ -272,7 +275,8 @@ fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::
     file.flush()?;
     drop(file);
     // Sound on one side only: the take gets it on both.
-    if let Some(side) = lone_side(peaks) {
+    let level = |side: usize| (energy[side] / (samples / 2).max(1) as f64).sqrt() as f32;
+    if let Some(side) = lone_side([level(0), level(1)]) {
         spread(path, side)?;
     }
     Ok(samples / 2)
@@ -473,8 +477,12 @@ mod tests {
     fn a_take_with_sound_on_one_side_only_gets_it_on_both() {
         assert_eq!(lone_side([0.4, 0.0]), Some(0));
         assert_eq!(lone_side([0.0001, 0.3]), Some(1));
-        // A quiet side of a stereo recording, and silence, stay as they are.
-        assert_eq!(lone_side([0.4, 0.02]), None);
+        // The user's takes (RMS left, right): a voice on the left, its crosstalk on the right.
+        for levels in [[0.11356, 0.01981], [0.01326, 0.00083], [0.14738, 0.04662], [0.08153, 0.00083]] {
+            assert_eq!(lone_side(levels), Some(0), "{levels:?}");
+        }
+        // Two sides of about the same level, and silence, stay as they are.
+        assert_eq!(lone_side([0.4, 0.25]), None);
         assert_eq!(lone_side([0.0, 0.0]), None);
 
         let dir = tempfile::tempdir().unwrap();
