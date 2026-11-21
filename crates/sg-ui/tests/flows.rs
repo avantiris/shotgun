@@ -1795,3 +1795,101 @@ fn a_take_goes_onto_the_track_marked_for_recording_over_what_is_there() {
     harness.run_steps(3);
     assert_eq!(on_a1(&harness), [(1, 0, 480_000, 0)]);
 }
+
+#[test]
+fn several_notes_are_selected_moved_together_copied_and_pasted_after_themselves() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> Vec<sg_core::Note> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        let clip = track.clips.iter().next().unwrap();
+        track.notes.get(&clip.id).map(|n| Vec::clone(n)).unwrap_or_default()
+    };
+    let ctrl_click = |harness: &mut Harness<'_, App>, pos: egui::Pos2| {
+        // (Held over the frames of the click, as a hand holds it.)
+        harness.event(egui::Event::ModifiersChanged(Modifiers::CTRL));
+        harness.hover_at(pos);
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::CTRL,
+            });
+            harness.run_steps(2);
+        }
+        harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+        harness.run_steps(2);
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    let roll = harness.get_by_label("Piano roll").rect();
+    // Two notes, one after the other and a third apart in pitch.
+    let (first, second) = (
+        egui::pos2(roll.left() + 46.0 + 130.0, roll.top() + 90.0),
+        egui::pos2(roll.left() + 46.0 + 190.0, roll.top() + 54.0),
+    );
+    pointer(&mut harness, first, egui::PointerButton::Primary);
+    pointer(&mut harness, second, egui::PointerButton::Primary);
+    let two = notes(&harness);
+    assert_eq!(two.len(), 2);
+    assert!(two[0].start < two[1].start, "{two:?}");
+    // Ctrl+click adds the first to the selection (the second is selected from being placed):
+    // dragging one now moves both, by the same way along and up.
+    ctrl_click(&mut harness, first + vec2(2.0, 0.0));
+    drag(&mut harness, second + vec2(2.0, 0.0), second + vec2(2.0, 0.0) + vec2(120.0, -24.0));
+    let moved = notes(&harness);
+    let (along, up) = (moved[0].start - two[0].start, moved[0].pitch as i32 - two[0].pitch as i32);
+    assert!(along > 0 && up == 2, "{two:?} {moved:?}");
+    assert_eq!((moved[1].start - two[1].start, moved[1].pitch as i32 - two[1].pitch as i32), (along, up));
+    // Ctrl+A, Ctrl+C, Ctrl+V: the same two again, after themselves by the whole beats they span.
+    harness.key_press_modifiers(Modifiers::CTRL, Key::A);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::C);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::V);
+    harness.run_steps(3);
+    let four = notes(&harness);
+    assert_eq!(four.len(), 4);
+    let by = four[2].start - four[0].start;
+    assert!(by > 0 && by % 960 == 0, "{four:?}");
+    assert_eq!((four[3].start - four[1].start, four[2].pitch, four[3].pitch), (by, four[0].pitch, four[1].pitch));
+    // The clipboard of the desktop was not asked: the notes are the roll's own.
+    assert!(!harness.state().commands.iter().any(|c| matches!(c, Command::ReadClipboard)));
+    // The pasted ones are selected: again, and they repeat once more; the delete key takes those away.
+    harness.key_press_modifiers(Modifiers::CTRL, Key::V);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness).len(), 6);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness), four);
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
+fn a_box_drawn_with_ctrl_selects_the_notes_it_touches() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> usize {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        let clip = track.clips.iter().next().unwrap();
+        track.notes.get(&clip.id).map_or(0, |n| n.len())
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    let roll = harness.get_by_label("Piano roll").rect();
+    let at = |x: f32, y: f32| egui::pos2(roll.left() + 46.0 + x, roll.top() + y);
+    for spot in [at(130.0, 90.0), at(190.0, 54.0), at(400.0, 150.0)] {
+        pointer(&mut harness, spot, egui::PointerButton::Primary);
+    }
+    assert_eq!(notes(&harness), 3);
+    // A box over the first two (the third lies outside it), then the delete key.
+    harness.event(egui::Event::ModifiersChanged(Modifiers::CTRL));
+    drag(&mut harness, at(100.0, 40.0), at(260.0, 110.0));
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run_steps(2);
+    assert_eq!(notes(&harness), 3);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness), 1);
+}

@@ -490,9 +490,15 @@ chain second version, M16 mixing and mastering.
     time is assumed), and that it is playing. Of a VST3 plugin's buses
     only the first of each kind is used; the others (a sampler's separate
     outputs, a sidechain input) are switched off explicitly.
+  - Several notes at once (2026-11-21): Ctrl+click adds a note to the
+    selection, Ctrl+drag draws a box, Ctrl+A takes all. Selected notes
+    move and stretch together, the delete key removes them, "Quantise"
+    and the velocity field act on them. Ctrl+C and Ctrl+V put them
+    again after themselves, by the whole beats they span (a bar repeats
+    as a bar; again, and it repeats once more); Ctrl+X cuts.
   - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
-    as VST3 or CLAP too); a MIDI keyboard as input; copy and paste of
-    notes; plugin parameters as keyframes.
+    as VST3 or CLAP too); a MIDI keyboard as input; plugin parameters
+    as keyframes.
   - Slow and hung plugins (2026-11-21): a plugin starts on a thread of
     its own and joins the sound when it is ready (a sample library takes
     its time; the other tracks play meanwhile, and an export waits for

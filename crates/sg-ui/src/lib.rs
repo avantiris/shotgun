@@ -709,6 +709,23 @@ impl Shell {
                     self.editor.assets.open_add();
                 }
             }
+            // While the piano roll is open these mean its notes.
+            Action::Paste | Action::PasteClips if self.editor.piano.is_open() => {
+                if let Some(session) = &mut self.session {
+                    self.editor.piano.paste(session, &mut self.error);
+                }
+            }
+            Action::Copy | Action::Cut if self.editor.piano.is_open() => {
+                let copied = self.editor.piano.copy();
+                if let (true, Action::Cut, Some(session)) = (copied, action, &mut self.session) {
+                    self.editor.piano.delete_selected(session, &mut self.error);
+                }
+            }
+            Action::SelectAll if self.editor.piano.is_open() => {
+                if let Some(session) = &self.session {
+                    self.editor.piano.select_all(session);
+                }
+            }
             Action::Paste => {
                 if self.session.is_some() {
                     // Copied clips are pasted, unless something was copied

@@ -2,6 +2,10 @@
 //! mouse (docs/spec/09-daw.md). It takes the place of the viewer while a
 //! note clip is open.
 //!
+//! Several notes can be selected (Ctrl+click adds one, Ctrl+drag draws a
+//! box, Ctrl+A takes all): they move, stretch and go together, and
+//! Ctrl+C / Ctrl+V repeat them after themselves.
+//!
 //! Every gesture (draw, move, stretch, delete) is one operation that
 //! replaces the clip's notes as a whole, so undo steps back gesture by
 //! gesture. While a gesture is in progress the notes shown are a working
@@ -15,6 +19,8 @@
 
 use egui::{Align2, Color32, FontId, PointerButton, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use sg_core::time::SAMPLE_RATE;
+use std::sync::Arc;
+
 use sg_core::{ClipId, Note, Op, Sequence, TICKS_PER_BEAT, TrackId};
 
 use crate::session::Session;
@@ -30,9 +36,14 @@ const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A",
 enum Gesture {
     /// A new note being drawn: its index in the working copy.
     Draw(usize),
-    /// A note being moved: index, and the pointer's offset inside it in ticks.
-    Move(usize, i64),
-    Stretch(usize),
+    /// Notes being moved: the one under the pointer (its index, and the
+    /// pointer's offset inside it in ticks) and all that move with it, as
+    /// (index, the note as it was).
+    Move(usize, i64, Vec<(usize, Note)>),
+    /// Notes being stretched at their ends: the one under the pointer and all that follow it.
+    Stretch(usize, Vec<(usize, Note)>),
+    /// A box being drawn from this point: what it touches gets selected.
+    Box(egui::Pos2),
 }
 
 #[derive(Default)]
@@ -45,7 +56,12 @@ pub struct PianoRoll {
     grid: Option<i64>,
     /// The length a clicked note gets: that of the last one drawn or stretched.
     last_len: Option<i64>,
-    selected: Option<usize>,
+    /// The selected notes, as what they are (their places change when the notes are sorted).
+    selected: Vec<Note>,
+    /// Notes copied with Ctrl+C, their starts counted from the beat the
+    /// first began in, and how many ticks (whole beats) they span.
+    copied: Vec<Note>,
+    copied_span: i64,
     gesture: Option<Gesture>,
     /// The notes while a gesture is in progress.
     working: Option<Vec<Note>>,
@@ -113,6 +129,8 @@ impl PianoRoll {
             open: Some((track, clip)),
             grid: self.grid,
             last_len: self.last_len,
+            copied: std::mem::take(&mut self.copied),
+            copied_span: self.copied_span,
             keys: self.keys,
             octave: self.octave,
             played,
@@ -249,18 +267,88 @@ impl PianoRoll {
         self.open.take().is_some()
     }
 
-    /// Removes the selected note. Returns whether there was one: the
-    /// delete key means the note while the piano roll is open.
-    pub fn delete_selected(&mut self, session: &mut Session, error: &mut Option<String>) -> bool {
-        let (Some((track, clip)), Some(index)) = (self.open, self.selected.take()) else { return false };
+    /// The notes of the open clip, and what is needed to change them.
+    fn stored(&self, session: &Session) -> Option<(Arc<sg_core::Project>, TrackId, ClipId, Vec<Note>, i64)> {
+        let (track_id, clip_id) = self.open?;
         let project = session.project().clone();
-        let Some(sequence) = project.sequences.first() else { return false };
-        let Some(notes) = sequence.track(track).and_then(|t| t.notes.get(&clip)) else { return false };
-        let mut left = Vec::clone(notes);
-        if index < left.len() {
-            left.remove(index);
-            Self::commit(session, sequence, track, clip, left, error);
+        let sequence = project.sequences.first()?;
+        let track = sequence.track(track_id)?;
+        let clip = track.clips.iter().find(|c| c.id == clip_id)?;
+        let bpm = sequence.tempo.map_or(120.0, sg_core::Tempo::bpm);
+        let samples_per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * TICKS_PER_BEAT as f64);
+        let length = ((clip.len as f64 / samples_per_tick).round() as i64).max(TICKS_PER_BEAT);
+        let notes = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
+        Some((project, track_id, clip_id, notes, length))
+    }
+
+    /// Removes the selected notes. Returns whether there were any: the
+    /// delete key means the notes while the piano roll is open.
+    pub fn delete_selected(&mut self, session: &mut Session, error: &mut Option<String>) -> bool {
+        let gone = std::mem::take(&mut self.selected);
+        let Some((project, track, clip, mut notes, _)) = self.stored(session).filter(|_| !gone.is_empty()) else {
+            return false;
+        };
+        for note in &gone {
+            if let Some(index) = notes.iter().position(|n| n == note) {
+                notes.remove(index);
+            }
         }
+        if let Some(sequence) = project.sequences.first() {
+            Self::commit(session, sequence, track, clip, notes, error);
+        }
+        true
+    }
+
+    /// Selects every note of the clip (Ctrl+A).
+    pub fn select_all(&mut self, session: &Session) {
+        if let Some((.., notes, _)) = self.stored(session) {
+            self.selected = notes;
+        }
+    }
+
+    /// Remembers the selected notes for pasting (Ctrl+C). Returns whether there were any.
+    pub fn copy(&mut self) -> bool {
+        let Some(first) = self.selected.iter().map(|n| n.start).min() else { return false };
+        // Counted from the beat the first one began in, and spanning whole
+        // beats: pasted after themselves, a bar repeats as a bar.
+        let from = first.div_euclid(TICKS_PER_BEAT) * TICKS_PER_BEAT;
+        let end = self.selected.iter().map(|n| n.start + n.len).max().unwrap_or(from);
+        self.copied = self.selected.iter().map(|n| Note { start: n.start - from, ..*n }).collect();
+        self.copied_span = ((end - from) as f64 / TICKS_PER_BEAT as f64).ceil().max(1.0) as i64 * TICKS_PER_BEAT;
+        true
+    }
+
+    /// Puts the copied notes after the selected ones (after where they were
+    /// copied from, the first time; after the last paste, the next), and
+    /// selects them. What would lie beyond the clip's end is left out.
+    /// Returns whether there was something to paste.
+    pub fn paste(&mut self, session: &mut Session, error: &mut Option<String>) -> bool {
+        if self.copied.is_empty() {
+            return false;
+        }
+        let Some((project, track, clip, mut notes, length)) = self.stored(session) else { return false };
+        let after = self
+            .selected
+            .iter()
+            .map(|n| n.start)
+            .min()
+            .map_or(0, |first| first.div_euclid(TICKS_PER_BEAT) * TICKS_PER_BEAT + self.copied_span);
+        let pasted: Vec<Note> = self
+            .copied
+            .iter()
+            .map(|n| Note { start: n.start + after, ..*n })
+            .filter(|n| n.start < length)
+            .map(|n| Note { len: n.len.min(length - n.start), ..n })
+            .collect();
+        if pasted.is_empty() {
+            *error = Some("There is no room after these notes in the clip: make the clip longer first.".to_owned());
+            return true;
+        }
+        notes.extend(pasted.iter().copied());
+        if let Some(sequence) = project.sequences.first() {
+            Self::commit(session, sequence, track, clip, notes, error);
+        }
+        self.selected = pasted;
         true
     }
 
@@ -356,37 +444,49 @@ impl PianoRoll {
                 }
                 if ui
                     .button("Quantise")
-                    .on_hover_text("Moves the start of every note to the nearest line of the grid")
+                    .on_hover_text(
+                        "Moves the start of every note (of the selected ones, if some are) to the nearest line \
+                         of the grid",
+                    )
                     .clicked()
                 {
                     let mut notes = stored.clone();
+                    let mut moved = Vec::new();
                     for note in &mut notes {
-                        let start = (note.start as f64 / grid as f64).round() as i64 * grid;
-                        note.start = start.clamp(0, (length - note.len).max(0));
+                        if self.selected.is_empty() || self.selected.contains(note) {
+                            let start = (note.start as f64 / grid as f64).round() as i64 * grid;
+                            note.start = start.clamp(0, (length - note.len).max(0));
+                            moved.push(*note);
+                        }
                     }
                     if notes != stored {
-                        self.selected = None;
+                        if !self.selected.is_empty() {
+                            self.selected = moved;
+                        }
                         Self::commit(session, sequence, track_id, clip_id, notes, error);
                     }
                 }
-                if let Some(mut note) = self.selected.and_then(|i| stored.get(i).copied()) {
+                if let Some(first) = self.selected.first().copied().filter(|n| stored.contains(n)) {
                     ui.add_space(12.0);
                     ui.label(RichText::new("Velocity").color(theme::DIM));
-                    let mut velocity = note.velocity as i32;
+                    let mut velocity = first.velocity as i32;
                     let field = egui::DragValue::new(&mut velocity).range(1..=127).speed(0.5);
-                    if ui.add(field).on_hover_text("How hard the selected note is struck, 1 to 127").changed() {
-                        note.velocity = velocity.clamp(1, 127) as u8;
+                    if ui.add(field).on_hover_text("How hard the selected notes are struck, 1 to 127").changed() {
+                        let velocity = velocity.clamp(1, 127) as u8;
                         let mut notes = stored.clone();
-                        if let Some(index) = self.selected.filter(|i| *i < notes.len()) {
-                            notes[index] = note;
-                            Self::commit(session, sequence, track_id, clip_id, notes, error);
+                        for note in notes.iter_mut().filter(|n| self.selected.contains(n)) {
+                            note.velocity = velocity;
                         }
+                        self.selected.iter_mut().for_each(|n| n.velocity = velocity);
+                        Self::commit(session, sequence, track_id, clip_id, notes, error);
                     }
                 }
                 ui.add_space(12.0);
                 ui.label(
-                    RichText::new("Click: a note. Drag: draw, move, or stretch at its end. Right click: remove.")
-                        .color(theme::DIM),
+                    RichText::new(
+                        "Click: a note. Drag: draw, move, stretch at its end. Right click: remove. Ctrl: select more.",
+                    )
+                    .color(theme::DIM),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").on_hover_text("Back to the picture (Esc)").clicked() {
@@ -455,9 +555,30 @@ impl PianoRoll {
             && let Some(origin) = origin.filter(|p| lanes.contains(*p))
         {
             let mut notes = stored.clone();
+            let ctrl = ui.input(|i| i.modifiers.ctrl);
+            // What moves or stretches together: the selected notes if the
+            // one under the pointer is among them, else that one alone.
+            let group = |index: usize, selected: &[Note]| -> Vec<(usize, Note)> {
+                if selected.contains(&notes[index]) {
+                    let mut left = selected.to_vec();
+                    let mut group = Vec::new();
+                    for (i, note) in notes.iter().enumerate() {
+                        if let Some(at) = left.iter().position(|s| s == note) {
+                            left.remove(at);
+                            group.push((i, *note));
+                        }
+                    }
+                    group
+                } else {
+                    vec![(index, notes[index])]
+                }
+            };
             self.gesture = Some(match hit(&notes, origin) {
-                Some((index, true)) => Gesture::Stretch(index),
-                Some((index, false)) => Gesture::Move(index, tick_at(origin.x) - notes[index].start),
+                _ if ctrl => Gesture::Box(origin),
+                Some((index, true)) => Gesture::Stretch(index, group(index, &self.selected)),
+                Some((index, false)) => {
+                    Gesture::Move(index, tick_at(origin.x) - notes[index].start, group(index, &self.selected))
+                }
                 None => {
                     let start = floor(tick_at(origin.x));
                     notes.push(Note { start, len: grid, pitch: pitch_at(origin.y), velocity: 100 });
@@ -471,19 +592,43 @@ impl PianoRoll {
         if response.dragged_by(PointerButton::Primary)
             && let (Some(pos), Some(notes), Some(gesture)) = (pointer, &mut self.working, &self.gesture)
         {
-            match *gesture {
-                Gesture::Draw(index) | Gesture::Stretch(index) if index < notes.len() => {
+            match gesture {
+                Gesture::Draw(index) if *index < notes.len() => {
                     // (A drawn note keeps the start it was given when the drag began.)
-                    let start = notes[index].start;
+                    let start = notes[*index].start;
                     let end = snap(tick_at(pos.x)).max(start + grid).min(length);
-                    notes[index].len = (end - start).max(grid.min(length));
+                    notes[*index].len = (end - start).max(grid.min(length));
                 }
-                Gesture::Move(index, inside) if index < notes.len() => {
-                    let len = notes[index].len;
-                    notes[index].start = snap(tick_at(pos.x) - inside).clamp(0, (length - len).max(0));
-                    if notes[index].pitch != pitch_at(pos.y) {
-                        notes[index].pitch = pitch_at(pos.y);
-                        carried = Some(pitch_at(pos.y));
+                Gesture::Stretch(index, group) if *index < notes.len() => {
+                    // The one under the pointer follows it; the others grow or shrink by as much.
+                    let was = group.iter().find(|(i, _)| i == index).map_or(notes[*index], |(_, n)| *n);
+                    let end = snap(tick_at(pos.x)).max(was.start + grid).min(length);
+                    let by = end - (was.start + was.len);
+                    for &(i, before) in group.iter() {
+                        if let Some(note) = notes.get_mut(i) {
+                            note.len = (before.len + by).clamp(grid.min(length), (length - before.start).max(1));
+                        }
+                    }
+                }
+                Gesture::Move(index, inside, group) if *index < notes.len() => {
+                    let was = group.iter().find(|(i, _)| i == index).map_or(notes[*index], |(_, n)| *n);
+                    // As far as the one under the pointer goes, kept inside
+                    // the clip and the keyboard for every note of the group.
+                    let low = group.iter().map(|(_, n)| -n.start).max().unwrap_or(0);
+                    let high = group.iter().map(|(_, n)| length - n.len - n.start).min().unwrap_or(0).max(low);
+                    let by = (snap(tick_at(pos.x) - *inside) - was.start).clamp(low, high);
+                    let down = group.iter().map(|(_, n)| -(n.pitch as i32)).max().unwrap_or(0);
+                    let up = group.iter().map(|(_, n)| 127 - n.pitch as i32).min().unwrap_or(0);
+                    let pitch_by = (pitch_at(pos.y) as i32 - was.pitch as i32).clamp(down, up);
+                    let pitch_now = (was.pitch as i32 + pitch_by) as u8;
+                    if notes[*index].pitch != pitch_now {
+                        carried = Some(pitch_now);
+                    }
+                    for &(i, before) in group.iter() {
+                        if let Some(note) = notes.get_mut(i) {
+                            note.start = before.start + by;
+                            note.pitch = (before.pitch as i32 + pitch_by) as u8;
+                        }
                     }
                 }
                 _ => {}
@@ -492,32 +637,59 @@ impl PianoRoll {
         if let Some(pitch) = carried {
             audition(self, pitch);
         }
+        // The box of a selection in progress, for the painting below.
+        let boxed = match (&self.gesture, pointer) {
+            (Some(Gesture::Box(from)), Some(to)) if response.dragged_by(PointerButton::Primary) => {
+                Some(Rect::from_two_pos(*from, to))
+            }
+            _ => None,
+        };
         if response.drag_stopped() {
             if let (Some(notes), Some(gesture)) = (self.working.take(), self.gesture.take()) {
-                let index = match gesture {
-                    Gesture::Draw(i) | Gesture::Stretch(i) | Gesture::Move(i, _) => i,
+                let touched: Vec<usize> = match &gesture {
+                    Gesture::Draw(i) => vec![*i],
+                    Gesture::Stretch(_, group) | Gesture::Move(_, _, group) => group.iter().map(|(i, _)| *i).collect(),
+                    Gesture::Box(_) => Vec::new(),
                 };
-                if let Some(note) = notes.get(index) {
-                    self.last_len = Some(note.len);
-                }
-                if notes != stored {
-                    // After sorting the note is found again by what it is.
-                    let touched = notes.get(index).copied();
-                    Self::commit(session, sequence, track_id, clip_id, notes, error);
-                    let now = session.project().clone();
-                    let fresh = now
-                        .sequences
-                        .first()
-                        .and_then(|s| s.track(track_id))
-                        .and_then(|t| t.notes.get(&clip_id).cloned());
-                    self.selected = touched.and_then(|t| fresh?.iter().position(|n| *n == t));
+                if let Gesture::Box(from) = gesture {
+                    // Every note the box touches, and only those.
+                    let area = Rect::from_two_pos(from, pointer.unwrap_or(from));
+                    self.selected.clear();
+                    for note in &stored {
+                        let rect = Rect::from_min_max(
+                            pos2(x_of(note.start), y_of(note.pitch as f32)),
+                            pos2(x_of(note.start + note.len), y_of(note.pitch as f32) + ROW_H),
+                        );
+                        if area.intersects(rect) && !self.selected.contains(note) {
+                            self.selected.push(*note);
+                        }
+                    }
+                } else {
+                    let after: Vec<Note> = touched.iter().filter_map(|i| notes.get(*i).copied()).collect();
+                    if let Some(note) = after.first() {
+                        self.last_len = Some(note.len);
+                    }
+                    if notes != stored {
+                        Self::commit(session, sequence, track_id, clip_id, notes, error);
+                        // (Found again by what they are: the notes are sorted when stored.)
+                        self.selected = after;
+                    }
                 }
             }
         } else if response.clicked_by(PointerButton::Primary)
             && let Some(pos) = pointer.filter(|p| lanes.contains(*p))
         {
+            let ctrl = ui.input(|i| i.modifiers.ctrl);
             match hit(&stored, pos) {
-                Some((index, _)) => self.selected = Some(index),
+                // Ctrl+click adds a note to the selection or takes it out.
+                Some((index, _)) if ctrl => match self.selected.iter().position(|n| *n == stored[index]) {
+                    Some(at) => {
+                        self.selected.remove(at);
+                    }
+                    None => self.selected.push(stored[index]),
+                },
+                Some((index, _)) => self.selected = vec![stored[index]],
+                None if ctrl => self.selected.clear(),
                 None => {
                     let len = self.last_len.unwrap_or(grid).max(grid);
                     let start = floor(tick_at(pos.x));
@@ -527,13 +699,7 @@ impl PianoRoll {
                     notes.push(note);
                     audition(self, note.pitch);
                     Self::commit(session, sequence, track_id, clip_id, notes, error);
-                    let now = session.project().clone();
-                    let fresh = now
-                        .sequences
-                        .first()
-                        .and_then(|s| s.track(track_id))
-                        .and_then(|t| t.notes.get(&clip_id).cloned());
-                    self.selected = fresh.and_then(|n| n.iter().position(|n| *n == note));
+                    self.selected = vec![note];
                 }
             }
         } else if response.secondary_clicked()
@@ -541,7 +707,7 @@ impl PianoRoll {
         {
             let mut notes = stored.clone();
             notes.remove(index);
-            self.selected = None;
+            self.selected.clear();
             Self::commit(session, sequence, track_id, clip_id, notes, error);
         }
 
@@ -613,14 +779,18 @@ impl PianoRoll {
             }
             tick += grid;
         }
-        for (index, note) in shown.iter().enumerate() {
+        for note in shown.iter() {
             let rect = Rect::from_min_max(
                 pos2(x_of(note.start), y_of(note.pitch as f32) + 1.0),
                 pos2(x_of(note.start + note.len) - 1.0, y_of(note.pitch as f32) + ROW_H - 1.0),
             );
-            let chosen = self.selected == Some(index) && self.working.is_none();
+            let chosen = self.working.is_none() && self.selected.contains(note);
             lanes_painter.rect_filled(rect, 2.0, if chosen { theme::TEXT } else { theme::ACCENT });
             lanes_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, theme::BG), StrokeKind::Inside);
+        }
+        if let Some(area) = boxed {
+            lanes_painter.rect_filled(area, 0.0, Color32::from_white_alpha(18));
+            lanes_painter.rect_stroke(area, 0.0, Stroke::new(1.0, theme::TEXT), StrokeKind::Inside);
         }
         // The playhead, where it lies inside the clip.
         let at = sequence.rate.frames_to_samples(playhead, SAMPLE_RATE) - clip.start;
