@@ -164,6 +164,7 @@ In the piano roll (stage 3, M14; `PROPOSED`)
 | Backspace / Delete | remove the selected notes |
 | Wheel, Shift + wheel, Ctrl + wheel | up and down the keys; along the time; zoom along the time around the pointer |
 | Alt + wheel, middle button drag | higher or lower rows; move the view both ways |
+| Press or drag in the strip with the bar numbers | moves the playhead |
 
 The roll goes on after the clip's end as far as the track is free (sixteen
 bars at a time, darker). A note written or pasted there makes the clip
@@ -185,6 +186,7 @@ Panels and output
 | K, or the Colour button | colour panel in place of the inspector: scenarios, match strength and hero, look chain |
 | J / Shift + J | A/B: look chain / match of the shown scenario off and on |
 | B | whip-pan on the nearest cut; again removes it (kind and settings in the clip inspector) |
+| The Assets button (top bar, beside the project's name) | hides the assets panel, or shows it again |
 | The Chain button | in place of the inspector: one audio track alone (the open piano roll's, or the selected clip's; another can be chosen in the panel), with what its sound goes through listed in the engine's order (source, low cut, noise reduction, tune, equaliser, de-esser, compressor, leveller, saturation, plugins, fader, sends, group, master) beside its strip |
 | M, or the Mixer button | mixer in place of the inspector: per audio track a level meter, fader (double-click: 0 dB), pan, mute, solo, low cut, noise reduction; master fader |
 | F1, or the Keys button | every key and what it does |

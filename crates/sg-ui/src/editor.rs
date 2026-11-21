@@ -41,6 +41,9 @@ pub struct Editor {
     rename: Option<String>,
     focus_rename: bool,
     pub assets: AssetsPanel,
+    /// The assets panel is put away (feedback F16.9): more room for the
+    /// picture or the notes. Importing by drop, paste and key still works.
+    pub assets_hidden: bool,
     pub timeline: Timeline,
     pub clip_panel: ClipPanel,
     pub mixer: crate::mixer::Mixer,
@@ -148,9 +151,11 @@ impl Editor {
                 }
             },
         );
-        egui::Panel::left("assets").default_size(320.0).min_size(170.0).show(ui, |ui| {
-            self.assets.ui(ui, &project, asset_requests);
-        });
+        if !self.assets_hidden {
+            egui::Panel::left("assets").default_size(320.0).min_size(170.0).show(ui, |ui| {
+                self.assets.ui(ui, &project, asset_requests);
+            });
+        }
         // The clip the inspector and the viewer act on, as of this frame.
         let target = self.target(session, view.frame);
         if self.clip_panel.recording && self.was_playing && !view.playing {
@@ -175,6 +180,9 @@ impl Editor {
                 }
             });
         });
+        if let Some(frame) = self.piano.seek_request.take() {
+            transport.push(Transport::Seek(frame));
+        }
         if let Some(frame) = self.clip_panel.seek_request.take() {
             transport.push(Transport::Seek(frame));
         }
@@ -292,6 +300,14 @@ impl Editor {
                     self.begin_rename(session);
                 }
             }
+        }
+        ui.add_space(8.0);
+        if ui
+            .selectable_label(!self.assets_hidden, "Assets")
+            .on_hover_text("Shows or hides the panel with the project's recordings, at the left")
+            .clicked()
+        {
+            self.assets_hidden = !self.assets_hidden;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let status = session.writer_status();

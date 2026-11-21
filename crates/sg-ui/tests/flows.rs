@@ -1851,7 +1851,7 @@ fn several_notes_are_selected_moved_together_copied_and_pasted_after_themselves(
     // Ctrl+click adds the first to the selection (the second is selected from being placed):
     // dragging one now moves both, by the same way along and up.
     ctrl_click(&mut harness, first + vec2(2.0, 0.0));
-    drag(&mut harness, second + vec2(2.0, 0.0), second + vec2(2.0, 0.0) + vec2(120.0, -24.0));
+    drag(&mut harness, second + vec2(2.0, 0.0), second + vec2(2.0, 0.0) + vec2(120.0, -34.0));
     let moved = notes(&harness);
     let (along, up) = (moved[0].start - two[0].start, moved[0].pitch as i32 - two[0].pitch as i32);
     assert!(along > 0 && up == 2, "{two:?} {moved:?}");
@@ -2393,4 +2393,33 @@ fn the_chain_tab_shows_the_selected_track_alone_with_what_its_sound_goes_through
     click(&mut harness, "Chain");
     assert!(harness.query_by_label("CHAIN").is_none() && harness.query_by_label("MIXER").is_none());
     assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
+fn the_playhead_is_moved_in_the_piano_rolls_ruler_and_the_assets_panel_is_put_away() {
+    let mut harness = editor();
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    let roll = harness.get_by_label("Piano roll").rect();
+    let seeks = |harness: &Harness<'_, App>| -> Vec<i64> {
+        let all = transport(harness).into_iter();
+        all.filter_map(|t| if let sg_ui::Transport::Seek(frame) = t { Some(frame) } else { None }).collect()
+    };
+    let before = seeks(&harness).len();
+    // A drag along the strip with the bar numbers: the playhead follows, and no note is made.
+    let from = egui::pos2(roll.left() + 46.0 + 100.0, roll.top() + 6.0);
+    drag(&mut harness, from, from + vec2(200.0, 0.0));
+    let asked = seeks(&harness);
+    assert!(asked.len() > before + 1, "{asked:?}");
+    assert!(asked.last().unwrap() > &asked[before], "{asked:?}");
+    let project = harness.state().shell.session().unwrap().project().clone();
+    assert!(project.sequences[0].tracks.iter().all(|t| t.notes.values().all(|n| n.is_empty())));
+    // "Assets" in the top bar puts the panel away and brings it back; the roll gets its room.
+    assert!(harness.query_by_label("ASSETS").is_some());
+    click(&mut harness, "Assets");
+    assert!(harness.query_by_label("ASSETS").is_none());
+    assert!(harness.get_by_label("Piano roll").rect().width() > roll.width() + 100.0);
+    click(&mut harness, "Assets");
+    assert!(harness.query_by_label("ASSETS").is_some());
 }

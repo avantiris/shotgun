@@ -27,10 +27,12 @@ use crate::session::Session;
 use crate::theme;
 
 const KEYS_W: f32 = 46.0;
-const ROW_H: f32 = 12.0;
+const ROW_H: f32 = 17.0;
 const HEAD_H: f32 = 30.0;
+/// The strip above the rows with the bar numbers: a press there moves the playhead.
+const RULER_H: f32 = 16.0;
 /// Distance from a note's right end within which it is stretched, not moved.
-const EDGE: f32 = 6.0;
+const EDGE: f32 = 8.0;
 const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
 enum Gesture {
@@ -88,6 +90,9 @@ pub struct PianoRoll {
     mouse: Option<(u8, Option<f64>)>,
     /// Notes to start or stop on the instrument; taken by the shell.
     pub played: Vec<Played>,
+    /// The playhead should go to this sequence frame (a press or a drag in
+    /// the ruler); taken by the editor.
+    pub seek_request: Option<i64>,
     /// Notes being recorded: pitch, the timeline sample its key went down at, and how hard.
     sounding: Vec<(u8, i64, u8)>,
     /// Undo group of the recording pass in progress.
@@ -165,6 +170,16 @@ fn room_of(sequence: &Sequence, track: &sg_core::Track, clip: &sg_core::Clip) ->
         }
         None => (i64::MAX / 4, i64::MAX / 4),
     }
+}
+
+/// The pitch whose row lies `down` points below the top of the lanes,
+/// when `top` is the pitch drawn at their top edge. The row of pitch p
+/// spans (top - p) to (top - p + 1) rows down, and `top` is seldom a
+/// whole number once the roll was scrolled: rounding the rows down and
+/// then the pitch down put the lower part of every row onto the note
+/// below (feedback F16.6).
+fn pitch_under(top: f32, row_h: f32, down: f32) -> u8 {
+    (top - down / row_h).ceil().clamp(0.0, 127.0) as u8
 }
 
 fn name_of(pitch: u8) -> String {
@@ -629,7 +644,8 @@ impl PianoRoll {
                      Ctrl + click adds to the selection, Ctrl + drag (or \"Select\") draws a box, Ctrl + A takes \
                      all; Ctrl + C and Ctrl + V repeat the selected notes after themselves.\n\
                      Wheel: up and down the keys. Shift + wheel: along the time. Ctrl + wheel: zoom along the \
-                     time. Alt + wheel: higher or lower rows. Middle button: drag the view.",
+                     time. Alt + wheel: higher or lower rows. Middle button: drag the view.\n\
+                     A press or a drag in the strip with the bar numbers moves the playhead.",
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").on_hover_text("Back to the picture (Esc)").clicked() {
@@ -641,7 +657,8 @@ impl PianoRoll {
         let body = Rect::from_min_max(pos2(area.left(), area.top() + HEAD_H), area.max);
         let response = ui.allocate_rect(body, Sense::click_and_drag());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Piano roll"));
-        let lanes = Rect::from_min_max(pos2(body.left() + KEYS_W, body.top()), body.max);
+        let lanes = Rect::from_min_max(pos2(body.left() + KEYS_W, body.top() + RULER_H), body.max);
+        let ruler = Rect::from_min_max(pos2(lanes.left(), body.top()), pos2(body.right(), lanes.top()));
         let rows = (lanes.height() / row_h).floor().max(1.0);
         // Starts around the notes there are, or around middle C.
         let top = *self.top.get_or_insert_with(|| {
@@ -689,7 +706,7 @@ impl PianoRoll {
         let x_of = |tick: i64| lanes.left() + (tick as f32 - left) * per_tick;
         let y_of = |pitch: f32| lanes.top() + (top - pitch) * row_h;
         let tick_at = |x: f32| ((x - lanes.left()) / per_tick + left) as i64;
-        let pitch_at = |y: f32| (top - ((y - lanes.top()) / row_h).floor()).clamp(0.0, 127.0) as u8;
+        let pitch_at = |y: f32| pitch_under(top, row_h, y - lanes.top());
         // (From here on the roll's end is what bounds a note, not the clip's.)
         let clip_length = length;
         let length = extent;
@@ -704,9 +721,37 @@ impl PianoRoll {
 
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let origin = ui.input(|i| i.pointer.press_origin());
+        // The pointer says what a press does here: carry the note, or pull its end.
+        let over = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| lanes.contains(*p) && response.hovered())
+            .and_then(|p| hit(self.working.as_deref().unwrap_or(&stored), p));
+        match (&self.gesture, over) {
+            (Some(Gesture::Stretch(..) | Gesture::Draw(_)), _) | (None, Some((_, true))) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+            }
+            (Some(Gesture::Move(..)), _) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing),
+            (None, Some((_, false))) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+            _ => {}
+        }
         // The keys at the left play the instrument while the button is down.
-        let keys_column = Rect::from_min_max(body.min, pos2(lanes.left(), body.bottom()));
+        let keys_column = Rect::from_min_max(pos2(body.left(), lanes.top()), pos2(lanes.left(), body.bottom()));
         let down = ui.input(|i| i.pointer.primary_down());
+        // A press or a drag in the ruler moves the playhead, as on the timeline (feedback F16.8).
+        if down
+            && origin.is_some_and(|p| ruler.contains(p))
+            && let Some(pos) = pointer
+        {
+            let tick = tick_at(pos.x).clamp(0, length);
+            let sample = clip.start + (tick as f64 * samples_per_tick).round() as i64;
+            let frame = sequence.rate.samples_to_frames(sample, SAMPLE_RATE);
+            if frame != playhead {
+                self.seek_request = Some(frame);
+            }
+        }
+        if ui.rect_contains_pointer(ruler) && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
         let now = ui.input(|i| i.time);
         let on_key = origin.filter(|p| down && keys_column.contains(*p)).and(pointer).map(|p| pitch_at(p.y));
         match (self.mouse, on_key) {
@@ -960,6 +1005,8 @@ impl PianoRoll {
             }
         }
         let lanes_painter = painter.with_clip_rect(lanes);
+        let ruler_painter = painter.with_clip_rect(ruler);
+        painter.rect_filled(Rect::from_min_max(body.min, pos2(body.right(), lanes.top())), 0.0, theme::PANEL);
         // After the clip's end: darker, it is not part of the clip until a note is written there.
         if clip_length < length {
             let after = lanes.with_min_x(x_of(clip_length).max(lanes.left()));
@@ -987,8 +1034,12 @@ impl PianoRoll {
                 );
                 if bar {
                     let number = format!("{}", beat / beats_per_bar + 1);
-                    lanes_painter.text(
-                        pos2(x + 3.0, lanes.top() + 1.0),
+                    ruler_painter.line_segment(
+                        [pos2(x, ruler.top() + 3.0), pos2(x, ruler.bottom())],
+                        Stroke::new(1.0, Color32::from_white_alpha(70)),
+                    );
+                    ruler_painter.text(
+                        pos2(x + 3.0, ruler.top() + 2.0),
                         Align2::LEFT_TOP,
                         number,
                         FontId::monospace(9.0),
@@ -1003,26 +1054,53 @@ impl PianoRoll {
                 pos2(x_of(note.start), y_of(note.pitch as f32) + 1.0),
                 pos2(x_of(note.start + note.len) - 1.0, y_of(note.pitch as f32) + row_h - 1.0),
             );
+            if !rect.intersects(lanes) {
+                continue;
+            }
             let chosen = self.working.is_none() && self.selected.contains(note);
+            let under = over.is_some_and(|(index, _)| shown.get(index) == Some(note));
             // The harder a note is struck, the stronger its colour.
-            let strength = 0.45 + 0.55 * note.velocity as f32 / 127.0;
-            lanes_painter.rect_filled(
-                rect,
-                2.0,
-                if chosen { theme::TEXT } else { theme::ACCENT.gamma_multiply(strength) },
-            );
-            lanes_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, theme::BG), StrokeKind::Inside);
+            let strength = 0.5 + 0.5 * note.velocity as f32 / 127.0;
+            let body = theme::ACCENT.gamma_multiply(if under { (strength + 0.15).min(1.0) } else { strength });
+            lanes_painter.rect_filled(rect.translate(vec2(0.0, 1.0)), 4.0, Color32::from_black_alpha(70));
+            lanes_painter.rect_filled(rect, 4.0, body);
+            // A lighter upper half: the note reads as a key cap, not as a bar of colour.
+            let cap = Rect::from_min_max(rect.min + vec2(1.0, 1.0), pos2(rect.right() - 1.0, rect.center().y));
+            lanes_painter.rect_filled(cap, 3.0, Color32::from_white_alpha(26));
+            let edge =
+                if chosen { Stroke::new(2.0, theme::TEXT) } else { Stroke::new(1.0, Color32::from_black_alpha(140)) };
+            lanes_painter.rect_stroke(rect, 4.0, edge, StrokeKind::Inside);
+            // The end that is pulled to make the note longer or shorter.
+            if rect.width() >= 14.0 {
+                let x = rect.right() - 4.0;
+                let grip = if under { Color32::from_white_alpha(230) } else { Color32::from_white_alpha(120) };
+                lanes_painter
+                    .line_segment([pos2(x, rect.top() + 4.0), pos2(x, rect.bottom() - 4.0)], Stroke::new(1.5, grip));
+            }
+            // Its name, where there is room for it.
+            if rect.width() >= 34.0 && row_h >= 13.0 {
+                lanes_painter.with_clip_rect(rect.intersect(lanes)).text(
+                    rect.left_center() + vec2(5.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    name_of(note.pitch),
+                    FontId::proportional((row_h - 6.0).clamp(8.5, 11.0)),
+                    Color32::from_black_alpha(210),
+                );
+            }
         }
         if let Some(area) = boxed {
             lanes_painter.rect_filled(area, 0.0, Color32::from_white_alpha(18));
             lanes_painter.rect_stroke(area, 0.0, Stroke::new(1.0, theme::TEXT), StrokeKind::Inside);
         }
-        // The playhead, where it lies inside the clip.
+        // The playhead, where the roll reaches it, with its handle in the ruler.
         let at = sequence.rate.frames_to_samples(playhead, SAMPLE_RATE) - clip.start;
-        if (0..=clip.len).contains(&at) {
+        if at >= 0 && (at as f64 / samples_per_tick) <= length as f64 {
             let x = x_of((at as f64 / samples_per_tick) as i64);
             lanes_painter
                 .line_segment([pos2(x, lanes.top()), pos2(x, lanes.bottom())], Stroke::new(1.5, theme::ACCENT));
+            let handle =
+                vec![pos2(x - 5.0, ruler.bottom() - 9.0), pos2(x + 5.0, ruler.bottom() - 9.0), pos2(x, ruler.bottom())];
+            ruler_painter.add(egui::Shape::convex_polygon(handle, theme::ACCENT, Stroke::NONE));
         }
         if let Some(pos) = pointer.filter(|p| lanes.contains(*p) && response.hovered()) {
             let label = name_of(pitch_at(pos.y));
@@ -1030,6 +1108,26 @@ impl PianoRoll {
         }
         if close {
             self.close();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_point_anywhere_in_a_row_is_that_rows_pitch_however_the_roll_is_scrolled() {
+        for top in [72.0, 72.5, 71.25, 60.9, 127.0] {
+            for row_h in [6.0, 17.0, 30.0] {
+                for pitch in 40..=(top as u8) {
+                    // The row as it is drawn: from (top - pitch) rows down, one row high.
+                    let y = (top - pitch as f32) * row_h;
+                    for inside in [0.05, 0.5, 0.95] {
+                        assert_eq!(pitch_under(top, row_h, y + inside * row_h), pitch, "top {top}, row {row_h}");
+                    }
+                }
+            }
         }
     }
 }
