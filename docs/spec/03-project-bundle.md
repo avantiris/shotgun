@@ -6,6 +6,13 @@
 Every direct subfolder containing `project.toml` is a project. The app opens
 into a grid of these, sorted by last opened, with a poster frame each.
 
+The folder of a project has the project's name (its slug, with `-2`, `-3`
+if another folder has it). A project renamed while open keeps its folder
+until it is closed: then, once the writer, the player and the plugins have
+let go of it, the folder is renamed (2026-11-22, feedback F16.26; not while
+an export of it still runs: then at the next close). Nothing in a bundle
+refers to its own folder name.
+
 ## Bundle layout (required, not configurable)
 
 ```

@@ -44,6 +44,9 @@ pub enum AssetRequest {
     Scenario(crate::session::ScenarioChoice),
     /// Remove the selected asset from the project.
     Remove,
+    /// Open the file manager at this file of the project (its path in the
+    /// bundle), or at the assets folder.
+    ShowFolder(Option<String>),
     /// Read what is in the global folder.
     ListGlobal,
     /// Copy the selected asset to the global folder, for use in every project.
@@ -196,6 +199,11 @@ impl AssetsPanel {
                     .clicked()
                 {
                     self.open_add();
+                }
+                let folder = ui.button("Folder");
+                folder.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Open the assets folder"));
+                if folder.on_hover_text("Opens the project's assets folder in the file manager").clicked() {
+                    out.push(AssetRequest::ShowFolder(None));
                 }
             });
         });
@@ -356,6 +364,10 @@ impl AssetsPanel {
                                 .clicked()
                         {
                             out.push(AssetRequest::AngleByHand);
+                            ui.close();
+                        }
+                        if ui.button("Show in folder").on_hover_text("Opens the file manager where its file is").clicked() {
+                            out.push(AssetRequest::ShowFolder(Some(asset.file.clone())));
                             ui.close();
                         }
                         ui.separator();

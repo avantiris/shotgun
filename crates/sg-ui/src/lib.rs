@@ -64,8 +64,11 @@ pub enum Command {
         root: PathBuf,
         /// The asset whose poster becomes the project's picture in the library.
         poster: Option<AssetId>,
+        /// The folder may be given the project's name now (nothing of the
+        /// project is still at work in it).
+        rename: bool,
     },
-    /// Show the folder of this file in the desktop's file manager.
+    /// Show this folder, or the folder of this file, in the desktop's file manager.
     Reveal {
         path: PathBuf,
     },
@@ -601,6 +604,11 @@ impl Shell {
                         self.remove_asset(id);
                     }
                 }
+                AssetRequest::ShowFolder(file) => {
+                    if let Some(session) = &self.session {
+                        self.reveal = Some(session.root.join(file.as_deref().unwrap_or("assets")));
+                    }
+                }
                 AssetRequest::ListGlobal => commands.push(Command::ListGlobal),
                 AssetRequest::MakeGlobal => {
                     let asset = self
@@ -645,6 +653,11 @@ impl Shell {
         match self.export.ui(&ctx, gif_range) {
             Some(ExportAction::Start(request)) => self.start_export(request, &mut commands),
             Some(ExportAction::Cancel) => commands.push(Command::CancelExport),
+            Some(ExportAction::ShowFolder) => {
+                if let Some(session) = &self.session {
+                    self.reveal = Some(session.root.join("exports"));
+                }
+            }
             None => {}
         }
         for request in self.history.ui(&ctx, now_unix) {
@@ -734,7 +747,11 @@ impl Shell {
             Action::CloseProject => {
                 if let Some(session) = self.session.take() {
                     let (root, poster) = (session.root.clone(), poster_asset(session.project()));
-                    commands.push(Command::Close { writer: session.into_writer(), root, poster });
+                    // (A running export still writes into the folder; and the
+                    // way to the last one's file would lead nowhere after a rename.)
+                    let rename = !self.export.is_running();
+                    self.exported = None;
+                    commands.push(Command::Close { writer: session.into_writer(), root, poster, rename });
                 }
             }
             Action::Undo | Action::Redo => {

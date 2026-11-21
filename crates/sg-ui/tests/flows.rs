@@ -999,6 +999,30 @@ fn the_mark_at_a_clips_top_corner_pulls_its_fade() {
 }
 
 #[test]
+fn the_file_manager_is_opened_from_the_assets_and_from_the_export() {
+    let mut harness = editor();
+    let root = harness.state().root.clone();
+    let revealed = |harness: &Harness<'_, App>| -> Vec<std::path::PathBuf> {
+        let commands = harness.state().commands.iter();
+        commands.filter_map(|c| if let Command::Reveal { path } = c { Some(path.clone()) } else { None }).collect()
+    };
+    // The button above the assets: their folder.
+    click(&mut harness, "Open the assets folder");
+    assert_eq!(revealed(&harness), [root.join("assets")]);
+    // An asset's menu: where its file is.
+    right_click(&mut harness, "first take");
+    click(&mut harness, "Show in folder");
+    let shown = revealed(&harness);
+    assert!(shown[1].starts_with(root.join("assets")) && shown[1] != root.join("assets"), "{shown:?}");
+    // The export's popover: where the exports go.
+    harness.key_press_modifiers(Modifiers::CTRL, Key::E);
+    harness.run_steps(3);
+    click(&mut harness, "Open the exports folder");
+    assert_eq!(revealed(&harness)[2], root.join("exports"));
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
 fn a_finished_export_offers_the_way_to_its_file() {
     let mut harness = editor();
     assert!(harness.query_by_label("Show in folder").is_none());

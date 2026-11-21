@@ -89,6 +89,8 @@ impl Default for ExportPanel {
 pub enum ExportAction {
     Start(ExportRequest),
     Cancel,
+    /// Open the file manager where the exports are.
+    ShowFolder,
 }
 
 impl ExportPanel {
@@ -286,6 +288,11 @@ impl ExportPanel {
                                     }));
                                 }
                             }
+                        }
+                        let folder = ui.button("Open folder");
+                        folder.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Open the exports folder"));
+                        if folder.on_hover_text("Opens the project's exports folder in the file manager").clicked() {
+                            action = Some(ExportAction::ShowFolder);
                         }
                         match &self.result {
                             Some(Ok(text)) => {

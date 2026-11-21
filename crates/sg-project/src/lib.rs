@@ -23,7 +23,7 @@ pub use git::{HistoryEntry, history, restore};
 pub use import::{Derived, ImportEvent, ImportSource, Importer, read_poster};
 pub use journal::Journal;
 pub use layout::cache;
-pub use library::{ProjectEntry, library_dir, read_project_poster, save_project_poster, scan};
+pub use library::{ProjectEntry, follow_name, library_dir, read_project_poster, save_project_poster, scan};
 pub use writer::{ProjectWriter, WriterStatus};
 
 #[derive(Debug, thiserror::Error)]

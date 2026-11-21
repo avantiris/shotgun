@@ -298,6 +298,15 @@ impl Player {
         let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
     }
 
+    /// Something to wait on until everything asked of the player before
+    /// this has been done, the plugins' part of it included (a project
+    /// that was cleared is no longer written to).
+    pub fn settled(&self) -> crossbeam_channel::Receiver<()> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.send(Command::SavePlugins(tx));
+        rx
+    }
+
     /// Turns the metronome on or off: clicks on the beats of a sequence
     /// that has a tempo while it plays, and a bar of them before a recording.
     pub fn set_click(&self, on: bool) {

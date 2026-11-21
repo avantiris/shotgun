@@ -262,13 +262,30 @@ impl App {
                         let _ = proxy.send_event(UserEvent::Opened(result));
                     });
                 }
-                Command::Close { writer, root, poster } => {
+                Command::Close { writer, root, poster, rename } => {
                     self.pending_jobs += 1;
                     self.saw_editor_frame = false;
+                    // The player lets go of the project now, and says when
+                    // it and the plugins have: only then may the folder move.
+                    let settled = self.player.as_ref().map(|player| {
+                        player.clear_project();
+                        player.settled()
+                    });
+                    self.synced = None;
                     self.io.run(move || {
                         if let Some(thread) = writer.close() {
                             let _ = thread.join();
                         }
+                        let let_go = settled.is_none_or(|settled| settled.recv_timeout(Duration::from_secs(5)).is_ok());
+                        // The folder takes the project's name (feedback F16.26).
+                        let root = if rename && let_go {
+                            sg_project::follow_name(&root).unwrap_or_else(|e| {
+                                log::warn!("{}: the folder keeps its name: {e}", root.display());
+                                root
+                            })
+                        } else {
+                            root
+                        };
                         // The picture the library shows for it. Without one the tile keeps its letters.
                         if let Some(asset) = poster {
                             let _ = sg_project::save_project_poster(&root, asset);
@@ -480,7 +497,16 @@ impl App {
                     // The desktop's opener, on a thread of its own: it may take
                     // its time, and what it says when it fails goes to the banner.
                     let spawned = std::thread::Builder::new().name("sg-reveal".into()).spawn(move || {
-                        let folder = path.parent().map(Path::to_owned).unwrap_or(path);
+                        // A folder itself, the folder of a file; if that is
+                        // not there yet (no export so far), the nearest one that is.
+                        let mut folder =
+                            if path.is_dir() { path } else { path.parent().map(Path::to_owned).unwrap_or(path) };
+                        while !folder.is_dir() {
+                            match folder.parent() {
+                                Some(parent) => folder = parent.to_owned(),
+                                None => break,
+                            }
+                        }
                         let result = std::process::Command::new("xdg-open")
                             .arg(&folder)
                             .stdin(std::process::Stdio::null())

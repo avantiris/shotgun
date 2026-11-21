@@ -59,6 +59,30 @@ pub fn scan(library: &Path) -> Result<Vec<ProjectEntry>, ProjectError> {
     Ok(entries)
 }
 
+/// Gives the folder of a project that is not open the name of the project
+/// (its slug, with a number if another folder has it), and returns where
+/// the project is now. A folder that already has it stays.
+///
+/// Projects are made as "Untitled" and named later; without this the
+/// library on disk is a row of `untitled-<n>` (feedback F16.26).
+pub fn follow_name(root: &Path) -> Result<PathBuf, ProjectError> {
+    let file = root.join(PROJECT_FILE);
+    let toml = std::fs::read_to_string(&file).map_err(at(&file))?;
+    let (_, name) = project_header(&toml)?;
+    let wanted = sg_core::text::slug(&name);
+    let (Some(library), Some(folder)) = (root.parent(), root.file_name().and_then(|f| f.to_str())) else {
+        return Ok(root.to_owned());
+    };
+    // Its name already, or its name with the number that told it from another.
+    let numbered = folder.strip_prefix(&wanted).and_then(|rest| rest.strip_prefix('-'));
+    if folder == wanted || numbered.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
+        return Ok(root.to_owned());
+    }
+    let target = library.join(sg_core::text::unique_slug(&wanted, |s| library.join(s).exists()));
+    std::fs::rename(root, &target).map_err(at(root))?;
+    Ok(target)
+}
+
 pub(crate) fn touch_last_opened(root: &Path) -> Result<(), ProjectError> {
     let path = local_file(root);
     let text = toml::to_string(&Local { last_opened: unix_now() }).unwrap_or_default();

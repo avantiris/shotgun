@@ -78,6 +78,40 @@ fn library_lists_projects_most_recent_first() {
 }
 
 #[test]
+fn the_folder_of_a_closed_project_takes_the_projects_name() {
+    let lib = tempfile::tempdir().unwrap();
+    let root = create(lib.path(), "").unwrap().path;
+    assert_eq!(root.file_name().unwrap(), "untitled");
+    // Named as it is made: the folder stays.
+    assert_eq!(sg_project::follow_name(&root).unwrap(), root);
+    let mut opened = open(&root, || {}).unwrap();
+    let record = opened.document.apply(Op::SetProjectName { name: "Musikerrr".to_owned() }, None).unwrap();
+    opened.writer.record(record, opened.document.project().clone());
+    let expected = opened.document.clone();
+    opened.writer.close().unwrap().join().unwrap();
+    let moved = sg_project::follow_name(&root).unwrap();
+    assert_eq!(moved, lib.path().join("musikerrr"));
+    assert!(!root.exists());
+    // It is the same project there, history and all, and stays where it is from now on.
+    let again = open(&moved, || {}).unwrap();
+    assert_eq!(again.document, expected);
+    assert_eq!((again.recovered_edits, again.history_reset), (0, false));
+    assert_eq!(git(&moved, &["status", "--porcelain"]).trim(), "");
+    again.writer.close().unwrap().join().unwrap();
+    assert_eq!(sg_project::follow_name(&moved).unwrap(), moved);
+    // A second project of that name gets a number, and keeps it.
+    let other = create(lib.path(), "Other").unwrap().path;
+    let mut opened = open(&other, || {}).unwrap();
+    let record = opened.document.apply(Op::SetProjectName { name: "Musikerrr".to_owned() }, None).unwrap();
+    opened.writer.record(record, opened.document.project().clone());
+    opened.writer.close().unwrap().join().unwrap();
+    let second = sg_project::follow_name(&other).unwrap();
+    assert_eq!(second, lib.path().join("musikerrr-2"));
+    assert_eq!(sg_project::follow_name(&second).unwrap(), second);
+    assert_eq!(scan(lib.path()).unwrap().len(), 2);
+}
+
+#[test]
 fn edits_and_history_survive_close_and_reopen() {
     let lib = tempfile::tempdir().unwrap();
     let root = create(lib.path(), "Edit me").unwrap().path;
