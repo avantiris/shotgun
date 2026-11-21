@@ -544,11 +544,12 @@ impl PianoRoll {
                     }
                 }
                 ui.add_space(12.0);
-                ui.label(
-                    RichText::new(
-                        "Click: a note. Drag: draw, move, stretch at its end. Right click: remove. Ctrl: select more.",
-                    )
-                    .color(theme::DIM),
+                // (Short: the head must have room for its buttons and "Close" in a narrow roll.)
+                ui.label(RichText::new("How?").color(theme::DIM)).on_hover_text(
+                    "Click: a note. Drag: draw one, move one, or stretch it at its end. Right click: remove.\n\
+                     Ctrl + click adds to the selection, Ctrl + drag draws a box, Ctrl + A takes all; Ctrl + C and \
+                     Ctrl + V repeat the selected notes after themselves.\n\
+                     Wheel: up and down the keys. Shift + wheel: along the clip. Ctrl + wheel: zoom.",
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").on_hover_text("Back to the picture (Esc)").clicked() {
