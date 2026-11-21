@@ -831,7 +831,11 @@ impl PianoRoll {
             let chosen = self.working.is_none() && self.selected.contains(note);
             // The harder a note is struck, the stronger its colour.
             let strength = 0.45 + 0.55 * note.velocity as f32 / 127.0;
-            lanes_painter.rect_filled(rect, 2.0, if chosen { theme::TEXT } else { theme::ACCENT.gamma_multiply(strength) });
+            lanes_painter.rect_filled(
+                rect,
+                2.0,
+                if chosen { theme::TEXT } else { theme::ACCENT.gamma_multiply(strength) },
+            );
             lanes_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, theme::BG), StrokeKind::Inside);
         }
         if let Some(area) = boxed {
