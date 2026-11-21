@@ -305,6 +305,12 @@ chain second version, M16 mixing and mastering.
     With one, the ruler counts bars, the lanes show beats and bars, and
     moving and trimming snap to quarter beats, beats or bars, whichever
     is far enough apart on screen to aim at.
+  - From a beat that already exists (2026-11-21): with an asset set as
+    the song, "Bars at this tempo" under SONG gives the sequence the
+    tempo that was found in it (a whole number if the finding is within
+    0.3 of one). Bars count from the start of the timeline: the song is
+    then moved by hand so that a beat lies on a bar line. Not built: a
+    tempo whose first bar begins elsewhere than at the start.
   - Loop (2026-11-21): L or "Loop" above the timeline plays a stretch
     over and over: the note clip whose piano roll is open, else the
     selected clips, else what lies between the markers around the

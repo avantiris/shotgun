@@ -508,6 +508,27 @@ impl Editor {
                 if ui.button("Double").on_hover_text("Count the song in faster beats").clicked() {
                     *request = Some(EditorRequest::Tempo(song.tempo + 1));
                 }
+                // The song's tempo as the tempo of the sequence: bars, metronome and echo go by it.
+                if let Some(bpm) = self.timeline.bpm(sequence) {
+                    // (Songs made to a click are at a whole tempo; what was found is that within a hair.)
+                    let whole = bpm.round();
+                    let bpm = if (bpm - whole).abs() < 0.3 { whole } else { (bpm * 10.0).round() / 10.0 };
+                    let wanted = sg_core::Tempo {
+                        milli_bpm: (bpm as f64 * 1000.0).round() as u32,
+                        beats_per_bar: sequence.tempo.map_or(4, |t| t.beats_per_bar),
+                    };
+                    let tip = format!(
+                        "Gives the sequence the song's tempo ({bpm} beats per minute): the ruler counts bars, the \
+                         metronome and the echo go by it. Bars count from the start of the timeline: move the song \
+                         so that one of its beats lies on a bar line."
+                    );
+                    let button = ui.add_enabled(sequence.tempo != Some(wanted), egui::Button::new("Bars at this tempo"));
+                    if button.on_hover_text(tip).clicked()
+                        && let Err(e) = session.apply(Op::SetTempo { id: sequence.id, tempo: Some(wanted) }, None)
+                    {
+                        *error = Some(e.to_string());
+                    }
+                }
                 if ui
                     .button("Sync all takes")
                     .on_hover_text("Finds every video with sound in the song and lays it on a camera track")

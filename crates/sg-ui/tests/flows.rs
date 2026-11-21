@@ -2142,3 +2142,21 @@ fn a_note_clip_keeps_its_notes_when_it_is_copied_cut_in_two_or_moved_to_another_
     assert_eq!(moved.len(), 3);
     assert_eq!(harness.state().shell.error_shown(), None);
 }
+
+#[test]
+fn the_songs_tempo_becomes_the_tempo_of_the_sequence() {
+    let mut harness = editor();
+    right_click(&mut harness, "first take");
+    click(&mut harness, "Use as the song");
+    // Its beats were found: 139.9 a minute, which is a song made at 140.
+    let root = harness.state().root.clone();
+    let beats = sg_media::analysis::Beats { bpm: 139.9, beats: (0..40).map(|n| n * 20_586).collect(), steady: true };
+    harness.state_mut().shell.beats_loaded(&root, AssetId(1), Ok(beats));
+    // (Nothing selected, so that the sequence's and the song's settings are in view.)
+    let empty = on_timeline(&harness, 300.0, 4);
+    pointer(&mut harness, empty, egui::PointerButton::Primary);
+    harness.run_steps(3);
+    click(&mut harness, "Bars at this tempo");
+    let tempo = harness.state().shell.session().unwrap().project().sequences[0].tempo;
+    assert_eq!(tempo, Some(sg_core::Tempo { milli_bpm: 140_000, beats_per_bar: 4 }));
+}
