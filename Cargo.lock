@@ -3351,6 +3351,7 @@ dependencies = [
  "nnnoiseless",
  "pipewire",
  "rtrb",
+ "rustfft",
  "sg-plug",
  "tempfile",
  "thiserror 2.0.21",

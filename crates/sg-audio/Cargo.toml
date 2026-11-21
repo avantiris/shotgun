@@ -12,6 +12,8 @@ log.workspace = true
 pipewire = { version = "0.10.1", features = ["v1_2_0"] }
 nnnoiseless = { version = "0.5", default-features = false }
 rtrb = "0.4.1"
+# The spectrum behind the equaliser's curve (already in the tree through sg-media).
+rustfft = "6"
 # The ALSA sequencer, for MIDI keyboards.
 alsa = "0.11"
 # One call to RTKit for the priority of the thread that feeds the rings

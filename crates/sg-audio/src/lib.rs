@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 pub use fx::{Tone, response_db};
 pub use graph::{Processor, Transport};
-pub use scope::{SCOPE_STEP, SCOPE_TAPS};
+pub use scope::{SCOPE_STEP, SCOPE_TAPS, SPECTRUM_BANDS, SPECTRUM_FLOOR_DB, SPECTRUM_HZ};
 
 /// Internal rate. Everything on the timeline's audio tracks is in samples
 /// at this rate.
@@ -660,8 +660,19 @@ impl Meters {
 
     /// Which track's chain is on screen (`None`: none): its level after
     /// every stage is noted from now on.
-    pub fn watch(&self, track: Option<usize>) {
-        self.shared.scope.watch(track);
+    ///
+    /// `spectrum_at`: the point along the chain (0: the source, then after
+    /// each stage in the track's order) whose spectrum is wanted too, with
+    /// that of the point after it.
+    pub fn watch(&self, track: Option<usize>, spectrum_at: Option<usize>) {
+        self.shared.scope.watch(track, spectrum_at);
+    }
+
+    /// What is heard now of the watched track, by pitch: decibels per
+    /// band ([`SPECTRUM_BANDS`] of them over [`SPECTRUM_HZ`]) going into
+    /// the stage that was asked for and coming out of it.
+    pub fn spectrum(&self) -> Option<[[f32; SPECTRUM_BANDS]; 2]> {
+        self.shared.scope.spectrum(heard(&self.shared))
     }
 
     /// The watched track's level after every stage (linear peaks, one

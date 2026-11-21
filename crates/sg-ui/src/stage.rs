@@ -30,6 +30,9 @@ pub struct ViewerState {
     /// that are about to be. `None`: nothing known of that stretch.
     pub scope: Vec<Option<[f32; crate::SCOPE_TAPS]>>,
     pub scope_ahead: usize,
+    /// The watched track's sound by pitch as it is heard now: decibels
+    /// per band, going into the stage the shell asked for and coming out.
+    pub spectrum: Option<crate::scope::Spectrum>,
     /// What low cut and equaliser of these settings do to a tone of that
     /// many hertz, in decibels: the engine's own filters, for the curve.
     pub eq_response: Option<fn(&sg_core::TrackSettings, f32) -> f32>,

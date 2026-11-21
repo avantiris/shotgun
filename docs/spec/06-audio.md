@@ -195,6 +195,13 @@ unchanged.
     of its pitch, and at 5 ms the follower stayed far under them.
   - The low cut is fourth order (24 dB per octave), not second: mains hum
     at 50 Hz is 24 dB down with the cut at 100 Hz (it was 8 dB).
+- The stages run in the order the track has them in (`order` in its mix
+  settings, each of the eight once; feedback F16.22). The plugins, fader
+  and sends stay after them.
+- For the equaliser's and the low cut's picture the disk thread also takes
+  the spectrum going into and out of that stage: 2048 samples every 1024,
+  64 bands from 20 Hz to 20 kHz, kept for 5 s by timeline position
+  (`PROPOSED`).
 - The level after every stage of one track (the one whose chain is on
   screen) is kept per 5 ms of the timeline for 11 s (`sg-audio/scope.rs`),
   written by the disk thread as it lays the sound down and read by the UI

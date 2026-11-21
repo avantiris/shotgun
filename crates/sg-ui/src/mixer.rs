@@ -4,6 +4,7 @@
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use sg_core::{Op, Sequence, TrackKind, TrackSettings};
 
+use crate::scope::Stage;
 use crate::session::Session;
 use crate::stage::ViewerState;
 use crate::theme;
@@ -41,10 +42,14 @@ pub struct Mixer {
     /// panel stays until then.
     pub chain_track: Option<sg_core::TrackId>,
     followed: Option<sg_core::TrackId>,
-    /// The stage whose picture is shown beside the chain.
-    pub stage: crate::scope::Stage,
-    /// Which of the audio tracks the chain is shown of now, for the shell.
+    /// The stage whose picture is open in a window of its own (feedback F16.23).
+    pub stage: Option<Stage>,
+    /// Which of the audio tracks the chain is shown of now, for the shell,
+    /// and the point along its chain the picture wants the spectrum of.
     pub watching: Option<usize>,
+    pub spectrum_at: Option<usize>,
+    /// The spectrum as shown: peaks fall back slowly so that they can be seen.
+    spectrum: Option<Box<crate::scope::Spectrum>>,
     /// Meter readings as shown: they fall back slowly so that peaks can be read.
     levels: Vec<f32>,
     master: f32,
@@ -207,10 +212,34 @@ impl Preset {
     }
 }
 
+/// A track's order of stages with `stage` moved one place up or down among
+/// the stages its list shows (the voice's own are not shown on other tracks).
+fn moved(mix: &TrackSettings, stage: Stage, up: bool) -> [u8; sg_core::STAGES] {
+    let mut order = mix.order;
+    let shown = |number: u8| Stage::numbered(number).is_some_and(|s| s.shown_for(mix));
+    let Some(from) = stage.number().and_then(|number| order.iter().position(|n| *n == number)) else { return order };
+    let to = if up {
+        (0..from).rev().find(|at| shown(order[*at]))
+    } else {
+        (from + 1..order.len()).find(|at| shown(order[*at]))
+    };
+    if let Some(to) = to {
+        let number = order[from];
+        if up {
+            order.copy_within(to..from, to + 1);
+        } else {
+            order.copy_within(from + 1..=to, from);
+        }
+        order[to] = number;
+    }
+    order
+}
+
 /// What a track's sound goes through, in the order the engine applies it
 /// (`sg_audio::fx::TrackFx::process`, then the plugins, fader and sends):
-/// name, what it is set to, and whether it does anything now.
-fn chain_of(track: &sg_core::Track, sequence: &Sequence) -> Vec<(String, String, bool)> {
+/// name, what it is set to, whether it does anything now, and which of
+/// the stages that can be moved and looked at it is.
+fn chain_of(track: &sg_core::Track, sequence: &Sequence) -> Vec<(String, String, bool, Option<Stage>)> {
     let mix = &track.mix;
     let percent = |share: f32| format!("{:.0} %", share * 100.0);
     let mut chain = Vec::new();
@@ -227,39 +256,43 @@ fn chain_of(track: &sg_core::Track, sequence: &Sequence) -> Vec<(String, String,
     } else {
         "the recordings on the track"
     };
-    chain.push(("Source".to_owned(), source.to_owned(), true));
-    chain.push(("Low cut".to_owned(), format!("{:.0} Hz", mix.low_cut_hz), mix.low_cut_hz > 0.0));
-    chain.push(("Noise reduction".to_owned(), percent(mix.denoise), mix.denoise > 0.0));
-    if mix.voice {
-        chain.push(("Tune".to_owned(), percent(mix.tune), mix.tune > 0.0));
-    }
-    let equalised = [mix.eq_low_db, mix.eq_mid_db, mix.eq_high_db];
-    let bands = format!("{:+.0} / {:+.0} / {:+.0} dB", equalised[0], equalised[1], equalised[2]);
-    chain.push(("Equaliser".to_owned(), bands, equalised.iter().any(|db| *db != 0.0)));
-    if mix.voice {
-        chain.push(("De-esser".to_owned(), percent(mix.deess), mix.deess > 0.0));
-    }
-    if mix.voice {
-        chain.push(("Leveller".to_owned(), percent(mix.level), mix.level > 0.0));
-    }
-    let squeezed = format!("above {:.0} dB, {:.1} : 1", mix.comp_threshold_db, mix.comp_ratio);
-    chain.push(("Compressor".to_owned(), squeezed, mix.comp_threshold_db < 0.0));
-    if mix.voice {
-        chain.push(("Saturation".to_owned(), percent(mix.drive), mix.drive > 0.0));
+    chain.push(("Source".to_owned(), source.to_owned(), true, None));
+    for number in mix.order {
+        let Some(stage) = Stage::numbered(number).filter(|stage| stage.shown_for(mix)) else { continue };
+        let (set, on) = match stage {
+            Stage::LowCut => (format!("{:.0} Hz", mix.low_cut_hz), mix.low_cut_hz > 0.0),
+            Stage::Denoise => (percent(mix.denoise), mix.denoise > 0.0),
+            Stage::Tune => (percent(mix.tune), mix.tune > 0.0),
+            Stage::Eq => {
+                let bands = [mix.eq_low_db, mix.eq_mid_db, mix.eq_high_db];
+                (
+                    format!("{:+.0} / {:+.0} / {:+.0} dB", bands[0], bands[1], bands[2]),
+                    bands.iter().any(|db| *db != 0.0),
+                )
+            }
+            Stage::DeEss => (percent(mix.deess), mix.deess > 0.0),
+            Stage::Leveller => (percent(mix.level), mix.level > 0.0),
+            Stage::Comp => {
+                let squeezed = format!("above {:.0} dB, {:.1} : 1", mix.comp_threshold_db, mix.comp_ratio);
+                (squeezed, mix.comp_threshold_db < 0.0)
+            }
+            Stage::Drive | Stage::Whole => (percent(mix.drive), mix.drive > 0.0),
+        };
+        chain.push((stage.name().to_owned(), set, on, Some(stage)));
     }
     for plugin in track.plugins.iter() {
-        chain.push(("Plugin".to_owned(), plugin.name.clone(), true));
+        chain.push(("Plugin".to_owned(), plugin.name.clone(), true, None));
     }
     let fader = if mix.mute { "muted".to_owned() } else { format!("{:+.1} dB, pan {:+.2}", mix.gain_db, mix.pan) };
-    chain.push(("Fader".to_owned(), fader, !mix.mute));
-    chain.push(("To the room".to_owned(), percent(mix.reverb), mix.reverb > 0.0));
-    chain.push(("To the echo".to_owned(), percent(mix.echo), mix.echo > 0.0));
+    chain.push(("Fader".to_owned(), fader, !mix.mute, None));
+    chain.push(("To the room".to_owned(), percent(mix.reverb), mix.reverb > 0.0, None));
+    chain.push(("To the echo".to_owned(), percent(mix.echo), mix.echo > 0.0, None));
     if (1..=4).contains(&mix.group) {
         let name = ["A", "B", "C", "D"][mix.group as usize - 1];
         let level = sequence.groups.get(mix.group as usize - 1).map_or(0.0, |g| g.gain_db);
-        chain.push(("Group".to_owned(), format!("{name}, {level:+.1} dB"), true));
+        chain.push(("Group".to_owned(), format!("{name}, {level:+.1} dB"), true, None));
     }
-    chain.push(("Master".to_owned(), format!("{:+.1} dB", sequence.master_db), true));
+    chain.push(("Master".to_owned(), format!("{:+.1} dB", sequence.master_db), true, None));
     chain
 }
 
@@ -303,6 +336,23 @@ fn fader(ui: &mut egui::Ui, level: f32, db: f32) -> Option<f32> {
     let text = if value <= FLOOR_DB { "off".to_owned() } else { format!("{value:+.1} dB") };
     ui.label(RichText::new(text).size(11.0).color(theme::DIM));
     (value != db).then_some(value)
+}
+
+/// A small arrow that moves a stage of the chain up or down. (Drawn: the font has no arrows.)
+fn arrow(ui: &mut egui::Ui, up: bool, stage: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::click());
+    let way = if up { "up" } else { "down" };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Move {stage} {way}")));
+    let colour = if response.hovered() { theme::TEXT } else { theme::DIM };
+    let (c, tip) = (rect.center(), if up { -4.0 } else { 4.0 });
+    let points = vec![pos2(c.x, c.y + tip), pos2(c.x - 4.5, c.y - tip), pos2(c.x + 4.5, c.y - tip)];
+    ui.painter().add(egui::Shape::convex_polygon(points, colour, Stroke::NONE));
+    response
+        .on_hover_text(format!(
+            "Move this stage {way} the chain: the sound reaches it {}",
+            if up { "earlier" } else { "later" }
+        ))
+        .clicked()
 }
 
 fn toggle(ui: &mut egui::Ui, on: bool, label: &str, colour: Color32, tip: &str) -> bool {
@@ -354,6 +404,19 @@ impl Mixer {
         });
         let only = only.flatten();
         self.watching = only.and_then(|id| tracks.iter().position(|t| t.id == id));
+        self.spectrum_at = self.stage.filter(|stage| stage.by_pitch()).and_then(|stage| {
+            let track = tracks.get(self.watching?)?;
+            Some(stage.taps(&track.mix.order).0)
+        });
+        // New peaks at once, then down by 1.5 dB a frame.
+        let shown =
+            self.spectrum.get_or_insert_with(|| Box::new([[crate::scope::SPECTRUM_FLOOR_DB; crate::scope::BANDS]; 2]));
+        for (side, bands) in shown.iter_mut().enumerate() {
+            for (band, db) in bands.iter_mut().enumerate() {
+                let fresh = view.spectrum.as_ref().map_or(crate::scope::SPECTRUM_FLOOR_DB, |fresh| fresh[side][band]);
+                *db = fresh.max(*db - 1.5).max(crate::scope::SPECTRUM_FLOOR_DB);
+            }
+        }
         ui.label(RichText::new(if self.chain { "CHAIN" } else { "MIXER" }).size(11.0).strong().color(theme::DIM));
         if self.chain && !tracks.is_empty() {
             ui.horizontal_wrapped(|ui| {
@@ -369,15 +432,6 @@ impl Mixer {
             });
         }
         egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-            if let Some(track) = tracks.iter().find(|t| Some(t.id) == only) {
-                // On top, the picture of the chosen stage; its handles set what the strip below sets.
-                let mut mix = track.mix;
-                ui.scope(|ui| crate::scope::ui(ui, self.stage, view, &mut mix));
-                if mix != track.mix {
-                    ops.push(Op::SetTrackMix { seq: sequence.id, track: track.id, mix });
-                }
-                ui.separator();
-            }
             ui.horizontal_top(|ui| {
                 if let Some(track) = tracks.iter().find(|t| Some(t.id) == only) {
                     let width = (ui.available_width() - STRIP_W - 24.0).clamp(140.0, 260.0);
@@ -385,42 +439,56 @@ impl Mixer {
                         ui.set_width(width);
                         ui.label(RichText::new("What the sound goes through, from the top").size(10.5).color(theme::DIM));
                         ui.add_space(2.0);
-                        let whole = ui.selectable_label(self.stage == crate::scope::Stage::Whole, "Whole chain");
+                        let whole = ui.selectable_label(self.stage == Some(Stage::Whole), "Whole chain");
                         if whole.on_hover_text("See the recording against what the whole chain makes of it").clicked() {
-                            self.stage = crate::scope::Stage::Whole;
+                            self.stage = (self.stage != Some(Stage::Whole)).then_some(Stage::Whole);
                         }
-                        for (place, (name, set, on)) in chain_of(track, sequence).into_iter().enumerate() {
+                        let mut order = track.mix.order;
+                        for (place, (name, set, on, stage)) in chain_of(track, sequence).into_iter().enumerate() {
                             let colour = if on { theme::TEXT } else { theme::DIM };
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 ui.label(RichText::new(format!("{:>2}", place + 1)).monospace().size(10.0).color(theme::DIM));
-                                // The stages with a picture are chosen by a click on their name.
-                                match crate::scope::Stage::named(&name) {
+                                match stage {
+                                    // A stage: a click on its name opens its picture, the arrows move it.
                                     Some(stage) => {
-                                        let text = RichText::new(&name).size(11.5).strong().color(colour);
-                                        let chosen = ui.selectable_label(self.stage == stage, text);
-                                        chosen.widget_info(|| {
-                                            let label = format!("See {name}");
-                                            egui::WidgetInfo::selected(egui::Role::Button, true, self.stage == stage, label)
+                                        ui.scope(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            for up in [true, false] {
+                                                if arrow(ui, up, &name) {
+                                                    order = moved(&track.mix, stage, up);
+                                                }
+                                            }
                                         });
-                                        if chosen.on_hover_text("See this stage at work, and set it").clicked() {
-                                            self.stage = stage;
+                                        let open = self.stage == Some(stage);
+                                        let text = RichText::new(&name).size(11.5).strong().color(colour);
+                                        let chosen = ui.selectable_label(open, text);
+                                        chosen.widget_info(|| {
+                                            egui::WidgetInfo::selected(egui::Role::Button, true, open, format!("See {name}"))
+                                        });
+                                        if chosen.on_hover_text("Open the picture of this stage at work, to see and set it").clicked() {
+                                            self.stage = (!open).then_some(stage);
                                         }
+                                        let set = if on { set.as_str() } else { "off" };
+                                        ui.label(RichText::new(set).size(10.5).color(theme::DIM));
                                     }
                                     None => {
                                         ui.label(RichText::new(&name).size(11.5).strong().color(colour));
+                                        let set = if on { set.as_str() } else { "off" };
+                                        ui.label(RichText::new(set).size(10.5).color(theme::DIM));
                                     }
                                 }
-                                let set = if on { set.as_str() } else { "off" };
-                                ui.label(RichText::new(set).size(10.5).color(theme::DIM));
                             });
+                        }
+                        if order != track.mix.order {
+                            ops.push(Op::SetTrackMix { seq: sequence.id, track: track.id, mix: TrackSettings { order, ..track.mix } });
                         }
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(
-                                "Click a stage to see it at work. All are also set on the strip to the right. \
-                                 \"Voice\" there sets the whole chain up by listening to the track; \"Add plugin\" \
-                                 puts an effect or an instrument on it.",
+                                "Click a stage to open its picture; the arrows move it up or down the chain. All \
+                                 are also set on the strip to the right. \"Voice\" there sets the whole chain up by \
+                                 listening to the track; \"Add plugin\" puts an effect or an instrument on it.",
                             )
                             .size(10.5)
                             .color(theme::DIM),
@@ -870,7 +938,7 @@ impl Mixer {
                                 "Leveller",
                                 egui::DragValue::new(&mut level).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
                                 "A hand on the fader: loud phrases are pulled down and quiet ones up, to the track's \
-                                 own average, by up to 12 dB at 100 %. It needs no threshold. Before the compressor.",
+                                 own average, by up to 12 dB at 100 %. It needs no threshold.",
                             );
                             mix.level = level / 100.0;
                             let mut drive = mix.drive * 100.0;
@@ -1012,6 +1080,33 @@ impl Mixer {
                 });
             });
         });
+        // The picture of a stage: a window of its own over the editor, to be moved and closed.
+        match (self.stage.filter(|_| self.chain), tracks.iter().find(|t| Some(t.id) == only)) {
+            (Some(stage), Some(track)) => {
+                let (mut open, mut mix) = (true, track.mix);
+                let spectrum = self
+                    .spectrum
+                    .as_deref()
+                    .copied()
+                    .unwrap_or([[crate::scope::SPECTRUM_FLOOR_DB; crate::scope::BANDS]; 2]);
+                egui::Window::new(format!("{}: {}", track.name, stage.name()))
+                    .id(egui::Id::unique("stage-picture"))
+                    .open(&mut open)
+                    .collapsible(false)
+                    .resizable(false)
+                    .default_pos(pos2(340.0, 60.0))
+                    .show(ui.ctx(), |ui| crate::scope::ui(ui, stage, view, &mut mix, &spectrum));
+                if !open {
+                    self.stage = None;
+                }
+                if mix != track.mix {
+                    ops.push(Op::SetTrackMix { seq: sequence.id, track: track.id, mix });
+                }
+            }
+            // (No such track any more: no picture.)
+            (Some(_), None) => self.stage = None,
+            _ => {}
+        }
         if tracks.is_empty() {
             ui.label(RichText::new("No audio tracks yet.").color(theme::DIM));
         }

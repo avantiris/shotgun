@@ -186,14 +186,7 @@ impl Editor {
         }
         self.was_playing = view.playing;
         let target = self.target(session, view.frame);
-        // The chain has pictures of the sound in it: a panel of its own, with a width of its own.
-        let chain = self.mixer.open && self.mixer.chain;
-        let side = if chain {
-            egui::Panel::right("chain").default_size(600.0).min_size(320.0)
-        } else {
-            egui::Panel::right("inspector").default_size(300.0).min_size(200.0)
-        };
-        side.show(ui, |ui| {
+        egui::Panel::right("inspector").default_size(300.0).min_size(200.0).show(ui, |ui| {
             // The content can be taller than a small window.
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 if self.colour.open {

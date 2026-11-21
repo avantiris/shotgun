@@ -26,7 +26,8 @@ const SAVE_MAX: Duration = Duration::from_secs(10);
 const COMMIT_INTERVAL: Duration = Duration::from_secs(300);
 
 enum Msg {
-    Record(Record, Arc<Project>),
+    // (Boxed: a record is far larger than the other messages.)
+    Record(Box<Record>, Arc<Project>),
     /// Save and commit the current state.
     Commit,
     /// Save, commit and tag the current state with this name.
@@ -103,7 +104,7 @@ impl ProjectWriter {
     pub fn record(&self, record: Record, snapshot: Arc<Project>) {
         // The receiver only goes away if the writer thread panicked; the
         // status then already carries the reason.
-        let _ = self.tx.send(Msg::Record(record, snapshot));
+        let _ = self.tx.send(Msg::Record(Box::new(record), snapshot));
     }
 
     pub fn status(&self) -> &Arc<WriterStatus> {

@@ -908,14 +908,16 @@ impl App {
         });
         // The chain on screen: 3.5 s of it behind what is heard, and the
         // 0.4 s that are laid down already and about to be.
-        player.watch(self.shell.watched());
+        let watched = self.shell.watched();
+        player.watch(watched.map(|(track, _)| track), watched.and_then(|(_, spectrum_at)| spectrum_at));
         let per_second = 48_000 / sg_play::SCOPE_STEP as usize;
         let (behind, ahead) = (per_second * 7 / 2, per_second * 2 / 5);
         let mut scope = Vec::new();
-        if self.shell.watched().is_some() {
+        if watched.is_some() {
             player.scope(behind, ahead, &mut scope);
         }
         ViewerState {
+            spectrum: watched.and_then(|_| player.spectrum()),
             scope,
             scope_ahead: ahead,
             eq_response: Some(sg_play::response_db),

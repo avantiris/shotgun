@@ -146,6 +146,10 @@ pub struct Tone {
     /// How far this track is turned down while a voice track sounds, in
     /// decibels (0: not at all).
     pub duck_db: f32,
+    /// The order of the stages, by number: 0 low cut, 1 noise reduction,
+    /// 2 tune, 3 equaliser, 4 de-esser, 5 leveller, 6 compressor, 7
+    /// saturation. Each once.
+    pub order: [u8; 8],
 }
 
 impl Default for Tone {
@@ -163,6 +167,7 @@ impl Default for Tone {
             drive: 0.0,
             voice: false,
             duck_db: 0.0,
+            order: [0, 1, 2, 3, 4, 5, 6, 7],
         }
     }
 }
@@ -358,141 +363,159 @@ impl TrackFx {
             }
         };
         tap(0, back, block);
-        if low_cut_hz > 0.0 {
-            if low_cut_hz != self.cut_hz {
-                for channel in &mut self.filters {
-                    for (section, q) in channel.iter_mut().zip(CUT_Q) {
-                        section.set_q(low_cut_hz.clamp(10.0, 2000.0), q);
+        self.work = [0.0; 2];
+        // In the order the track has them in (feedback F16.22). As they
+        // come unless changed: the tune on the cleaned voice, before tone
+        // and level are shaped; the leveller before the compressor.
+        for (place, stage) in tone.order.into_iter().enumerate() {
+            match stage {
+                0 => {
+                    if low_cut_hz > 0.0 {
+                        if low_cut_hz != self.cut_hz {
+                            for channel in &mut self.filters {
+                                for (section, q) in channel.iter_mut().zip(CUT_Q) {
+                                    section.set_q(low_cut_hz.clamp(10.0, 2000.0), q);
+                                }
+                            }
+                        }
+                        for frame in block.as_chunks_mut::<2>().0 {
+                            for (sample, channel) in frame.iter_mut().zip(&mut self.filters) {
+                                let first = channel[0].run(*sample);
+                                *sample = channel[1].run(first);
+                            }
+                        }
+                    }
+                    self.cut_hz = low_cut_hz;
+                }
+                1 => {
+                    if let Some(denoiser) = &mut self.denoiser {
+                        denoiser.process(block, denoise.clamp(0.0, 1.0));
+                        back += LOOKAHEAD;
+                    }
+                }
+                2 => {
+                    if let Some(corrector) = &mut self.corrector {
+                        corrector.process(block, &tone.tune);
+                        back += crate::tune::TUNE_DELAY;
+                    }
+                }
+                3 => {
+                    for (band, (kind, hz, db)) in self.bands.iter_mut().zip(bands(tone)) {
+                        if db != 0.0 {
+                            band.set(kind, hz, db.clamp(-24.0, 24.0));
+                            for frame in block.as_chunks_mut::<2>().0 {
+                                frame[0] = band.run(0, frame[0]);
+                                frame[1] = band.run(1, frame[1]);
+                            }
+                        }
+                    }
+                }
+                4 => {
+                    // After the equaliser (which may have added air and with it S), before
+                    // the compressor (which would otherwise pump on every S).
+                    if tone.deess > 0.0 {
+                        self.deesser.process(block, tone.deess.clamp(0.0, 1.0));
+                        self.work[0] = self.deesser.most_db;
+                    }
+                }
+                5 => {
+                    if tone.level > 0.0 {
+                        // A hand on the fader: the phrase's level (about 80 ms) is
+                        // compared with the track's own average while it sounds (about
+                        // 10 s), and the difference is taken back, at most 12 dB either
+                        // way. No threshold: it works the same on a quiet take.
+                        // (It was 60 % of the difference against 3 s until feedback
+                        // F16.20: a loud stretch of a few seconds became the average
+                        // itself and passed. On his take the loudest moments came out
+                        // 6 dB lower with this.)
+                        // Before the compressor (feedback F16.16): that one then meets
+                        // phrases of about one level and squeezes them alike, instead
+                        // of working hard on the loud ones and not at all on the quiet.
+                        //
+                        // The phrase's level rises with the sound (5 ms) and falls
+                        // slowly, and the hand moves down quickly (20 ms) but up slowly
+                        // (300 ms): otherwise the first syllable after a pause or after
+                        // a quiet phrase met a fader still pushed up and came out up to
+                        // 9 dB too loud, a peak on every phrase (feedback F16.18).
+                        let rate = SAMPLE_RATE as f32;
+                        let time = |seconds: f32| 1.0 - (-1.0 / (seconds * rate)).exp();
+                        let (rise, fast, slow) = (time(0.005), time(0.08), time(10.0));
+                        let (down, up) = (time(0.02), time(0.3));
+                        for frame in block.as_chunks_mut::<2>().0 {
+                            let now_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
+                            self.phrase_db +=
+                                if now_db > self.phrase_db { rise } else { fast } * (now_db - self.phrase_db);
+                            // (Not far below where sound counts: as for the compressor
+                            // below, a word must not have to be climbed up to from the
+                            // bottom of a pause.)
+                            if self.sounded > 0.0 {
+                                self.phrase_db = self.phrase_db.max(self.average_db - 25.0);
+                            }
+                            // Pauses are neither part of the average nor raised.
+                            let sounding = self.phrase_db > self.average_db - 25.0 && self.phrase_db > -70.0;
+                            if sounding {
+                                // The plain mean of what has sounded so far until that
+                                // is as long as the average's own memory: the track is
+                                // known from its first phrase on, not after ten seconds.
+                                self.sounded = (self.sounded + 1.0).min(1e9);
+                                self.average_db += (1.0 / self.sounded).max(slow) * (self.phrase_db - self.average_db);
+                            }
+                            let wanted = if sounding {
+                                (-(self.phrase_db - self.average_db) * tone.level.min(1.0)).clamp(-12.0, 12.0)
+                            } else {
+                                0.0
+                            };
+                            self.ride_db += if wanted < self.ride_db { down } else { up } * (wanted - self.ride_db);
+                            let gain = 10f32.powf(self.ride_db / 20.0);
+                            frame[0] *= gain;
+                            frame[1] *= gain;
+                        }
+                    }
+                }
+                6 => {
+                    if tone.threshold_db < 0.0 {
+                        // Level follower: up within about 5 ms, down within about 120 ms.
+                        // On a voice up within 1 ms: a voice is short spikes, one per
+                        // cycle of its pitch, and at 5 ms the follower stayed so far
+                        // under them that the loudest moments of his take passed
+                        // (feedback F16.20). Drums keep the 5 ms that lets a hit through.
+                        let up = if tone.voice { 0.001 } else { 0.005 };
+                        let (attack, release) = (
+                            1.0 - (-1.0 / (up * SAMPLE_RATE as f32)).exp(),
+                            1.0 - (-1.0 / (0.12 * SAMPLE_RATE as f32)).exp(),
+                        );
+                        let slope = 1.0 - 1.0 / tone.ratio.max(1.0);
+                        for frame in block.as_chunks_mut::<2>().0 {
+                            let peak_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
+                            let toward = if peak_db > self.level_db { attack } else { release };
+                            self.level_db += toward * (peak_db - self.level_db);
+                            // Never far below the threshold: the follower works in
+                            // decibels, and from the -90 dB of a pause it took 10 to
+                            // 20 ms to get up to a word, whose start went through
+                            // untouched (feedback F16.18, seen on his take: the loudest
+                            // moments left the compressor as they came in).
+                            self.level_db = self.level_db.max(tone.threshold_db - 1.0);
+                            // Both channels by the same amount: the stereo picture stays.
+                            let over = (self.level_db - tone.threshold_db).max(0.0);
+                            self.work[1] = self.work[1].min(-over * slope);
+                            let gain = 10f32.powf(-over * slope / 20.0);
+                            frame[0] *= gain;
+                            frame[1] *= gain;
+                        }
+                    }
+                }
+                _ => {
+                    if tone.drive > 0.0 {
+                        // Quiet sound passes as it is; the louder, the rounder.
+                        let push = 1.0 + 4.0 * tone.drive.min(1.0);
+                        for sample in block.iter_mut() {
+                            *sample = (*sample * push).tanh() / push;
+                        }
                     }
                 }
             }
-            for frame in block.as_chunks_mut::<2>().0 {
-                for (sample, channel) in frame.iter_mut().zip(&mut self.filters) {
-                    let first = channel[0].run(*sample);
-                    *sample = channel[1].run(first);
-                }
-            }
+            tap(place + 1, back, block);
         }
-        self.cut_hz = low_cut_hz;
-        tap(1, back, block);
-        if let Some(denoiser) = &mut self.denoiser {
-            denoiser.process(block, denoise.clamp(0.0, 1.0));
-            back += LOOKAHEAD;
-        }
-        tap(2, back, block);
-        // On the cleaned voice, before tone and level are shaped.
-        if let Some(corrector) = &mut self.corrector {
-            corrector.process(block, &tone.tune);
-            back += crate::tune::TUNE_DELAY;
-        }
-        tap(3, back, block);
-        for (band, (kind, hz, db)) in self.bands.iter_mut().zip(bands(tone)) {
-            if db != 0.0 {
-                band.set(kind, hz, db.clamp(-24.0, 24.0));
-                for frame in block.as_chunks_mut::<2>().0 {
-                    frame[0] = band.run(0, frame[0]);
-                    frame[1] = band.run(1, frame[1]);
-                }
-            }
-        }
-        tap(4, back, block);
-        // After the equaliser (which may have added air and with it S), before
-        // the compressor (which would otherwise pump on every S).
-        self.work = [0.0; 2];
-        if tone.deess > 0.0 {
-            self.deesser.process(block, tone.deess.clamp(0.0, 1.0));
-            self.work[0] = self.deesser.most_db;
-        }
-        tap(5, back, block);
-        if tone.level > 0.0 {
-            // A hand on the fader: the phrase's level (about 80 ms) is
-            // compared with the track's own average while it sounds (about
-            // 10 s), and the difference is taken back, at most 12 dB either
-            // way. No threshold: it works the same on a quiet take.
-            // (It was 60 % of the difference against 3 s until feedback
-            // F16.20: a loud stretch of a few seconds became the average
-            // itself and passed. On his take the loudest moments came out
-            // 6 dB lower with this.)
-            // Before the compressor (feedback F16.16): that one then meets
-            // phrases of about one level and squeezes them alike, instead
-            // of working hard on the loud ones and not at all on the quiet.
-            //
-            // The phrase's level rises with the sound (5 ms) and falls
-            // slowly, and the hand moves down quickly (20 ms) but up slowly
-            // (300 ms): otherwise the first syllable after a pause or after
-            // a quiet phrase met a fader still pushed up and came out up to
-            // 9 dB too loud, a peak on every phrase (feedback F16.18).
-            let rate = SAMPLE_RATE as f32;
-            let time = |seconds: f32| 1.0 - (-1.0 / (seconds * rate)).exp();
-            let (rise, fast, slow) = (time(0.005), time(0.08), time(10.0));
-            let (down, up) = (time(0.02), time(0.3));
-            for frame in block.as_chunks_mut::<2>().0 {
-                let now_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
-                self.phrase_db += if now_db > self.phrase_db { rise } else { fast } * (now_db - self.phrase_db);
-                // (Not far below where sound counts: as for the compressor
-                // below, a word must not have to be climbed up to from the
-                // bottom of a pause.)
-                if self.sounded > 0.0 {
-                    self.phrase_db = self.phrase_db.max(self.average_db - 25.0);
-                }
-                // Pauses are neither part of the average nor raised.
-                let sounding = self.phrase_db > self.average_db - 25.0 && self.phrase_db > -70.0;
-                if sounding {
-                    // The plain mean of what has sounded so far until that
-                    // is as long as the average's own memory: the track is
-                    // known from its first phrase on, not after ten seconds.
-                    self.sounded = (self.sounded + 1.0).min(1e9);
-                    self.average_db += (1.0 / self.sounded).max(slow) * (self.phrase_db - self.average_db);
-                }
-                let wanted = if sounding {
-                    (-(self.phrase_db - self.average_db) * tone.level.min(1.0)).clamp(-12.0, 12.0)
-                } else {
-                    0.0
-                };
-                self.ride_db += if wanted < self.ride_db { down } else { up } * (wanted - self.ride_db);
-                let gain = 10f32.powf(self.ride_db / 20.0);
-                frame[0] *= gain;
-                frame[1] *= gain;
-            }
-        }
-        tap(6, back, block);
-        if tone.threshold_db < 0.0 {
-            // Level follower: up within about 5 ms, down within about 120 ms.
-            // On a voice up within 1 ms: a voice is short spikes, one per
-            // cycle of its pitch, and at 5 ms the follower stayed so far
-            // under them that the loudest moments of his take passed
-            // (feedback F16.20). Drums keep the 5 ms that lets a hit through.
-            let up = if tone.voice { 0.001 } else { 0.005 };
-            let (attack, release) =
-                (1.0 - (-1.0 / (up * SAMPLE_RATE as f32)).exp(), 1.0 - (-1.0 / (0.12 * SAMPLE_RATE as f32)).exp());
-            let slope = 1.0 - 1.0 / tone.ratio.max(1.0);
-            for frame in block.as_chunks_mut::<2>().0 {
-                let peak_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
-                let toward = if peak_db > self.level_db { attack } else { release };
-                self.level_db += toward * (peak_db - self.level_db);
-                // Never far below the threshold: the follower works in
-                // decibels, and from the -90 dB of a pause it took 10 to
-                // 20 ms to get up to a word, whose start went through
-                // untouched (feedback F16.18, seen on his take: the loudest
-                // moments left the compressor as they came in).
-                self.level_db = self.level_db.max(tone.threshold_db - 1.0);
-                // Both channels by the same amount: the stereo picture stays.
-                let over = (self.level_db - tone.threshold_db).max(0.0);
-                self.work[1] = self.work[1].min(-over * slope);
-                let gain = 10f32.powf(-over * slope / 20.0);
-                frame[0] *= gain;
-                frame[1] *= gain;
-            }
-        }
-        tap(7, back, block);
-        if tone.drive > 0.0 {
-            // Quiet sound passes as it is; the louder, the rounder.
-            let push = 1.0 + 4.0 * tone.drive.min(1.0);
-            for sample in block.iter_mut() {
-                *sample = (*sample * push).tanh() / push;
-            }
-        }
-        tap(8, back, block);
     }
 }
 
@@ -623,7 +646,7 @@ mod tests {
         let tone = Tone { threshold_db: -18.0, ratio: 4.0, ..Tone::default() };
         let mut at = 96_000;
         for part in block.chunks_mut(2 * 1000) {
-            let probe = Probe { scope: &scope, last: &mut last, at };
+            let probe = Probe { scope: &scope, last: &mut last, at, analysers: None };
             fx.process_watched(part, 0.0, 0.0, &tone, Some(probe));
             at += 1000;
         }
@@ -636,6 +659,27 @@ mod tests {
         // the stretch before the tone began is silent at every tap.
         let before = scope.read(96_000 / crate::SCOPE_STEP - 1).expect("laid down by the late taps");
         assert!(before.iter().all(|level| *level < 1e-3), "{before:?}");
+    }
+
+    #[test]
+    fn the_stages_run_in_the_order_the_track_has_them_in() {
+        // A loud tone through compressor and saturation: squeezed first it
+        // reaches the saturation quieter and is rounded less than the other way round.
+        let through = |order: [u8; 8]| {
+            let mut block: Vec<f32> = (0..SAMPLE_RATE as usize / 2)
+                .flat_map(|i| {
+                    let v = 0.8 * (2.0 * std::f32::consts::PI * 300.0 * i as f32 / SAMPLE_RATE as f32).sin();
+                    [v, v]
+                })
+                .collect();
+            let tone = Tone { threshold_db: -20.0, ratio: 4.0, drive: 1.0, order, ..Tone::default() };
+            TrackFx::new(false, false).process(&mut block, 0.0, 0.0, &tone);
+            block[block.len() / 2..].iter().fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        let (usual, turned) = (through([0, 1, 2, 3, 4, 5, 6, 7]), through([0, 1, 2, 3, 4, 5, 7, 6]));
+        assert!((usual - turned).abs() > 0.02, "{usual} {turned}");
+        // The same stages in the same order give the same sound.
+        assert_eq!(usual, through([1, 0, 2, 4, 3, 5, 6, 7]));
     }
 
     #[test]

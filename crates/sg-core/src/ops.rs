@@ -1237,6 +1237,13 @@ mod mix_tests {
         let (p4, _) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix: wild }).unwrap();
         let kept = p4.sequences[0].track(A1).unwrap().mix;
         assert_eq!((kept.gain_db, kept.pan, kept.denoise), (12.0, 0.0, 1.0));
+        // An order of the stages is kept; one that names a stage twice is not.
+        let turned = TrackSettings { order: [0, 1, 2, 3, 4, 6, 5, 7], ..mix };
+        let (p5, _) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix: turned }).unwrap();
+        assert_eq!(p5.sequences[0].track(A1).unwrap().mix.order, [0, 1, 2, 3, 4, 6, 5, 7]);
+        let broken = TrackSettings { order: [0, 1, 2, 3, 4, 6, 6, 7], ..mix };
+        let (p6, _) = apply(&p, &Op::SetTrackMix { seq: SEQ, track: A1, mix: broken }).unwrap();
+        assert_eq!(p6.sequences[0].track(A1).unwrap().mix.order, crate::STAGE_ORDER);
     }
 
     #[test]

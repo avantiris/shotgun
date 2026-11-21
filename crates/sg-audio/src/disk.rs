@@ -175,6 +175,8 @@ struct Feed {
     ducked_db: f32,
     /// Where the picture of the chain got to at each of its points.
     scoped: [i64; crate::SCOPE_TAPS],
+    /// What takes the spectra for the equaliser's picture, once this track was watched.
+    analysers: Option<Box<[crate::scope::Analyser; 2]>>,
     /// The keys of the track's plugins that run, in the order of the track.
     plugins: Vec<u64>,
     /// The track has a plugin that is still starting.
@@ -574,10 +576,11 @@ impl Disk {
         }
         let feed = &mut self.feeds[index];
         // (Not while warming up: that sound is thrown away.)
-        let probe = (!warm && self.shared.scope.watches(index)).then_some(crate::scope::Probe {
+        let probe = (!warm && self.shared.scope.watches(index)).then(|| crate::scope::Probe {
             scope: &self.shared.scope,
             last: &mut feed.scoped,
             at: start,
+            analysers: Some(&mut **feed.analysers.get_or_insert_with(Default::default)),
         });
         feed.fx.process_watched(block, feed.low_cut_hz, feed.denoise, &feed.tone, probe);
         if !warm {
@@ -663,7 +666,11 @@ impl Disk {
         if self.shared.scope.watches(index) {
             // What leaves for the fader: plugins and ducking done.
             let last = &mut feed.scoped;
-            crate::scope::Probe { scope: &self.shared.scope, last, at }.tap(crate::SCOPE_TAPS - 1, 0, &block);
+            crate::scope::Probe { scope: &self.shared.scope, last, at, analysers: None }.tap(
+                crate::SCOPE_TAPS - 1,
+                0,
+                &block,
+            );
         }
         // What the stages did here, for when this stretch is heard.
         let work = [feed.fx.work[0], feed.fx.work[1], feed.ducked_db];
@@ -793,6 +800,7 @@ impl Disk {
                 live,
                 ducked_db: 0.0,
                 scoped: [i64::MIN; crate::SCOPE_TAPS],
+                analysers: None,
                 plugins: track.plugins.iter().map(|p| p.key).filter(|key| self.plugins.contains_key(key)).collect(),
                 awaiting: track.plugins.iter().any(|p| self.loading.contains_key(&p.key)),
                 laps: 0,

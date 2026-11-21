@@ -57,6 +57,13 @@ pub struct Sequence {
 /// How many groups a sequence has.
 pub const GROUPS: usize = 4;
 
+/// The stages a track's sound goes through before its plugins and fader,
+/// by number: 0 low cut, 1 noise reduction, 2 tune, 3 equaliser, 4
+/// de-esser, 5 leveller, 6 compressor, 7 saturation.
+pub const STAGES: usize = 8;
+/// The order they come in unless the track says otherwise.
+pub const STAGE_ORDER: [u8; STAGES] = [0, 1, 2, 3, 4, 5, 6, 7];
+
 /// The fader of a group of tracks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Group {
@@ -391,6 +398,9 @@ pub struct TrackSettings {
     /// The group this track's sound goes through on its way to the
     /// master: 0 none, 1 to 4 the groups A to D of the sequence.
     pub group: u8,
+    /// The order the sound goes through the stages (feedback F16.22):
+    /// each of the numbers of [`STAGES`] once.
+    pub order: [u8; STAGES],
 }
 
 impl Default for TrackSettings {
@@ -421,6 +431,7 @@ impl Default for TrackSettings {
             reverb: 0.0,
             echo: 0.0,
             group: 0,
+            order: STAGE_ORDER,
         }
     }
 }
@@ -455,6 +466,8 @@ impl TrackSettings {
             reverb: finite(self.reverb, 0.0, 1.0),
             echo: finite(self.echo, 0.0, 1.0),
             group: self.group.min(GROUPS as u8),
+            // Every stage once, or the usual order.
+            order: if (0..STAGES as u8).all(|stage| self.order.contains(&stage)) { self.order } else { STAGE_ORDER },
             ..self
         }
     }

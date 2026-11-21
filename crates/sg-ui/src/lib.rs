@@ -21,7 +21,7 @@ mod perf;
 mod piano_roll;
 mod plugins_panel;
 mod scope;
-pub use scope::TAPS as SCOPE_TAPS;
+pub use scope::{BANDS as SPECTRUM_BANDS, TAPS as SCOPE_TAPS};
 mod session;
 mod stage;
 pub mod theme;
@@ -1105,7 +1105,7 @@ impl Shell {
                 self.editor.colour.open = false;
             }
             DevStep::Stage(name) => match scope::Stage::named(&name) {
-                Some(stage) => self.editor.mixer.stage = stage,
+                Some(stage) => self.editor.mixer.stage = Some(stage),
                 None => self.error = Some(format!("no stage called {name}")),
             },
             DevStep::Hero => {
@@ -1959,12 +1959,14 @@ impl Shell {
         self.editor.input = input;
     }
 
-    /// The audio track (counted among the audio tracks) whose chain is on
-    /// screen, for the engine to report the level along it; `None` while
-    /// the chain is not shown.
-    pub fn watched(&self) -> Option<usize> {
+    /// The audio track (counted among the audio tracks) a stage of whose
+    /// chain has its picture open, for the engine to report the level
+    /// along it, and the point of the chain the spectrum is wanted at (and
+    /// after) if the picture has one. `None` while no picture is open.
+    pub fn watched(&self) -> Option<(usize, Option<usize>)> {
         let mixer = &self.editor.mixer;
-        (self.session.is_some() && mixer.open && mixer.chain).then_some(mixer.watching).flatten()
+        let open = self.session.is_some() && mixer.open && mixer.chain && mixer.stage.is_some();
+        open.then_some(mixer.watching).flatten().map(|track| (track, mixer.spectrum_at))
     }
 
     /// The take being drawn while it is recorded: its track's name and the

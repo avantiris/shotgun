@@ -2432,17 +2432,19 @@ fn a_stage_of_the_chain_is_seen_at_work_and_set_by_pulling_in_its_picture() {
         let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap();
         track.mix
     };
-    // Nothing played yet: the picture says so. The shell asks for the first audio track's levels.
-    assert_eq!(harness.state().shell.watched(), Some(0));
-    assert!(harness.query_by_label("Play the track: its sound moves through here").is_none(), "painted, not a label");
-    assert_eq!(harness.query_all_by_label("Whole chain").count(), 2);
+    // No picture is open: nothing is asked of the engine.
+    assert_eq!(harness.state().shell.watched(), None);
     // The engine's readings: loud until the compressor, quieter after it.
     harness.state_mut().view.scope =
         (0..700).map(|n| (n % 50 < 40).then(|| std::array::from_fn(|tap| if tap < 7 { 0.5 } else { 0.2 }))).collect();
     harness.state_mut().view.scope_ahead = 75;
     harness.state_mut().view.eq_response = Some(|mix, _| mix.eq_mid_db);
+    // A click on a stage opens its picture in a window of its own; the
+    // shell asks for the first audio track's levels.
     click(&mut harness, "See Compressor");
     harness.run_steps(2);
+    assert!(harness.query_by_label("A1: Compressor").is_some());
+    assert_eq!(harness.state().shell.watched(), Some((0, None)));
     // The threshold is the line in the picture: pulled to a quarter of the way down from the top.
     let picture = harness.get_by_label("Compressor threshold line").rect();
     let before = mix(&harness);
@@ -2457,6 +2459,12 @@ fn a_stage_of_the_chain_is_seen_at_work_and_set_by_pulling_in_its_picture() {
     // The equaliser's bell follows its handle up and to the right; the low cut its own along the bottom.
     click(&mut harness, "See Equaliser");
     harness.run_steps(2);
+    // Its picture has the sound by pitch in it: the spectrum around the
+    // fourth stage is asked for (low cut, noise reduction and tune come before).
+    assert!(harness.query_by_label("A1: Compressor").is_none() && harness.query_by_label("A1: Equaliser").is_some());
+    assert_eq!(harness.state().shell.watched(), Some((0, Some(3))));
+    harness.state_mut().view.spectrum = Some([[-30.0; sg_ui::SPECTRUM_BANDS]; 2]);
+    harness.run_steps(2);
     let bell = harness.get_by_label("Bell handle").rect().center();
     drag(&mut harness, bell, bell + vec2(60.0, -20.0));
     let set = mix(&harness);
@@ -2465,8 +2473,24 @@ fn a_stage_of_the_chain_is_seen_at_work_and_set_by_pulling_in_its_picture() {
     drag(&mut harness, cut, cut + vec2(140.0, 0.0));
     let hz = mix(&harness).low_cut_hz;
     assert!((60.0..200.0).contains(&hz), "{hz}");
-    // Outside the chain nothing is asked of the engine.
-    click(&mut harness, "Mixer");
+    // The arrows move a stage along the chain: the compressor before the
+    // equaliser (this track is no voice: tune, de-esser and leveller are
+    // not in its list, and are passed over).
+    click(&mut harness, "Move Compressor up");
+    harness.run_steps(2);
+    assert_eq!(mix(&harness).order, [0, 1, 2, 6, 3, 4, 5, 7]);
+    assert_eq!(harness.state().shell.watched(), Some((0, Some(4))), "the equaliser is the fifth stage now");
+    click(&mut harness, "Move Compressor down");
+    harness.run_steps(2);
+    assert_eq!(mix(&harness).order, [0, 1, 2, 3, 6, 4, 5, 7]);
+    harness.key_press(Key::Z);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(mix(&harness).order, sg_core::STAGE_ORDER);
+    // A second click on the stage closes its picture, and nothing is asked of the engine.
+    click(&mut harness, "See Equaliser");
+    harness.run_steps(2);
+    assert!(harness.query_by_label("A1: Equaliser").is_none());
     assert_eq!(harness.state().shell.watched(), None);
     assert_eq!(harness.state().shell.error_shown(), None);
 }

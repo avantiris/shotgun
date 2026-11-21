@@ -25,7 +25,9 @@ use sg_render::{Compositor, LayerDraw, Source, plan, plan_track, sequence_frames
 
 use crate::frames::{Decoded, FrameKey, Pool, Quality, TextureCache};
 
-pub use sg_audio::{AudioError, Backend, DEFAULT_QUANTUM, MAX_METERS, SCOPE_STEP, SCOPE_TAPS, Stats as AudioStats};
+pub use sg_audio::{
+    AudioError, Backend, DEFAULT_QUANTUM, MAX_METERS, SCOPE_STEP, SCOPE_TAPS, SPECTRUM_BANDS, Stats as AudioStats,
+};
 
 /// VRAM spent on decoded preview frames.
 const TEXTURE_BUDGET: u64 = 768 << 20;
@@ -340,8 +342,16 @@ impl Player {
 
     /// Which audio track's chain is on screen (`None`: none): the level
     /// after each of its stages is then kept for [`Player::scope`].
-    pub fn watch(&self, track: Option<usize>) {
-        self.meters.watch(track);
+    /// With `spectrum_at`, the spectrum going into and out of the stage
+    /// after that point of the chain is kept too, for [`Player::spectrum`].
+    pub fn watch(&self, track: Option<usize>, spectrum_at: Option<usize>) {
+        self.meters.watch(track, spectrum_at);
+    }
+
+    /// What is heard now of the watched track by pitch, in decibels per
+    /// band: going into the stage asked for with [`Player::watch`], and coming out.
+    pub fn spectrum(&self) -> Option<[[f32; SPECTRUM_BANDS]; 2]> {
+        self.meters.spectrum()
     }
 
     /// The watched track's level after every stage, for the `behind`
@@ -1233,6 +1243,7 @@ fn tone_of(mix: &sg_core::TrackSettings) -> sg_audio::Tone {
         drive: mix.drive,
         voice: mix.voice,
         duck_db: mix.duck_db,
+        order: mix.order,
     }
 }
 

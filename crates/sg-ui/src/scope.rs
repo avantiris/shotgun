@@ -18,11 +18,21 @@ use crate::theme;
 /// and what leaves for the fader.
 pub const TAPS: usize = 10;
 
+/// The sound by pitch: decibels per band, going into a stage and coming
+/// out of it. The bands are evenly spaced in pitch over [`CURVE_HZ`]
+/// (`sg_audio::SPECTRUM_BANDS`).
+pub const BANDS: usize = 64;
+pub type Spectrum = [[f32; BANDS]; 2];
+/// What a band that holds nothing reads.
+pub const SPECTRUM_FLOOR_DB: f32 = -96.0;
+/// The loudness the spectrum is drawn between, bottom to top of the picture.
+const SPECTRUM_DB: (f32, f32) = (-84.0, -12.0);
+
 /// The quietest level the pictures show, in decibels.
 const FLOOR_DB: f32 = -54.0;
 const WAVE_H: f32 = 116.0;
 const GAIN_H: f32 = 46.0;
-const CURVE_H: f32 = 124.0;
+const CURVE_H: f32 = 210.0;
 /// The range of the line that shows how much a stage turns the sound up or down.
 const GAIN_TOP_DB: f32 = 10.0;
 const GAIN_BOTTOM_DB: f32 = -20.0;
@@ -81,19 +91,35 @@ impl Stage {
         Stage::ALL.into_iter().find(|stage| stage.name() == name)
     }
 
-    /// The engine's points before and after the stage.
-    fn taps(self) -> (usize, usize) {
-        match self {
-            Stage::Whole => (0, TAPS - 1),
-            Stage::LowCut => (0, 1),
-            Stage::Denoise => (1, 2),
-            Stage::Tune => (2, 3),
-            Stage::Eq => (3, 4),
-            Stage::DeEss => (4, 5),
-            Stage::Leveller => (5, 6),
-            Stage::Comp => (6, 7),
-            Stage::Drive => (7, 8),
+    /// The stage's number in a track's order (`sg_core::STAGES`).
+    pub fn number(self) -> Option<u8> {
+        Stage::ALL.iter().position(|stage| *stage == self).and_then(|at| at.checked_sub(1)).map(|n| n as u8)
+    }
+
+    pub fn numbered(number: u8) -> Option<Stage> {
+        Stage::ALL.get(number as usize + 1).copied()
+    }
+
+    /// The engine's points before and after the stage, for a track that
+    /// has its stages in `order`: point 0 is the source, point n what
+    /// comes out of the n-th stage.
+    pub fn taps(self, order: &[u8; sg_core::STAGES]) -> (usize, usize) {
+        match self.number().and_then(|number| order.iter().position(|stage| *stage == number)) {
+            Some(place) => (place, place + 1),
+            None => (0, TAPS - 1),
         }
+    }
+
+    /// Whether a track with these settings has the stage in its list:
+    /// the voice's own stages are on voice tracks only.
+    pub fn shown_for(self, mix: &TrackSettings) -> bool {
+        mix.voice || !matches!(self, Stage::Tune | Stage::DeEss | Stage::Leveller | Stage::Drive)
+    }
+
+    /// Whether the picture has the sound by pitch in it (and the engine
+    /// is asked for the spectrum around this stage).
+    pub fn by_pitch(self) -> bool {
+        matches!(self, Stage::LowCut | Stage::Eq)
     }
 
     fn about(self) -> &'static str {
@@ -137,17 +163,19 @@ fn to_db(linear: f32) -> f32 {
 
 /// Draws the picture of `stage` for the track with the settings `mix`,
 /// which the handles in it change.
-pub fn ui(ui: &mut egui::Ui, stage: Stage, view: &ViewerState, mix: &mut TrackSettings) {
-    let width = ui.available_width().clamp(280.0, 620.0);
+///
+/// `spectrum`: the sound by pitch going into the stage and coming out, in
+/// decibels per band (`Spectrum`), as it should be shown now.
+pub fn ui(ui: &mut egui::Ui, stage: Stage, view: &ViewerState, mix: &mut TrackSettings, spectrum: &Spectrum) {
+    let width = 600.0;
     ui.set_width(width);
-    ui.label(RichText::new(stage.name()).size(13.0).strong());
     ui.label(RichText::new(stage.about()).size(10.5).color(theme::DIM));
     ui.add_space(4.0);
-    if matches!(stage, Stage::LowCut | Stage::Eq) {
-        curve(ui, width, stage, view, mix);
+    if stage.by_pitch() {
+        curve(ui, width, stage, view, mix, spectrum);
         ui.add_space(6.0);
     }
-    let (before, after) = stage.taps();
+    let (before, after) = stage.taps(&mix.order);
     legend(ui, stage);
     wave(ui, width, stage, view, mix, before, after);
     if stage.moves_level() {
@@ -308,7 +336,14 @@ fn gain(ui: &mut egui::Ui, width: f32, view: &ViewerState, before: usize, after:
 
 /// What low cut and equaliser together do to each frequency, with a
 /// handle for each of them.
-fn curve(ui: &mut egui::Ui, width: f32, stage: Stage, view: &ViewerState, mix: &mut TrackSettings) {
+fn curve(
+    ui: &mut egui::Ui,
+    width: f32,
+    stage: Stage,
+    view: &ViewerState,
+    mix: &mut TrackSettings,
+    spectrum: &Spectrum,
+) {
     let (rect, _) = ui.allocate_exact_size(vec2(width, CURVE_H), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 3.0, theme::BG);
@@ -335,6 +370,31 @@ fn curve(ui: &mut egui::Ui, width: f32, stage: Stage, view: &ViewerState, mix: &
         painter.hline(rect.x_range(), y_of(db), Stroke::new(1.0, theme::RAISED));
         let at = pos2(rect.right() - 3.0, y_of(db));
         painter.text(at, egui::Align2::RIGHT_CENTER, format!("{db:+.0}"), egui::FontId::proportional(9.0), theme::LINE);
+    }
+    // Behind the curve, the sound itself by pitch (feedback F16.24): grey
+    // what goes into the stage, orange what comes out, so that a boost or
+    // a cut is seen on the sound it acts on.
+    let level_y = |db: f32| {
+        let share = ((db - SPECTRUM_DB.0) / (SPECTRUM_DB.1 - SPECTRUM_DB.0)).clamp(0.0, 1.0);
+        rect.bottom() - share * rect.height()
+    };
+    for (bands, colour) in [(&spectrum[0], IN.gamma_multiply(0.55)), (&spectrum[1], theme::ACCENT.gamma_multiply(0.45))]
+    {
+        if bands.iter().all(|db| *db <= SPECTRUM_DB.0) {
+            continue;
+        }
+        let mut mesh = egui::Mesh::default();
+        for (band, db) in bands.iter().enumerate() {
+            let x = rect.left() + (band as f32 + 0.5) / BANDS as f32 * rect.width();
+            mesh.colored_vertex(pos2(x, level_y(*db)), colour);
+            mesh.colored_vertex(pos2(x, rect.bottom()), colour);
+            if band > 0 {
+                let at = band as u32 * 2;
+                mesh.add_triangle(at - 2, at - 1, at);
+                mesh.add_triangle(at - 1, at, at + 1);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
     }
     painter.hline(rect.x_range(), y_of(0.0), Stroke::new(1.0, theme::LINE));
     // The handles first: the curve is then of what they were pulled to.
