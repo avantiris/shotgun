@@ -317,7 +317,8 @@ chain second version, M16 mixing and mastering.
     that says where it is: every round begins on the right sample), and
     in the app through PipeWire into a null sink: a note at the start of
     a two-bar clip came 192 000 samples apart five times running, with
-    0 underruns. Not checked: looping with pictures on the timeline.
+    0 underruns. With a picture on the timeline (1080p60, a two-second
+    stretch between markers, four rounds): 2 of 538 frames late.
   - Metronome (2026-11-20): Shift+K or "Metronome" above the timeline;
     clicks on the beats while playing (the first of a bar higher), placed
     by whole-number arithmetic so that they do not drift; never in an

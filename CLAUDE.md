@@ -66,6 +66,11 @@ Automated runs must also set `SHOTGUN_AUDIO=null` (or `sink:<a null sink>`):
 never play test sound through the user's speakers. They must also set
 `SHOTGUN_NO_CLIPBOARD=1`: exports of share copies and GIFs otherwise replace
 the clipboard. `sg-bench export <project dir> <preset>` exports without the app.
+To hear what an automated run plays, give it a null sink of its own and record
+that sink's monitor (`pactl load-module module-null-sink sink_name=<name>`,
+`SHOTGUN_AUDIO=sink:<name>`, unload the module afterwards); short runs can
+miss what only shows over ten seconds (ring underruns did). `sg-bench midi
+shotgun-dev <pitch> <velocity> <ms>...` stands in for a MIDI keyboard.
 
 ## Rules that are easy to break
 
