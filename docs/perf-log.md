@@ -432,3 +432,38 @@ can be asked to do); `sg-bench export <project> sound:flac:stems:-14`.
 
 Not measured: a real microphone and speakers (a device that reports its
 delay wrongly shifts takes by that error).
+
+## 2026-11-21, stage 3 continued: playing by hand, loop, monitoring, mastering (commit 815cd3e)
+
+Commands: `scripts/bench-m3.sh` (machine under load: load average 4 to 10,
+a game running); `cargo nextest run -p sg-audio --run-ignored only`
+(null sinks, no speakers, no microphone); the app hidden with its sound
+into a null sink whose monitor was recorded (`scripts/run-hidden.sh` with
+`SHOTGUN_AUDIO=sink:<null sink>`); `sg-bench midi shotgun-dev ...` as a
+stand-in keyboard; ffmpeg's `ebur128=peak=true` on exported files.
+
+| Metric | Measured | Budget | Result |
+|--------|----------|--------|--------|
+| Worst realtime callback, quantum 256 (5.33 ms), after tonight's changes to it | 86 us | under the quantum | pass |
+| Graph xruns, ring underruns over 20 s (`sg-bench audio`) | 0, 0 | 0 | pass |
+| Audio start, p99 | 18.6 ms | <= 80 ms | pass |
+| A take against where it was played | 10 frames, 0.2 ms | PROPOSED: within 1 ms | pass |
+| A monitored input, from one null sink to the next | 300 to 312 frames, 6.2 to 6.5 ms late | none set | |
+| A key played by hand until its sound is in the output (engine test, block of 256) | at most 1200 frames, 25 ms | none set | |
+| A looped two-bar clip, five rounds, start of the note each round | 192 000 samples apart every time | to the sample | pass |
+| Hand-played track running dry, three blocks ahead topped up every 5 ms | 5 times in 9 s, 18 times in 13.5 s | 0 | **MISS**, changed |
+| The same, four blocks ahead topped up every 1 ms in pieces of 128 frames | 0 in six runs of 10 to 21 s; 2 and 3 in three runs during which other programs were started | 0 | **MISS** under load |
+| The same with Surge XT (VST3, CLAP) as the instrument, looping, 14 s | 0, 0 | 0 | pass |
+| Master to -14 LUFS / -9 LUFS from a vocal at -20.4 LUFS, true peak by ffmpeg | -14.1 LUFS / -9.4 LUFS, -1.2 dB true peak both | within 0.5 LU, at most -1 dB | pass |
+| The same before the true-peak limiter and the repeated loudness passes | -10.4 LUFS for -9, -0.9 dB | | |
+| Sampler: a 110 Hz recording from its root key and an octave above, exported | 110 Hz, 220 Hz | | pass |
+| Full-quality frame after a seek, 4K60 HEVC, 1 s GOP | p95 334 ms | 150 ms p95 | MISS (as before, unchanged) |
+
+The miss that is left: the thread that feeds a hand-played track is an
+ordinary one, and when the machine is busy starting other programs it
+is now and then late by more than the 16 ms the ring allows. Each time is
+one audible gap on that track. Realtime priority for that thread (through
+RTKit) is the remedy; not built.
+
+Not measured: anything through a real sound device, a real MIDI keyboard,
+a bridged Windows plugin, how the delay of hand play feels.
