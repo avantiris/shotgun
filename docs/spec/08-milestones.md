@@ -521,6 +521,10 @@ chain second version, M16 mixing and mastering.
     time is assumed), and that it is playing. Of a VST3 plugin's buses
     only the first of each kind is used; the others (a sampler's separate
     outputs, a sidechain input) are switched off explicitly.
+  - Along the clip (2026-11-21): Ctrl + wheel zooms the piano roll
+    around the pointer, Shift + wheel moves along the clip, the wheel
+    alone up and down the keys; a note's colour is the stronger the
+    harder it is struck.
   - Several notes at once (2026-11-21): Ctrl+click adds a note to the
     selection, Ctrl+drag draws a box, Ctrl+A takes all. Selected notes
     move and stretch together, the delete key removes them, "Quantise"

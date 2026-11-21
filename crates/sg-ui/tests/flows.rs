@@ -2029,3 +2029,36 @@ fn a_stretch_is_looped_the_open_note_clip_the_selected_clips_or_between_two_mark
     harness.run_steps(3);
     assert_eq!(looped(&harness), Some(Some((clip.0, clip.0 + clip.1))));
 }
+
+#[test]
+fn the_piano_roll_zooms_along_the_clip_around_the_pointer() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> Vec<i64> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        let clip = track.clips.iter().next().unwrap();
+        track.notes.get(&clip.id).map(|n| n.iter().map(|n| n.start).collect()).unwrap_or_default()
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    let roll = harness.get_by_label("Piano roll").rect();
+    let at = egui::pos2(roll.left() + 46.0 + 300.0, roll.top() + 90.0);
+    // Two notes 200 points apart, with the whole clip in view.
+    pointer(&mut harness, at, egui::PointerButton::Primary);
+    pointer(&mut harness, at + vec2(200.0, 12.0), egui::PointerButton::Primary);
+    let wide = notes(&harness);
+    assert_eq!(wide.len(), 2);
+    // Ctrl + wheel over the first: zoomed in around it, a point 200 to the right is nearer in time,
+    // and the place under the pointer is still the first note's.
+    wheel(&mut harness, at, vec2(0.0, 240.0), Modifiers::CTRL);
+    pointer(&mut harness, at + vec2(200.0, 24.0), egui::PointerButton::Primary);
+    let near = notes(&harness);
+    assert_eq!(near.len(), 3);
+    let added = *near.iter().find(|start| !wide.contains(start)).unwrap();
+    assert!(added > wide[0] && added - wide[0] < (wide[1] - wide[0]) * 3 / 4, "{wide:?} {near:?}");
+    // Right click where the first note was drawn: it is still there to be removed.
+    pointer(&mut harness, at + vec2(2.0, 0.0), egui::PointerButton::Secondary);
+    assert_eq!(notes(&harness).len(), 2);
+    assert!(!notes(&harness).contains(&wide[0]));
+}

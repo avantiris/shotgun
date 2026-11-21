@@ -54,6 +54,10 @@ pub struct PianoRoll {
     top: Option<f32>,
     /// Grid in ticks: notes start and end on it.
     grid: Option<i64>,
+    /// How far the clip is spread out along the roll (1: all of it in
+    /// view), and the tick at the left edge.
+    zoom: Option<f32>,
+    left: f32,
     /// The length a clicked note gets: that of the last one drawn or stretched.
     last_len: Option<i64>,
     /// The selected notes, as what they are (their places change when the notes are sorted).
@@ -526,14 +530,32 @@ impl PianoRoll {
             let highest = stored.iter().map(|n| n.pitch as f32).fold(f32::MIN, f32::max);
             if stored.is_empty() { 60.0 + rows / 2.0 } else { highest + rows / 3.0 }.clamp(rows, 127.0)
         });
+        // The wheel moves up and down the keys; with Shift along the clip;
+        // with Ctrl it zooms along the clip around the pointer (as on the timeline).
+        let zoom = self.zoom.unwrap_or(1.0).clamp(1.0, 64.0);
+        let mut per_tick = lanes.width() / length as f32 * zoom;
+        let mut left = self.left.clamp(0.0, (length as f32 - lanes.width() / per_tick).max(0.0));
         if response.hovered() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            self.top = Some((top + scroll / ROW_H).clamp(rows.min(127.0), 127.0));
+            let (scroll, mods, factor) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers, i.zoom_delta()));
+            let under = ui.input(|i| i.pointer.hover_pos()).map_or(lanes.center().x, |p| p.x);
+            if factor != 1.0 {
+                let anchor = left + (under - lanes.left()) / per_tick;
+                let zoomed = (zoom * factor).clamp(1.0, 64.0);
+                per_tick = lanes.width() / length as f32 * zoomed;
+                left = anchor - (under - lanes.left()) / per_tick;
+                self.zoom = Some(zoomed);
+            } else if mods.shift || scroll.x != 0.0 {
+                let along = if scroll.x != 0.0 { scroll.x } else { scroll.y };
+                left -= along / per_tick;
+            } else {
+                self.top = Some((top + scroll.y / ROW_H).clamp(rows.min(127.0), 127.0));
+            }
+            left = left.clamp(0.0, (length as f32 - lanes.width() / per_tick).max(0.0));
         }
-        let per_tick = lanes.width() / length as f32;
-        let x_of = |tick: i64| lanes.left() + tick as f32 * per_tick;
+        self.left = left;
+        let x_of = |tick: i64| lanes.left() + (tick as f32 - left) * per_tick;
         let y_of = |pitch: f32| lanes.top() + (top - pitch) * ROW_H;
-        let tick_at = |x: f32| ((x - lanes.left()) / per_tick) as i64;
+        let tick_at = |x: f32| ((x - lanes.left()) / per_tick + left) as i64;
         let pitch_at = |y: f32| (top - ((y - lanes.top()) / ROW_H).floor()).clamp(0.0, 127.0) as u8;
         let snap = |tick: i64| ((tick as f64 / grid as f64).round() as i64 * grid).clamp(0, length);
         let floor = |tick: i64| (tick.div_euclid(grid) * grid).clamp(0, length - grid.min(length));
@@ -807,7 +829,9 @@ impl PianoRoll {
                 pos2(x_of(note.start + note.len) - 1.0, y_of(note.pitch as f32) + ROW_H - 1.0),
             );
             let chosen = self.working.is_none() && self.selected.contains(note);
-            lanes_painter.rect_filled(rect, 2.0, if chosen { theme::TEXT } else { theme::ACCENT });
+            // The harder a note is struck, the stronger its colour.
+            let strength = 0.45 + 0.55 * note.velocity as f32 / 127.0;
+            lanes_painter.rect_filled(rect, 2.0, if chosen { theme::TEXT } else { theme::ACCENT.gamma_multiply(strength) });
             lanes_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, theme::BG), StrokeKind::Inside);
         }
         if let Some(area) = boxed {
