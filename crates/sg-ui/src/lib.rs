@@ -12,6 +12,7 @@ mod colour_panel;
 mod editor;
 mod export_panel;
 mod history;
+mod icons;
 pub mod keymap;
 mod library;
 mod mixer;

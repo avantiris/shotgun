@@ -50,8 +50,17 @@ pub fn enabled_button(ui: &mut egui::Ui, enabled: bool, action: Action, label: &
 
 /// The same in a menu: choosing it closes the menu.
 pub fn entry(ui: &mut egui::Ui, action: Action, label: &str) -> bool {
-    let response = ui.add(widget(action, label));
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    enabled_entry(ui, true, action, label)
+}
+
+/// A menu entry that is grey while the action has nothing to act on.
+pub fn enabled_entry(ui: &mut egui::Ui, enabled: bool, action: Action, label: &str) -> bool {
+    let response = ui.add_enabled(enabled, widget(action, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    let response = match tip(action) {
+        Some(tip) => response.on_hover_text(tip),
+        None => response,
+    };
     let clicked = response.clicked();
     if clicked {
         ui.close();

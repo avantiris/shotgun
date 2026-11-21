@@ -341,6 +341,7 @@ fn b_puts_a_whip_on_the_cut_and_the_inspector_changes_its_kind() {
     harness.key_press_modifiers(Modifiers::SHIFT, Key::B);
     harness.run_steps(3);
     assert_eq!(transition(&harness), None);
+    click(&mut harness, "Clip");
     click(&mut harness, "Black cut");
     assert_eq!(
         transition(&harness).map(|t| (t.kind, t.frames, t.amount)),
@@ -713,17 +714,21 @@ fn the_less_obvious_keys_have_buttons_that_show_them() {
     };
     // The key is on the button (here: as the map in force names it).
     assert_eq!(sg_ui::keymap::hint(sg_ui::Action::KeyframeSet), "F");
-    // Above the timeline: marker, whip-pan on the nearest cut, keyframe.
+    // Above the timeline, as an icon named in its tooltip: the marker.
     playhead(&mut harness, 590);
     click(&mut harness, "Marker");
     assert_eq!(markers(&harness), [590]);
+    // Under "Clip" in the top bar: whip-pan on the nearest cut, keyframes for the selected clip.
+    click(&mut harness, "Clip");
     click(&mut harness, "Whip-pan");
     assert!(props(&harness, 600).is_some_and(|p| p.transition.is_some()));
     let first = on_timeline(&harness, 12.0, 0);
     pointer(&mut harness, first, egui::PointerButton::Primary);
     playhead(&mut harness, 100);
+    click(&mut harness, "Clip");
     click(&mut harness, "Keyframe");
     assert_eq!(props(&harness, 0).unwrap().x.keys.iter().map(|k| k.frame).collect::<Vec<_>>(), [100]);
+    click(&mut harness, "Clip");
     click(&mut harness, "Remove keyframe");
     assert!(props(&harness, 0).is_none_or(|p| p.x.keys.is_empty()));
     // The same in the clip's right-click menu.
@@ -1542,8 +1547,9 @@ fn tempo_and_grid_are_set_above_the_timeline_and_clips_snap_to_the_chosen_grid()
 }
 
 #[test]
-fn the_input_to_record_from_is_chosen_beside_the_record_button() {
+fn the_input_to_record_from_is_chosen_in_the_settings() {
     let mut harness = editor();
+    click(&mut harness, "Settings");
     // Opening the menu asks which inputs there are now.
     click(&mut harness, "Input: default");
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::ListInputs)));
@@ -1728,7 +1734,8 @@ fn the_input_level_is_shown_and_the_input_heard_only_when_asked() {
         all.filter_map(|c| if let Command::Monitor(m) = c { Some(m.clone()) } else { None }).next_back()
     };
     assert_eq!(monitor(&harness), None);
-    // "Level" opens the input: measured, not heard.
+    // In the settings, "Level" opens the input: measured, not heard.
+    click(&mut harness, "Settings");
     click(&mut harness, "Level");
     assert_eq!(monitor(&harness), Some(Some((None, false))));
     harness.state_mut().view.input_level = 0.5;

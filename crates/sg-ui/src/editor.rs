@@ -9,6 +9,7 @@ use sg_core::{Asset, AssetId, Op, Rate, Sequence};
 use crate::actions;
 use crate::assets::{AssetRequest, AssetsPanel, summary};
 use crate::clip_panel::{ClipPanel, Target};
+use crate::icons::{self, Icon};
 use crate::keymap::Action;
 use crate::session::Session;
 use crate::stage::{self, Transport, ViewerState};
@@ -67,6 +68,8 @@ pub struct Editor {
     pub hear_input: bool,
     /// The level shown: the highest of the last moments, falling back slowly.
     input_shown: f32,
+    /// The settings popover is showing.
+    pub settings_open: bool,
     /// The notes of a note clip, shown in place of the viewer while open.
     pub piano: crate::piano_roll::PianoRoll,
 }
@@ -91,7 +94,10 @@ impl Editor {
     pub fn cancel(&mut self) -> bool {
         // (The label field of a selected asset is always there; it is not
         // something in progress, and Esc must get past it.)
-        self.assets.close_add() || self.rename.take().is_some() || self.piano.close()
+        self.assets.close_add()
+            || self.rename.take().is_some()
+            || std::mem::take(&mut self.settings_open)
+            || self.piano.close()
     }
 
     pub fn ui(
@@ -108,6 +114,7 @@ impl Editor {
         egui::Panel::top("top-bar").exact_size(40.0).frame(bar).show(ui, |ui| {
             ui.horizontal_centered(|ui| self.top_bar(ui, session, error, &mut request));
         });
+        self.settings(ui.ctx(), view);
         let project = session.project().clone();
         let Some(sequence) = project.sequences.first() else {
             egui::CentralPanel::default().show(ui, |ui| ui.label("This project has no sequence."));
@@ -301,30 +308,125 @@ impl Editor {
                 self.colour.open = !self.colour.open;
                 self.mixer.open = false;
             }
-            if ui
-                .button("Plugins")
-                .on_hover_text("The plugins found on this machine, and the set-up of Native Instruments (Kontakt)")
-                .clicked()
-            {
+            // What acts on the selected clips (feedback F15.2, F15.3): beside
+            // the panels, not among the things done all the time.
+            self.clip_menu(ui);
+            ui.add_space(8.0);
+            // The rest as icons; the name and the key are in the tooltip (F15.5).
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if icons::button(
+                ui,
+                Icon::Settings,
+                "Settings",
+                Some("which input sound is recorded from, and its level"),
+                "",
+                true,
+                self.settings_open,
+            ) {
+                self.settings_open = !self.settings_open;
+            }
+            if icons::button(
+                ui,
+                Icon::Plugins,
+                "Plugins",
+                Some("the plugins found on this machine, and the set-up of Native Instruments (Kontakt)"),
+                "",
+                true,
+                false,
+            ) {
                 *request = Some(EditorRequest::Plugins);
             }
-            for (action, label) in [
-                (Action::Help, "Keys"),
-                (Action::Export, "Export"),
-                (Action::History, "History"),
-                (Action::Checkpoint, "Checkpoint"),
+            for (action, icon, name) in [
+                (Action::Help, Icon::Keys, "Keys"),
+                (Action::Export, Icon::Export, "Export"),
+                (Action::History, Icon::History, "History"),
+                (Action::Checkpoint, Icon::Checkpoint, "Checkpoint"),
             ] {
-                if actions::button(ui, action, label) {
+                if icons::action(ui, icon, action, name, true, false) {
                     self.actions.push(action);
                 }
             }
         });
     }
 
-    /// The buttons above the timeline, for what is not found by trying
-    /// (feedback F4.1, narrowed in round 5): keyframes, recorded movement,
-    /// the transition, titles and markers. Each shows its key. Cutting,
-    /// copying, undo and zoom stay with keys and mouse.
+    /// "Clip" in the top bar: what is done to the selected clips now and
+    /// then. Each entry acts on all of them at once.
+    fn clip_menu(&mut self, ui: &mut egui::Ui) {
+        let selected = self.timeline.has_selection();
+        let mut chosen = None;
+        egui::containers::menu::MenuButton::new("Clip")
+            .ui(ui, |ui| {
+                ui.set_min_width(260.0);
+                let hint = if selected { "For the selected clips" } else { "Select clips to act on all of them" };
+                ui.label(RichText::new(hint).size(11.0).color(theme::DIM));
+                ui.separator();
+                for (enabled, action, label) in [
+                    (selected, Action::KeyframeSet, "Keyframe"),
+                    (selected, Action::KeyframeRemove, "Remove keyframe"),
+                    (selected, Action::LiveRecord, "Record movement"),
+                ] {
+                    if actions::enabled_entry(ui, enabled, action, label) {
+                        chosen = Some(action);
+                    }
+                }
+                ui.separator();
+                // (Without a selection these two act on the cut nearest the playhead.)
+                for (action, label) in [(Action::Transition, "Whip-pan"), (Action::Blackout, "Black cut")] {
+                    if actions::entry(ui, action, label) {
+                        chosen = Some(action);
+                    }
+                }
+            })
+            .0
+            .on_hover_text(
+                "Keyframes, recorded movement and the transitions on the cuts of the selected clips: every one of \
+                 them at once.",
+            );
+        self.actions.extend(chosen);
+    }
+
+    /// The settings of this machine (feedback F15.1): where sound is
+    /// recorded from, how loud it arrives, and whether it is heard.
+    fn settings(&mut self, ctx: &egui::Context, view: &ViewerState) {
+        if !self.settings_open {
+            return;
+        }
+        egui::Area::new(egui::Id::unique("settings"))
+            .fade_in(false)
+            .anchor(egui::Align2::RIGHT_TOP, vec2(-12.0, 46.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(theme::RAISED)
+                    .stroke(egui::Stroke::new(1.0, theme::LINE))
+                    .corner_radius(6.0)
+                    .inner_margin(14.0)
+                    .show(ui, |ui| {
+                        ui.set_width(360.0);
+                        ui.label(RichText::new("SETTINGS").size(11.0).strong().color(theme::DIM));
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Recording").strong());
+                        ui.label(
+                            RichText::new(
+                                "Where \"Record sound\" records from. Kept for this machine, not in the project.",
+                            )
+                            .color(theme::DIM),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            self.input_menu(ui);
+                            self.monitor_buttons(ui, view);
+                        });
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Esc closes.").color(theme::DIM));
+                    });
+            });
+    }
+
+    /// The buttons above the timeline (feedback F4.1, narrowed in rounds 5
+    /// and 15): recording, metronome, loop, title, marker, group, and the
+    /// tempo. Keyframes and transitions are under "Clip" in the top bar,
+    /// the input under the settings. Cutting, copying, undo and zoom stay
+    /// with keys and mouse.
     fn tools(
         &mut self,
         ui: &mut egui::Ui,
@@ -338,25 +440,32 @@ impl Editor {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().button_padding = vec2(8.0, 3.0);
                 ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
-                for (enabled, action, label) in [
-                    (selected, Action::KeyframeSet, "Keyframe"),
-                    (selected, Action::KeyframeRemove, "Remove keyframe"),
-                    (selected, Action::LiveRecord, "Record movement"),
-                    (true, Action::RecordSound, if self.recording_sound { "Stop recording" } else { "Record sound" }),
-                    (true, Action::Metronome, if self.metronome { "Metronome on" } else { "Metronome" }),
-                    (true, Action::Loop, if self.timeline.loop_range.is_some() { "Loop on" } else { "Loop" }),
-                    (true, Action::Transition, "Whip-pan"),
-                    (true, Action::Blackout, "Black cut"),
-                    (true, Action::AddTitle, "Title"),
-                    (true, Action::Marker, "Marker"),
-                    (selected, Action::Group, "Group"),
+                // What is done all the time while making something (feedback
+                // F15.4), as icons with their name and key on hover (F15.5).
+                let (recording, clicking, looping) =
+                    (self.recording_sound, self.metronome, self.timeline.loop_range.is_some());
+                for (enabled, on, action, icon, name) in [
+                    (
+                        true,
+                        recording,
+                        Action::RecordSound,
+                        Icon::Record,
+                        if recording { "Stop recording" } else { "Record sound" },
+                    ),
+                    (
+                        true,
+                        clicking,
+                        Action::Metronome,
+                        Icon::Metronome,
+                        if clicking { "Metronome on" } else { "Metronome" },
+                    ),
+                    (true, looping, Action::Loop, Icon::Loop, if looping { "Loop on" } else { "Loop" }),
+                    (true, false, Action::AddTitle, Icon::Title, "Title"),
+                    (true, false, Action::Marker, Icon::Marker, "Marker"),
+                    (selected, false, Action::Group, Icon::Group, "Group"),
                 ] {
-                    if actions::enabled_button(ui, enabled, action, label) {
+                    if icons::action(ui, icon, action, name, enabled, on) {
                         self.actions.push(action);
-                    }
-                    if action == Action::RecordSound {
-                        self.input_menu(ui);
-                        self.monitor_buttons(ui, view);
                     }
                 }
                 // Tempo and grid where the bars are (09-daw.md, M11).
