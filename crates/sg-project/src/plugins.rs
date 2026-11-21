@@ -198,6 +198,20 @@ pub fn ni_launch(prefix: &Path, cancel: &Cancel, mut on_line: impl FnMut(&str)) 
     run_lines(command, cancel, |line| on_line(line))
 }
 
+/// Has the tool look for what is wrong with the set-up (its
+/// dependencies, the prefix, the login link from the browser) and repair
+/// what it can; what it finds goes to `on_line`.
+pub fn ni_check(prefix: &Path, cancel: &Cancel, mut on_line: impl FnMut(&str)) -> Result<(), ToolError> {
+    let mut command = ni(prefix);
+    command.args(["doctor", "--fix"]);
+    run_lines(command, cancel, |line| on_line(line))
+}
+
+/// Where everything the steps print is kept, for when one of them fails.
+pub fn ni_log(library: &Path) -> PathBuf {
+    library.join("native-instruments-setup.log")
+}
+
 /// Step 3: tells the bridge about the plugins installed in the prefix,
 /// after which they are found by [`scan`] like native ones.
 pub fn bridge(prefix: &Path, cancel: &Cancel, mut on_line: impl FnMut(&str)) -> Result<(), ToolError> {

@@ -16,6 +16,8 @@ pub enum NiStep {
     Launch,
     /// Make the installed plugins available through the bridge.
     Bridge,
+    /// Not a step of its own: look for what is wrong and repair it.
+    Check,
 }
 
 /// What the panel asks the application to do.
@@ -36,6 +38,8 @@ pub enum PluginUpdate {
         plugins: Vec<Plugin>,
         ni: NiState,
     },
+    /// The file everything the steps print is written to.
+    LogFile(std::path::PathBuf),
     /// The running step ended.
     Finished(Result<(), String>),
 }
@@ -49,6 +53,8 @@ pub struct PluginsPanel {
     /// The last lines of the running or last step.
     log: Vec<String>,
     failed: Option<String>,
+    /// Where the whole output of the steps is kept.
+    log_file: Option<std::path::PathBuf>,
 }
 
 impl PluginsPanel {
@@ -79,6 +85,7 @@ impl PluginsPanel {
                 self.plugins = plugins;
                 self.ni = Some(ni);
             }
+            PluginUpdate::LogFile(path) => self.log_file = Some(path),
             PluginUpdate::Finished(result) => {
                 self.running = None;
                 self.failed = result.err();
@@ -159,6 +166,13 @@ impl PluginsPanel {
                         }
                         if let Some(error) = &self.failed {
                             ui.label(RichText::new(error).color(theme::ERROR));
+                        }
+                        if let Some(file) = &self.log_file {
+                            ui.label(
+                                RichText::new(format!("Everything the steps printed is kept in {}", file.display()))
+                                    .size(11.0)
+                                    .color(theme::DIM),
+                            );
                         }
                         ui.add_space(4.0);
                         ui.label(RichText::new("Esc closes; a running step continues.").color(theme::DIM));
@@ -254,5 +268,31 @@ impl PluginsPanel {
             &found,
             "Find the installed plugins",
         );
+        // Not a step: for when one of them did not do what it should.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Something not working?").color(theme::DIM));
+            match busy {
+                Some(NiStep::Check) => {
+                    ui.label(RichText::new("Checking...").color(theme::ACCENT));
+                    if ui.button("Stop").clicked() {
+                        *request = Some(PluginRequest::Stop);
+                    }
+                }
+                _ => {
+                    let check =
+                        ui.add_enabled(busy.is_none() && ni.prefix_ready, egui::Button::new("Check and repair"));
+                    if check
+                        .on_hover_text(
+                            "Looks at the Windows environment, at what Native Access needs and at the link the \
+                             browser uses to come back after the login, and repairs what it can. What it finds \
+                             is shown below.",
+                        )
+                        .clicked()
+                    {
+                        *request = Some(PluginRequest::Run(NiStep::Check));
+                    }
+                }
+            }
+        });
     }
 }

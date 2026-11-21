@@ -1097,6 +1097,7 @@ impl Shell {
                     "setup" => PluginRequest::Run(NiStep::Setup),
                     "launch" => PluginRequest::Run(NiStep::Launch),
                     "bridge" => PluginRequest::Run(NiStep::Bridge),
+                    "check" => PluginRequest::Run(NiStep::Check),
                     _ => PluginRequest::Scan,
                 };
                 self.plugins.open();

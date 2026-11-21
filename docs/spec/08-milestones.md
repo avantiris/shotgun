@@ -495,6 +495,12 @@ chain second version, M16 mixing and mastering.
     open) is ended like one that crashed: its track plays without it and
     the program says so. Checked with a stand-in host that loads and then
     never answers (`crates/sg-plug/tests/hang.rs`).
+  - When the set-up goes wrong (2026-11-21): everything its steps print
+    is kept in `native-instruments-setup.log` in the library (the panel
+    shows the last lines and says where the file is), and "Check and
+    repair" runs the tool's own diagnosis (`ni doctor --fix`: the
+    prefix, what Native Access needs, the link the browser comes back
+    through after the login). Checked against the stand-in tools only.
   - The bridge that comes with the program is the one used (2026-11-21):
     `yabridgectl` and a bridged plugin's loader both look for yabridge in
     the folders `NIX_PROFILES` names, which on this machine found the

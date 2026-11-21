@@ -620,14 +620,35 @@ impl App {
                             // Its own thread: a step runs for minutes (an installer, or Native Access while it is open).
                             let spawned = std::thread::Builder::new().name("sg-plugins".into()).spawn(move || {
                                 let prefix = plugins::ni_prefix(&library);
+                                // Everything a step prints is also kept in a file: the
+                                // panel shows the last lines only, and a failure needs all of them.
+                                let log_file = plugins::ni_log(&library);
+                                let mut kept =
+                                    std::fs::OpenOptions::new().create(true).append(true).open(&log_file).ok();
+                                let mut keep = |text: &str| {
+                                    use std::io::Write;
+                                    if let Some(file) = &mut kept {
+                                        let _ = writeln!(file, "{text}");
+                                    }
+                                };
+                                let stamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |d| d.as_secs());
+                                keep(&format!("\n== {step:?}, unix time {stamp}, prefix {}", prefix.display()));
+                                let _ = proxy.send_event(UserEvent::Plugins(PluginUpdate::LogFile(log_file)));
                                 let line = |text: &str| {
+                                    keep(text);
                                     let _ = proxy.send_event(UserEvent::Plugins(PluginUpdate::Line(text.to_owned())));
                                 };
                                 let result = match step {
                                     NiStep::Setup => plugins::ni_setup(&prefix, &cancel, line),
                                     NiStep::Launch => plugins::ni_launch(&prefix, &cancel, line),
                                     NiStep::Bridge => plugins::bridge(&prefix, &cancel, line),
+                                    NiStep::Check => plugins::ni_check(&prefix, &cancel, line),
                                 };
+                                if let Err(e) = &result {
+                                    keep(&format!("== failed: {e}"));
+                                }
                                 let finished = PluginUpdate::Finished(result.map_err(|e| e.to_string()));
                                 let _ = proxy.send_event(UserEvent::Plugins(finished));
                                 found(&proxy, &library);
