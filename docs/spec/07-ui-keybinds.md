@@ -152,6 +152,17 @@ Animation and creation
 | B | whip-pan on the cuts of the selected clips (feedback F12.1): the cuts between two selected clips; if no two of them touch, the cut at the start of each, or at its end if nothing touches its start. If they all have it already, it is taken off. Another kind there is replaced. With nothing selected: the cut nearest the playhead |
 | Shift + B | black on the same cuts as B; again removes it (feedback F11.1, F13.1). Hard by default: the picture cuts to black, six frames of it (three on each side of the cut), and black cuts to the next picture. "Fade" in the inspector sets the share of that time that fades instead (0 hard, 100 % a dip to black); the length goes from 2 to 60 frames. Dark, not transparent: tracks underneath do not show through |
 
+In the piano roll (stage 3, M14; `PROPOSED`)
+
+| Key | Action |
+|-----|--------|
+| A S D F G H J K L ; (by position) | with "Keyboard" on: the white keys from C; W E T Y U O P the black ones; Z and X an octave down and up. These keys are not shortcuts while it is on |
+| Ctrl + click, Ctrl + drag | add a note to the selection or take it out; draw a box that selects what it touches |
+| Ctrl + A, Ctrl + C, Ctrl + X, Ctrl + V | all notes; copy; cut; paste after the selected notes by the whole beats they span |
+| Backspace / Delete | remove the selected notes |
+| Wheel, Shift + wheel, Ctrl + wheel | up and down the keys; along the clip; zoom along the clip around the pointer |
+| Esc | close the piano roll |
+
 Panels and output
 
 | Key | Action |
