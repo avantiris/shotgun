@@ -2297,3 +2297,100 @@ fn a_new_track_is_made_from_the_bar_above_the_timeline() {
     assert_eq!(tracks(&harness)[0].1, "V2");
     assert_eq!(harness.state().shell.error_shown(), None);
 }
+
+#[test]
+fn the_piano_roll_goes_on_after_the_clip_erases_under_the_right_button_and_selects_with_a_box() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> Vec<sg_core::Note> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        let clip = track.clips.iter().next().unwrap();
+        track.notes.get(&clip.id).map(|n| Vec::clone(n)).unwrap_or_default()
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    assert_eq!(clips(&harness, 1)[0].1, 4 * 48_000);
+    let roll = harness.get_by_label("Piano roll").rect();
+    let lanes_left = roll.left() + 46.0;
+    // Shift + wheel moves along the time, past the end of the two bars: a note written
+    // there makes the clip longer, by whole bars, and both are one undo step.
+    let middle = egui::pos2(lanes_left + 200.0, roll.top() + 90.0);
+    wheel(&mut harness, middle, vec2(0.0, -(roll.width() - 46.0) / 2.0), Modifiers::SHIFT);
+    pointer(&mut harness, egui::pos2(roll.right() - 40.0, roll.top() + 90.0), egui::PointerButton::Primary);
+    let far = notes(&harness);
+    assert_eq!(far.len(), 1);
+    assert!(far[0].start >= 2 * 4 * 960, "{far:?}");
+    let longer = clips(&harness, 1)[0].1;
+    assert!(longer > 4 * 48_000 && longer % (2 * 48_000) == 0, "{longer}");
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert!(notes(&harness).is_empty());
+    assert_eq!(clips(&harness, 1)[0].1, 4 * 48_000);
+    wheel(&mut harness, middle, vec2(0.0, roll.width()), Modifiers::SHIFT);
+
+    // Three notes in a row. The right button, held and drawn over two of them, removes
+    // both, although the hand moves; undo brings both back at once.
+    let row = roll.top() + 90.0;
+    for x in [100.0, 200.0, 300.0] {
+        pointer(&mut harness, egui::pos2(lanes_left + x, row), egui::PointerButton::Primary);
+    }
+    assert_eq!(notes(&harness).len(), 3);
+    let button = egui::PointerButton::Secondary;
+    let from = egui::pos2(lanes_left + 102.0, row);
+    harness.event(egui::Event::PointerMoved(from));
+    harness.run_steps(1);
+    harness.event(egui::Event::PointerButton { pos: from, button, pressed: true, modifiers: Modifiers::NONE });
+    harness.run_steps(1);
+    for x in [130.0, 170.0, 203.0] {
+        harness.event(egui::Event::PointerMoved(egui::pos2(lanes_left + x, row + 1.0)));
+        harness.run_steps(1);
+    }
+    let to = egui::pos2(lanes_left + 203.0, row + 1.0);
+    harness.event(egui::Event::PointerButton { pos: to, button, pressed: false, modifiers: Modifiers::NONE });
+    harness.run_steps(3);
+    assert_eq!(notes(&harness).len(), 1);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness).len(), 3);
+
+    // "Select": a drag on empty space draws a box, not a note; what it touches is selected.
+    click(&mut harness, "Select");
+    drag(&mut harness, egui::pos2(lanes_left + 80.0, row - 30.0), egui::pos2(lanes_left + 230.0, row + 8.0));
+    assert_eq!(notes(&harness).len(), 3);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!(notes(&harness).len(), 1);
+    // A click on empty space makes no note either.
+    pointer(&mut harness, egui::pos2(lanes_left + 400.0, row - 30.0), egui::PointerButton::Primary);
+    assert_eq!(notes(&harness).len(), 1);
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
+fn the_chain_tab_shows_the_selected_track_alone_with_what_its_sound_goes_through() {
+    let mut harness = editor();
+    click(&mut harness, "+ Track");
+    click(&mut harness, "Instrument track");
+    harness.run_steps(3);
+    // The piano roll of the new track (A2) is open: the chain is that track's.
+    click(&mut harness, "Chain");
+    assert!(harness.query_by_label("CHAIN").is_some());
+    assert!(harness.query_by_label("Master").is_some(), "the last step of the chain");
+    assert!(harness.query_by_label("recordings, notes on the built-in instrument").is_some());
+    // (In the list and on the strip.)
+    assert_eq!(harness.query_all_by_label("Low cut").count(), 2);
+    // One strip only, and no master strip beside it: one "Add plugin".
+    assert_eq!(harness.query_all_by_label("Add plugin").count(), 1);
+    // Another track is chosen in the panel.
+    click(&mut harness, "Chain of A1");
+    assert!(harness.query_by_label("the recordings on the track").is_some());
+    // "Mixer" shows all strips again; "Chain" a second time closes the panel.
+    click(&mut harness, "Mixer");
+    assert!(harness.query_by_label("MIXER").is_some());
+    assert_eq!(harness.query_all_by_label("Add plugin").count(), 2);
+    click(&mut harness, "Chain");
+    click(&mut harness, "Chain");
+    assert!(harness.query_by_label("CHAIN").is_none() && harness.query_by_label("MIXER").is_none());
+    assert_eq!(harness.state().shell.error_shown(), None);
+}

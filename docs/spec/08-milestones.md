@@ -611,6 +611,11 @@ chain second version, M16 mixing and mastering.
     bridge, its state is kept. What had to be put right, and what is
     still open (a modal box of a plugin blocks its other calls), is in
     docs/spikes/s7-plugin-host.md. Not checked: its sound by ear.
+  - Feedback round 6 (2026-11-21): the piano roll goes on after the
+    clip's end and a note there lengthens the clip; the right button
+    erases what it is drawn over; "Select" for a selecting box; Alt +
+    wheel and the middle button for the view; a "Chain" panel for one
+    track's signal path (docs/spec/07-ui-keybinds.md).
   - "Play it" (2026-11-21, feedback F15.6): beside every plugin in the
     Plugins panel. One press makes an audio track with the plugin on it
     and a note clip at the playhead, opens the piano roll with the

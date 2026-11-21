@@ -164,6 +164,11 @@ impl Editor {
                 if self.colour.open {
                     self.colour.ui(ui, session, error, &mut self.colour_requests);
                 } else if self.mixer.open {
+                    let on_audio = |id: &sg_core::TrackId| {
+                        sequence.track(*id).is_some_and(|t| t.kind == sg_core::TrackKind::Audio)
+                    };
+                    let current = self.piano.hand().or(target.as_ref().map(|t| t.track.id)).filter(on_audio);
+                    self.mixer.follow(current);
                     self.mixer.ui(ui, session, sequence, view, error);
                 } else {
                     self.inspector(ui, session, sequence, target.as_ref(), error, &mut request);
@@ -298,11 +303,25 @@ impl Editor {
             };
             ui.add_space(8.0);
             if ui
-                .selectable_label(self.mixer.open, "Mixer")
+                .selectable_label(self.mixer.open && !self.mixer.chain, "Mixer")
                 .on_hover_text("Levels, pan, mute, solo and clean-up per audio track (M)")
                 .clicked()
             {
-                self.mixer.open = !self.mixer.open;
+                self.mixer.open = !self.mixer.open || self.mixer.chain;
+                self.mixer.chain = false;
+                self.colour.open = false;
+            }
+            // (Laid out from the right: this one stands to the left of "Mixer".)
+            if ui
+                .selectable_label(self.mixer.open && self.mixer.chain, "Chain")
+                .on_hover_text(
+                    "The selected track alone: what its sound goes through, in order (instrument, vocal chain, \
+                     plugins, sends), and its strip to set each",
+                )
+                .clicked()
+            {
+                self.mixer.open = !(self.mixer.open && self.mixer.chain);
+                self.mixer.chain = true;
                 self.colour.open = false;
             }
             if ui

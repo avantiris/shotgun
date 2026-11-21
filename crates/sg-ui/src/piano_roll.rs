@@ -44,6 +44,8 @@ enum Gesture {
     Stretch(usize, Vec<(usize, Note)>),
     /// A box being drawn from this point: what it touches gets selected.
     Box(egui::Pos2),
+    /// The right button is down: every note the pointer passes over goes.
+    Erase,
 }
 
 #[derive(Default)]
@@ -58,6 +60,10 @@ pub struct PianoRoll {
     /// view), and the tick at the left edge.
     zoom: Option<f32>,
     left: f32,
+    /// Height of a key's row in points (Alt + wheel).
+    row_h: Option<f32>,
+    /// A drag on empty space draws a box that selects, not a note.
+    select: bool,
     /// The length a clicked note gets: that of the last one drawn or stretched.
     last_len: Option<i64>,
     /// The selected notes, as what they are (their places change when the notes are sorted).
@@ -147,6 +153,20 @@ fn span_of(sequence: &Sequence, clip: &sg_core::Clip) -> (i64, i64) {
     ((clip.src_in as f64 / samples_per_tick).round() as i64, length)
 }
 
+/// How far from the clip's start the track is free, in ticks and in
+/// samples: up to the next clip on it, or without end.
+fn room_of(sequence: &Sequence, track: &sg_core::Track, clip: &sg_core::Clip) -> (i64, i64) {
+    let bpm = sequence.tempo.map_or(120.0, sg_core::Tempo::bpm);
+    let samples_per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * TICKS_PER_BEAT as f64);
+    match track.clips.first_at_or_after(clip.end()) {
+        Some(next) => {
+            let samples = next.start - clip.start;
+            ((samples as f64 / samples_per_tick).floor() as i64, samples)
+        }
+        None => (i64::MAX / 4, i64::MAX / 4),
+    }
+}
+
 fn name_of(pitch: u8) -> String {
     format!("{}{}", NAMES[pitch as usize % 12], pitch as i32 / 12 - 1)
 }
@@ -158,6 +178,8 @@ impl PianoRoll {
         *self = PianoRoll {
             open: Some((track, clip)),
             grid: self.grid,
+            row_h: self.row_h,
+            select: self.select,
             last_len: self.last_len,
             copied: std::mem::take(&mut self.copied),
             copied_span: self.copied_span,
@@ -377,13 +399,20 @@ impl PianoRoll {
 
     /// Puts the copied notes after the selected ones (after where they were
     /// copied from, the first time; after the last paste, the next), and
-    /// selects them. What would lie beyond the clip's end is left out.
+    /// selects them. Past the clip's end they make the clip longer; what
+    /// would lie in the next clip on the track is left out.
     /// Returns whether there was something to paste.
     pub fn paste(&mut self, session: &mut Session, error: &mut Option<String>) -> bool {
         if self.copied.is_empty() {
             return false;
         }
         let Some((project, track, clip, mut notes, length)) = self.stored(session) else { return false };
+        let room = project.sequences.first().and_then(|sequence| {
+            let on = sequence.track(track)?;
+            let found = on.clips.iter().find(|c| c.id == clip)?;
+            Some(room_of(sequence, on, &found).0)
+        });
+        let length = room.unwrap_or(length).max(length);
         let after = self
             .selected
             .iter()
@@ -398,7 +427,7 @@ impl PianoRoll {
             .map(|n| Note { len: n.len.min(length - n.start), ..n })
             .collect();
         if pasted.is_empty() {
-            *error = Some("There is no room after these notes in the clip: make the clip longer first.".to_owned());
+            *error = Some("There is no room after these notes: the next clip on the track is in the way.".to_owned());
             return true;
         }
         notes.extend(pasted.iter().copied());
@@ -429,9 +458,20 @@ impl PianoRoll {
                 .filter(|n| n.start < offset && n.start + n.len > offset)
                 .map(|n| (Note { start: 0, len: n.start + n.len - offset, ..*n }, *n))
                 .collect();
-            Some((offset, in_view(&raw, offset, length).1, across))
+            // Notes written after the clip's end make it longer: to the
+            // end of their bar, as far as the track is free (feedback F16.1).
+            let found = t.clips.iter().find(|c| c.id == clip)?;
+            let bar = TICKS_PER_BEAT * sequence.tempo.map_or(4, |tempo| tempo.beats_per_bar as i64);
+            let needed = notes.iter().map(|n| n.start + n.len).max().unwrap_or(0);
+            let longer = (needed > length).then(|| {
+                let (room, room_samples) = room_of(sequence, t, &found);
+                let ticks = ((needed + bar - 1) / bar * bar).min(room).max(needed.min(room));
+                let samples = (ticks as f64 * found.len as f64 / length as f64).round() as i64;
+                sg_core::Clip { len: samples.min(room_samples).max(found.len), ..found }
+            });
+            Some((offset, in_view(&raw, offset, length).1, across, longer))
         });
-        let (offset, mut all, mut across) = found.unwrap_or((0, Vec::new(), Vec::new()));
+        let (offset, mut all, mut across, longer) = found.unwrap_or((0, Vec::new(), Vec::new(), None));
         for note in notes {
             // (One that was not touched keeps the part of it the clip does not show.)
             match across.iter().position(|(shown, _)| *shown == note) {
@@ -439,7 +479,11 @@ impl PianoRoll {
                 None => all.push(Note { start: note.start + offset, ..note }),
             }
         }
-        let op = Op::SetClipNotes { seq: sequence.id, track, clip, notes: Some(all) };
+        let mut op = Op::SetClipNotes { seq: sequence.id, track, clip, notes: Some(all) };
+        if let Some(longer) = longer {
+            let grow = Op::SetClip { seq: sequence.id, track, start: longer.start, clip: longer };
+            op = Op::Batch(vec![grow, op]);
+        }
         if let Err(e) = session.apply(op, None) {
             *error = Some(e.to_string());
         }
@@ -479,6 +523,11 @@ impl PianoRoll {
         let raw: Vec<Note> = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
         let (stored, _) = in_view(&raw, span_of(sequence, &clip).0, length);
         let grid = *self.grid.get_or_insert(TICKS_PER_BEAT / 4);
+        // The roll goes on after the clip's end, as far as the track is
+        // free (and not without end: sixteen bars at a time). What is
+        // written there makes the clip longer.
+        let extent = room_of(sequence, track, &clip).0.min(length + 16 * TICKS_PER_BEAT * beats_per_bar).max(length);
+        let row_h = self.row_h.unwrap_or(ROW_H).clamp(6.0, 30.0);
 
         let area = ui.available_rect_before_wrap();
         // The line above the grid: what this is, the grid, and the way out.
@@ -497,6 +546,17 @@ impl PianoRoll {
                     }
                 }
                 ui.add_space(12.0);
+                let select = ui.selectable_label(self.select, "Select");
+                if select
+                    .on_hover_text(
+                        "A drag on empty space draws a box and selects the notes it touches, and a click there \
+                         selects none; no note is made. Off: a drag or a click draws a note, and Ctrl + drag \
+                         draws the box.",
+                    )
+                    .clicked()
+                {
+                    self.select = !self.select;
+                }
                 let keys = ui.selectable_label(self.keys, "Keyboard");
                 let octave = self.octave.unwrap_or(5);
                 if keys
@@ -535,7 +595,7 @@ impl PianoRoll {
                     for note in &mut notes {
                         if self.selected.is_empty() || self.selected.contains(note) {
                             let start = (note.start as f64 / grid as f64).round() as i64 * grid;
-                            note.start = start.clamp(0, (length - note.len).max(0));
+                            note.start = start.clamp(0, (extent - note.len).max(0));
                             moved.push(*note);
                         }
                     }
@@ -564,10 +624,12 @@ impl PianoRoll {
                 ui.add_space(12.0);
                 // (Short: the head must have room for its buttons and "Close" in a narrow roll.)
                 ui.label(RichText::new("How?").color(theme::DIM)).on_hover_text(
-                    "Click: a note. Drag: draw one, move one, or stretch it at its end. Right click: remove.\n\
-                     Ctrl + click adds to the selection, Ctrl + drag draws a box, Ctrl + A takes all; Ctrl + C and \
-                     Ctrl + V repeat the selected notes after themselves.\n\
-                     Wheel: up and down the keys. Shift + wheel: along the clip. Ctrl + wheel: zoom.",
+                    "Click: a note. Drag: draw one, move one, or stretch it at its end. Right button: removes \
+                     every note it is drawn over. A note after the clip's end makes the clip longer.\n\
+                     Ctrl + click adds to the selection, Ctrl + drag (or \"Select\") draws a box, Ctrl + A takes \
+                     all; Ctrl + C and Ctrl + V repeat the selected notes after themselves.\n\
+                     Wheel: up and down the keys. Shift + wheel: along the time. Ctrl + wheel: zoom along the \
+                     time. Alt + wheel: higher or lower rows. Middle button: drag the view.",
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").on_hover_text("Back to the picture (Esc)").clicked() {
@@ -580,39 +642,57 @@ impl PianoRoll {
         let response = ui.allocate_rect(body, Sense::click_and_drag());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Piano roll"));
         let lanes = Rect::from_min_max(pos2(body.left() + KEYS_W, body.top()), body.max);
-        let rows = (lanes.height() / ROW_H).floor().max(1.0);
+        let rows = (lanes.height() / row_h).floor().max(1.0);
         // Starts around the notes there are, or around middle C.
         let top = *self.top.get_or_insert_with(|| {
             let highest = stored.iter().map(|n| n.pitch as f32).fold(f32::MIN, f32::max);
             if stored.is_empty() { 60.0 + rows / 2.0 } else { highest + rows / 3.0 }.clamp(rows, 127.0)
         });
-        // The wheel moves up and down the keys; with Shift along the clip;
-        // with Ctrl it zooms along the clip around the pointer (as on the timeline).
-        let zoom = self.zoom.unwrap_or(1.0).clamp(1.0, 64.0);
+        // The wheel moves up and down the keys; with Shift along the time;
+        // with Ctrl it zooms along the time around the pointer (as on the
+        // timeline); with Alt the rows get higher. Zoom 1 is the clip filling the roll.
+        let widest = (length as f32 / extent as f32).min(1.0);
+        // (At first with a bar of what comes after the clip in view: it shows that there is more.)
+        let bar = (TICKS_PER_BEAT * beats_per_bar) as f32;
+        let zoom = self.zoom.unwrap_or(length as f32 / (length as f32 + bar)).clamp(widest, 64.0);
         let mut per_tick = lanes.width() / length as f32 * zoom;
-        let mut left = self.left.clamp(0.0, (length as f32 - lanes.width() / per_tick).max(0.0));
+        let mut left = self.left.clamp(0.0, (extent as f32 - lanes.width() / per_tick).max(0.0));
+        let mut top = top;
+        if response.dragged_by(PointerButton::Middle) {
+            // The view follows the hand, both ways (as on the timeline).
+            let by = response.drag_delta();
+            left -= by.x / per_tick;
+            top += by.y / row_h;
+        }
         if response.hovered() {
             let (scroll, mods, factor) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers, i.zoom_delta()));
             let under = ui.input(|i| i.pointer.hover_pos()).map_or(lanes.center().x, |p| p.x);
             if factor != 1.0 {
                 let anchor = left + (under - lanes.left()) / per_tick;
-                let zoomed = (zoom * factor).clamp(1.0, 64.0);
+                let zoomed = (zoom * factor).clamp(widest, 64.0);
                 per_tick = lanes.width() / length as f32 * zoomed;
                 left = anchor - (under - lanes.left()) / per_tick;
                 self.zoom = Some(zoomed);
+            } else if mods.alt {
+                let turned = scroll.x + scroll.y;
+                self.row_h = Some((row_h * (1.0 + turned * 0.004)).clamp(6.0, 30.0));
             } else if mods.shift || scroll.x != 0.0 {
                 let along = if scroll.x != 0.0 { scroll.x } else { scroll.y };
                 left -= along / per_tick;
             } else {
-                self.top = Some((top + scroll.y / ROW_H).clamp(rows.min(127.0), 127.0));
+                top += scroll.y / row_h;
             }
-            left = left.clamp(0.0, (length as f32 - lanes.width() / per_tick).max(0.0));
         }
-        self.left = left;
+        let left = left.clamp(0.0, (extent as f32 - lanes.width() / per_tick).max(0.0));
+        let top = top.clamp(rows.min(127.0), 127.0);
+        (self.left, self.top) = (left, Some(top));
         let x_of = |tick: i64| lanes.left() + (tick as f32 - left) * per_tick;
-        let y_of = |pitch: f32| lanes.top() + (top - pitch) * ROW_H;
+        let y_of = |pitch: f32| lanes.top() + (top - pitch) * row_h;
         let tick_at = |x: f32| ((x - lanes.left()) / per_tick + left) as i64;
-        let pitch_at = |y: f32| (top - ((y - lanes.top()) / ROW_H).floor()).clamp(0.0, 127.0) as u8;
+        let pitch_at = |y: f32| (top - ((y - lanes.top()) / row_h).floor()).clamp(0.0, 127.0) as u8;
+        // (From here on the roll's end is what bounds a note, not the clip's.)
+        let clip_length = length;
+        let length = extent;
         let snap = |tick: i64| ((tick as f64 / grid as f64).round() as i64 * grid).clamp(0, length);
         let floor = |tick: i64| (tick.div_euclid(grid) * grid).clamp(0, length - grid.min(length));
         let hit = |notes: &[Note], pos: egui::Pos2| -> Option<(usize, bool)> {
@@ -674,6 +754,7 @@ impl PianoRoll {
             };
             self.gesture = Some(match hit(&notes, origin) {
                 _ if ctrl => Gesture::Box(origin),
+                None if self.select => Gesture::Box(origin),
                 Some((index, true)) => Gesture::Stretch(index, group(index, &self.selected)),
                 Some((index, false)) => {
                     Gesture::Move(index, tick_at(origin.x) - notes[index].start, group(index, &self.selected))
@@ -744,12 +825,37 @@ impl PianoRoll {
             }
             _ => None,
         };
+        // The right button removes the note under it at once, and every
+        // note it is then drawn over: one undo step when it is let go. (Not
+        // egui's "clicked": a hand that moves a little made it a drag, and
+        // the note stayed, feedback F16.2.)
+        let (pressed, held, at) = ui.input(|i| {
+            (i.pointer.button_pressed(PointerButton::Secondary), i.pointer.secondary_down(), i.pointer.latest_pos())
+        });
+        if pressed && self.gesture.is_none() && at.is_some_and(|p| lanes.contains(p)) && response.contains_pointer() {
+            self.gesture = Some(Gesture::Erase);
+            self.working = Some(stored.clone());
+        }
+        if matches!(self.gesture, Some(Gesture::Erase)) {
+            if let (Some(notes), Some(at)) = (&mut self.working, at)
+                && let Some((index, _)) = hit(notes, at)
+            {
+                notes.remove(index);
+            }
+            if !held {
+                self.gesture = None;
+                if let Some(notes) = self.working.take().filter(|notes| *notes != stored) {
+                    self.selected.clear();
+                    Self::commit(session, sequence, track_id, clip_id, notes, error);
+                }
+            }
+        }
         if response.drag_stopped() {
             if let (Some(notes), Some(gesture)) = (self.working.take(), self.gesture.take()) {
                 let touched: Vec<usize> = match &gesture {
                     Gesture::Draw(i) => vec![*i],
                     Gesture::Stretch(_, group) | Gesture::Move(_, _, group) => group.iter().map(|(i, _)| *i).collect(),
-                    Gesture::Box(_) => Vec::new(),
+                    Gesture::Box(_) | Gesture::Erase => Vec::new(),
                 };
                 if let Gesture::Box(from) = gesture {
                     // Every note the box touches, and only those.
@@ -758,7 +864,7 @@ impl PianoRoll {
                     for note in &stored {
                         let rect = Rect::from_min_max(
                             pos2(x_of(note.start), y_of(note.pitch as f32)),
-                            pos2(x_of(note.start + note.len), y_of(note.pitch as f32) + ROW_H),
+                            pos2(x_of(note.start + note.len), y_of(note.pitch as f32) + row_h),
                         );
                         if area.intersects(rect) && !self.selected.contains(note) {
                             self.selected.push(*note);
@@ -789,7 +895,7 @@ impl PianoRoll {
                     None => self.selected.push(stored[index]),
                 },
                 Some((index, _)) => self.selected = vec![stored[index]],
-                None if ctrl => self.selected.clear(),
+                None if ctrl || self.select => self.selected.clear(),
                 None => {
                     let len = self.last_len.unwrap_or(grid).max(grid);
                     let start = floor(tick_at(pos.x));
@@ -802,13 +908,6 @@ impl PianoRoll {
                     self.selected = vec![note];
                 }
             }
-        } else if response.secondary_clicked()
-            && let Some((index, _)) = pointer.and_then(|p| hit(&stored, p))
-        {
-            let mut notes = stored.clone();
-            notes.remove(index);
-            self.selected.clear();
-            Self::commit(session, sequence, track_id, clip_id, notes, error);
         }
 
         // Painting: the keys, the rows, the beats, the notes, the playhead.
@@ -835,15 +934,15 @@ impl PianoRoll {
             }
             let y = y_of(pitch as f32);
             let black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
-            let line = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), ROW_H));
+            let line = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), row_h));
             painter.rect_filled(line.with_min_x(lanes.left()), 0.0, if black { theme::BG } else { theme::PANEL });
-            let key = Rect::from_min_size(pos2(body.left(), y), vec2(KEYS_W - 2.0, ROW_H - 1.0));
+            let key = Rect::from_min_size(pos2(body.left(), y), vec2(KEYS_W - 2.0, row_h - 1.0));
             painter.rect_filled(key, 1.0, if black { Color32::from_gray(24) } else { Color32::from_gray(200) });
             // A key with a recording of its own says which (a drum kit reads by name, not by pitch).
             if let Some((_, asset)) = track.pads.iter().find(|(key, _)| *key as i32 == pitch) {
                 let name = project.assets.get(asset).map_or("?", |a| a.label.as_str());
                 painter.text(
-                    pos2(lanes.left() + 4.0, y + ROW_H / 2.0),
+                    pos2(lanes.left() + 4.0, y + row_h / 2.0),
                     Align2::LEFT_CENTER,
                     name,
                     FontId::proportional(9.0),
@@ -861,8 +960,15 @@ impl PianoRoll {
             }
         }
         let lanes_painter = painter.with_clip_rect(lanes);
-        let mut tick = 0;
-        while tick <= length {
+        // After the clip's end: darker, it is not part of the clip until a note is written there.
+        if clip_length < length {
+            let after = lanes.with_min_x(x_of(clip_length).max(lanes.left()));
+            lanes_painter.rect_filled(after, 0.0, Color32::from_black_alpha(90));
+        }
+        // (Only the lines in view: the roll may be much longer than what is seen.)
+        let mut tick = (tick_at(lanes.left()).max(0) / grid) * grid;
+        let last = tick_at(lanes.right()).min(length);
+        while tick <= last {
             let beat = tick / TICKS_PER_BEAT;
             let (bar, on_beat) = (tick % (TICKS_PER_BEAT * beats_per_bar) == 0, tick % TICKS_PER_BEAT == 0);
             // (Grid lines closer than four points would only smear.)
@@ -895,7 +1001,7 @@ impl PianoRoll {
         for note in shown.iter() {
             let rect = Rect::from_min_max(
                 pos2(x_of(note.start), y_of(note.pitch as f32) + 1.0),
-                pos2(x_of(note.start + note.len) - 1.0, y_of(note.pitch as f32) + ROW_H - 1.0),
+                pos2(x_of(note.start + note.len) - 1.0, y_of(note.pitch as f32) + row_h - 1.0),
             );
             let chosen = self.working.is_none() && self.selected.contains(note);
             // The harder a note is struck, the stronger its colour.

@@ -33,6 +33,14 @@ pub struct Listened {
 #[derive(Default)]
 pub struct Mixer {
     pub open: bool,
+    /// "Chain": one track only, with what its sound goes through listed in
+    /// order beside its strip (feedback F16.4).
+    pub chain: bool,
+    /// The track the chain is shown of, and the one the selection last
+    /// pointed at: a new selection takes the chain along, a choice in the
+    /// panel stays until then.
+    pub chain_track: Option<sg_core::TrackId>,
+    followed: Option<sg_core::TrackId>,
     /// Meter readings as shown: they fall back slowly so that peaks can be read.
     levels: Vec<f32>,
     master: f32,
@@ -195,6 +203,60 @@ impl Preset {
     }
 }
 
+/// What a track's sound goes through, in the order the engine applies it
+/// (`sg_audio::fx::TrackFx::process`, then the plugins, fader and sends):
+/// name, what it is set to, and whether it does anything now.
+fn chain_of(track: &sg_core::Track, sequence: &Sequence) -> Vec<(String, String, bool)> {
+    let mix = &track.mix;
+    let percent = |share: f32| format!("{:.0} %", share * 100.0);
+    let mut chain = Vec::new();
+    // (A note clip counts before its first note is written.)
+    let notes = !track.notes.is_empty();
+    let source = if !track.pads.is_empty() {
+        "recordings, notes on pads and instrument"
+    } else if track.sampler.is_some() {
+        "recordings, notes playing a recording"
+    } else if notes && track.plugins.is_empty() {
+        "recordings, notes on the built-in instrument"
+    } else if notes {
+        "recordings, notes on the instrument plugin"
+    } else {
+        "the recordings on the track"
+    };
+    chain.push(("Source".to_owned(), source.to_owned(), true));
+    chain.push(("Low cut".to_owned(), format!("{:.0} Hz", mix.low_cut_hz), mix.low_cut_hz > 0.0));
+    chain.push(("Noise reduction".to_owned(), percent(mix.denoise), mix.denoise > 0.0));
+    if mix.voice {
+        chain.push(("Tune".to_owned(), percent(mix.tune), mix.tune > 0.0));
+    }
+    let equalised = [mix.eq_low_db, mix.eq_mid_db, mix.eq_high_db];
+    let bands = format!("{:+.0} / {:+.0} / {:+.0} dB", equalised[0], equalised[1], equalised[2]);
+    chain.push(("Equaliser".to_owned(), bands, equalised.iter().any(|db| *db != 0.0)));
+    if mix.voice {
+        chain.push(("De-esser".to_owned(), percent(mix.deess), mix.deess > 0.0));
+    }
+    let squeezed = format!("above {:.0} dB, {:.1} : 1", mix.comp_threshold_db, mix.comp_ratio);
+    chain.push(("Compressor".to_owned(), squeezed, mix.comp_threshold_db < 0.0));
+    if mix.voice {
+        chain.push(("Leveller".to_owned(), percent(mix.level), mix.level > 0.0));
+        chain.push(("Saturation".to_owned(), percent(mix.drive), mix.drive > 0.0));
+    }
+    for plugin in track.plugins.iter() {
+        chain.push(("Plugin".to_owned(), plugin.name.clone(), true));
+    }
+    let fader = if mix.mute { "muted".to_owned() } else { format!("{:+.1} dB, pan {:+.2}", mix.gain_db, mix.pan) };
+    chain.push(("Fader".to_owned(), fader, !mix.mute));
+    chain.push(("To the room".to_owned(), percent(mix.reverb), mix.reverb > 0.0));
+    chain.push(("To the echo".to_owned(), percent(mix.echo), mix.echo > 0.0));
+    if (1..=4).contains(&mix.group) {
+        let name = ["A", "B", "C", "D"][mix.group as usize - 1];
+        let level = sequence.groups.get(mix.group as usize - 1).map_or(0.0, |g| g.gain_db);
+        chain.push(("Group".to_owned(), format!("{name}, {level:+.1} dB"), true));
+    }
+    chain.push(("Master".to_owned(), format!("{:+.1} dB", sequence.master_db), true));
+    chain
+}
+
 fn to_db(linear: f32) -> f32 {
     if linear <= 0.000_001 { -120.0 } else { 20.0 * linear.log10() }
 }
@@ -244,6 +306,15 @@ fn toggle(ui: &mut egui::Ui, on: bool, label: &str, colour: Color32, tip: &str) 
 }
 
 impl Mixer {
+    /// The track the selection points at now (the open piano roll's, or
+    /// the selected clip's): the chain follows it when it changes.
+    pub fn follow(&mut self, current: Option<sg_core::TrackId>) {
+        if current.is_some() && current != self.followed {
+            self.chain_track = current;
+        }
+        self.followed = current;
+    }
+
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -270,10 +341,60 @@ impl Mixer {
             self.group = None;
         }
         let mut ops: Vec<Op> = Vec::new();
-        ui.label(RichText::new("MIXER").size(11.0).strong().color(theme::DIM));
+        // "Chain": one track, the one the selection points at unless another was chosen here.
+        let only = self.chain.then(|| {
+            let wanted = self.chain_track.filter(|id| tracks.iter().any(|t| t.id == *id));
+            wanted.or(tracks.first().map(|t| t.id))
+        });
+        let only = only.flatten();
+        ui.label(RichText::new(if self.chain { "CHAIN" } else { "MIXER" }).size(11.0).strong().color(theme::DIM));
+        if self.chain && !tracks.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for track in &tracks {
+                    let chosen = ui.selectable_label(only == Some(track.id), &track.name);
+                    chosen.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Chain of {}", track.name))
+                    });
+                    if chosen.on_hover_text("Show this track's chain").clicked() {
+                        self.chain_track = Some(track.id);
+                    }
+                }
+            });
+        }
         egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
             ui.horizontal_top(|ui| {
+                if let Some(track) = tracks.iter().find(|t| Some(t.id) == only) {
+                    let width = (ui.available_width() - STRIP_W - 24.0).clamp(140.0, 260.0);
+                    ui.allocate_ui_with_layout(vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(width);
+                        ui.label(RichText::new("What the sound goes through, from the top").size(10.5).color(theme::DIM));
+                        ui.add_space(2.0);
+                        for (place, (name, set, on)) in chain_of(track, sequence).into_iter().enumerate() {
+                            let colour = if on { theme::TEXT } else { theme::DIM };
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                ui.label(RichText::new(format!("{:>2}", place + 1)).monospace().size(10.0).color(theme::DIM));
+                                ui.label(RichText::new(name).size(11.5).strong().color(colour));
+                                let set = if on { set.as_str() } else { "off" };
+                                ui.label(RichText::new(set).size(10.5).color(theme::DIM));
+                            });
+                        }
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(
+                                "Each is set on the strip to the right. \"Voice\" there sets the whole chain up by \
+                                 listening to the track; \"Add plugin\" puts an effect or an instrument on it.",
+                            )
+                            .size(10.5)
+                            .color(theme::DIM),
+                        );
+                    });
+                    ui.separator();
+                }
                 for (index, track) in tracks.iter().enumerate() {
+                    if only.is_some_and(|id| id != track.id) {
+                        continue;
+                    }
                     let mut mix = track.mix;
                     ui.allocate_ui_with_layout(vec2(STRIP_W, 0.0), egui::Layout::top_down(egui::Align::Center), |ui| {
                         ui.set_width(STRIP_W);
@@ -773,6 +894,10 @@ impl Mixer {
                     if mix != track.mix {
                         ops.push(Op::SetTrackMix { seq: sequence.id, track: track.id, mix });
                     }
+                }
+                // (The master belongs to all tracks: in the mixer, not in one track's chain.)
+                if self.chain {
+                    return;
                 }
                 ui.allocate_ui_with_layout(vec2(STRIP_W, 0.0), egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.set_width(STRIP_W);

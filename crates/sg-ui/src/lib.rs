@@ -315,6 +315,8 @@ pub enum DevStep {
     Lut(String),
     /// Make the selected asset the hero of its scenario.
     Hero,
+    /// Open the "Chain" panel (the selected track's chain).
+    Chain,
     /// Set the sequence frame size.
     Size(u32, u32),
     /// Export with a preset: master, vertical, gif or share:<megabytes>.
@@ -892,6 +894,7 @@ impl Shell {
             Action::FitTimeline => self.editor.timeline.refit(),
             Action::Mixer => {
                 self.editor.mixer.open = !self.editor.mixer.open;
+                self.editor.mixer.chain = false;
                 self.editor.colour.open = false;
             }
             Action::Colour => {
@@ -1051,6 +1054,10 @@ impl Shell {
                         self.error = Some(e.to_string());
                     }
                 }
+            }
+            DevStep::Chain => {
+                (self.editor.mixer.open, self.editor.mixer.chain) = (true, true);
+                self.editor.colour.open = false;
             }
             DevStep::Hero => {
                 // The selected asset becomes what its scenario is matched to.
