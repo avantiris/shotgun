@@ -36,6 +36,12 @@ pub enum Op {
         id: SequenceId,
         name: String,
     },
+    /// Gives a track another name.
+    SetTrackName {
+        seq: SequenceId,
+        track: TrackId,
+        name: String,
+    },
     /// Adds an empty track at `index` (0 is the top of the timeline).
     AddTrack {
         seq: SequenceId,
@@ -217,6 +223,7 @@ impl Op {
             Op::AddSequence { .. } => "add sequence",
             Op::RemoveSequence { .. } => "remove sequence",
             Op::SetSequenceName { .. } => "rename sequence",
+            Op::SetTrackName { .. } => "rename track",
             Op::AddTrack { .. } => "add track",
             Op::RemoveTrack { .. } => "remove track",
             Op::InsertClip { .. } => "add clip",
@@ -406,6 +413,14 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
         Op::SetSequenceName { id, name } => with_sequence(p, *id, |s| {
             let old = std::mem::replace(&mut s.name, name.clone());
             Ok(Op::SetSequenceName { id: *id, name: old })
+        }),
+        Op::SetTrackName { seq, track, name } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let inverse = Op::SetTrackName { seq: *seq, track: *track, name: old.name.clone() };
+            // The clips and their properties stay shared.
+            s.tracks[index] = Arc::new(Track { name: name.clone(), ..Track::clone(old) });
+            Ok(inverse)
         }),
         Op::AddTrack { seq, index, track } => with_sequence(p, *seq, |s| {
             if s.track(track.id).is_some() {
@@ -761,6 +776,10 @@ pub(crate) mod tests {
         assert_eq!(p2.name, "Other");
         let p3 = round_trip(&p2, &Op::SetSequenceName { id: SEQ, name: "Cut 2".into() });
         assert_eq!(p3.sequences[0].name, "Cut 2");
+        let p4 = round_trip(&p3, &Op::SetTrackName { seq: SEQ, track: V1, name: "Lead vocal".into() });
+        assert_eq!(p4.sequences[0].track(V1).unwrap().name, "Lead vocal");
+        let nowhere = Op::SetTrackName { seq: SEQ, track: TrackId(999), name: "x".into() };
+        assert!(matches!(apply(&p4, &nowhere), Err(OpError::NoTrack(_))));
     }
 
     #[test]

@@ -483,7 +483,11 @@ impl State {
     }
 
     fn set_frame(&mut self, frame: i64) {
-        self.frame = frame.clamp(0, self.length().max(0));
+        // While a take is made the playhead runs on past the last clip:
+        // the take is what will lie there (in an empty project it stood
+        // still at the start, and the take could not be seen growing).
+        let end = if self.recording.is_some() { i64::MAX } else { self.length().max(0) };
+        self.frame = frame.clamp(0, end);
         self.shared.frame.store(self.frame, Ordering::Relaxed);
     }
 

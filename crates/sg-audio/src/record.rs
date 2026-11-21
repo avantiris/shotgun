@@ -11,7 +11,7 @@
 //! captured frame is given the heard position at the moment it arrives,
 //! less the frames of its own buffer and the capture stream's delay.
 
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -55,6 +55,9 @@ struct Capture {
     ring: rtrb::Producer<f32>,
     meeting: Arc<Meeting>,
     heard: Box<dyn Fn() -> Option<i64> + Send>,
+    /// Told the peak of every buffer that arrives (for a meter): like
+    /// `heard`, on the realtime thread, and must only touch atomics.
+    level: Box<dyn Fn(f32) + Send>,
 }
 
 /// The realtime callback of the capture stream.
@@ -81,6 +84,7 @@ fn capture(stream: &pw::stream::Stream, data: &mut Capture) {
     // SAFETY: the buffer is PipeWire's mapped memory, negotiated as
     // interleaved 32-bit float; `bytes` was bounds-checked above.
     let samples: &[f32] = unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), frames * 2) };
+    (data.level)(samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs())));
     match data.ring.write_chunk_uninit(samples.len()) {
         Ok(chunk) => {
             chunk.fill_from_iter(samples.iter().copied());
@@ -193,6 +197,45 @@ fn header(frames: u64) -> Vec<u8> {
     bytes
 }
 
+/// Which side alone carries the sound, given the peak of each: a
+/// microphone on one input of a two-input interface arrives on the left
+/// (or the right) only, and would be recorded and heard in one ear
+/// (feedback F16.12). The other side must be 50 dB below it, which the
+/// noise of an unused input is and a quiet stereo side is not.
+pub(crate) fn lone_side(peaks: [f32; 2]) -> Option<usize> {
+    let loud = if peaks[0] >= peaks[1] { 0 } else { 1 };
+    (peaks[loud] > 1e-3 && peaks[1 - loud] < peaks[loud] * 0.003).then_some(loud)
+}
+
+/// Puts the sound of one side of a take's file on both sides.
+fn spread(path: &Path, side: usize) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let start = header(0).len() as u64;
+    let mut bytes = vec![0u8; 8 * 16_384];
+    let mut at = start;
+    loop {
+        file.seek(SeekFrom::Start(at))?;
+        let mut got = 0;
+        while got < bytes.len() {
+            match file.read(&mut bytes[got..])? {
+                0 => break,
+                n => got += n,
+            }
+        }
+        let whole = got - got % 8;
+        if whole == 0 {
+            return Ok(());
+        }
+        for frame in bytes[..whole].chunks_exact_mut(8) {
+            let (left, right) = frame.split_at_mut(4);
+            if side == 0 { right.copy_from_slice(left) } else { left.copy_from_slice(right) }
+        }
+        file.seek(SeekFrom::Start(at))?;
+        file.write_all(&bytes[..whole])?;
+        at += whole as u64;
+    }
+}
+
 fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::io::Result<u64> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -201,6 +244,7 @@ fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::
     file.write_all(&header(0))?;
     let mut samples = 0u64;
     let mut bytes = Vec::new();
+    let mut peaks = [0.0f32; 2];
     loop {
         let stopping = meeting.stop.load(Ordering::Acquire);
         let ready = ring.slots();
@@ -209,6 +253,10 @@ fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::
         {
             bytes.clear();
             let (a, b) = chunk.as_slices();
+            for (index, sample) in a.iter().chain(b).enumerate() {
+                let side = (samples as usize + index) % 2;
+                peaks[side] = peaks[side].max(sample.abs());
+            }
             bytes.extend(a.iter().chain(b).flat_map(|s| s.to_le_bytes()));
             chunk.commit_all();
             file.write_all(&bytes)?;
@@ -222,6 +270,11 @@ fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&header(samples / 2))?;
     file.flush()?;
+    drop(file);
+    // Sound on one side only: the take gets it on both.
+    if let Some(side) = lone_side(peaks) {
+        spread(path, side)?;
+    }
     Ok(samples / 2)
 }
 
@@ -235,11 +288,12 @@ impl Recording {
         path: PathBuf,
         source: Option<String>,
         heard: Box<dyn Fn() -> Option<i64> + Send>,
+        level: Box<dyn Fn(f32) + Send>,
     ) -> Result<Recording, AudioError> {
         // Four seconds of room between the callback and the writer.
         let (producer, consumer) = rtrb::RingBuffer::new(SAMPLE_RATE as usize * 8);
         let meeting = Arc::new(Meeting::default());
-        let data = Capture { ring: producer, meeting: meeting.clone(), heard };
+        let data = Capture { ring: producer, meeting: meeting.clone(), heard, level };
         let (quit, quit_rx) = pw::channel::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let capture = std::thread::Builder::new()
@@ -407,6 +461,35 @@ impl Drop for Monitor {
         // The device may rest again if nothing else needs it.
         if let Some(control) = &self.control {
             let _ = control.send(crate::disk::Control::Monitor(false));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_take_with_sound_on_one_side_only_gets_it_on_both() {
+        assert_eq!(lone_side([0.4, 0.0]), Some(0));
+        assert_eq!(lone_side([0.0001, 0.3]), Some(1));
+        // A quiet side of a stereo recording, and silence, stay as they are.
+        assert_eq!(lone_side([0.4, 0.02]), None);
+        assert_eq!(lone_side([0.0, 0.0]), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.wav");
+        let frames: Vec<[f32; 2]> = (0..40_000).map(|n| [0.0, (n as f32 * 0.01).sin() * 0.5]).collect();
+        let mut bytes = header(frames.len() as u64);
+        bytes.extend(frames.iter().flatten().flat_map(|s| s.to_le_bytes()));
+        std::fs::write(&path, &bytes).unwrap();
+        spread(&path, 1).unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(after.len(), bytes.len());
+        assert_eq!(after[..44], bytes[..44]);
+        for (frame, was) in after[44..].chunks_exact(8).zip(&frames) {
+            let side = |at: usize| f32::from_le_bytes([frame[at], frame[at + 1], frame[at + 2], frame[at + 3]]);
+            assert_eq!((side(0), side(4)), (was[1], was[1]));
         }
     }
 }

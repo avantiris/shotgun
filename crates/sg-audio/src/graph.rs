@@ -414,6 +414,8 @@ pub struct Rt {
     /// and could not be parked yet.
     monitor: Option<Box<rtrb::Consumer<f32>>>,
     monitor_limbo: Option<Box<rtrb::Consumer<f32>>>,
+    /// Peak of each side of the monitored input over the last seconds.
+    monitor_sides: [f32; 2],
 }
 
 impl Rt {
@@ -430,6 +432,7 @@ impl Rt {
             loudness: crate::loudness::ShortTerm::default(),
             monitor: None,
             monitor_limbo: None,
+            monitor_sides: [0.0; 2],
         };
         (rt, slot)
     }
@@ -663,12 +666,26 @@ impl Rt {
         let heard = self.shared.monitor_heard.load(Ordering::Relaxed);
         let (a, b) = chunk.as_slices();
         let mut peak = 0.0f32;
-        for (o, s) in out.iter_mut().zip(a.iter().chain(b)) {
-            peak = peak.max(s.abs());
+        // An input that sounds on one side only is heard on both, as its take
+        // will be: judged from the last seconds, so that it does not flip.
+        let lone = crate::record::lone_side(self.monitor_sides);
+        let mut sides = self.monitor_sides.map(|p| p * 0.999);
+        let mut arriving = a.iter().chain(b);
+        for frame in out.chunks_exact_mut(2) {
+            let (Some(&left), Some(&right)) = (arriving.next(), arriving.next()) else { break };
+            sides = [sides[0].max(left.abs()), sides[1].max(right.abs())];
+            peak = peak.max(left.abs()).max(right.abs());
+            let (left, right) = match lone {
+                Some(0) => (left, left),
+                Some(_) => (right, right),
+                None => (left, right),
+            };
             if heard {
-                *o = (*o + *s).clamp(-1.0, 1.0);
+                frame[0] = (frame[0] + left).clamp(-1.0, 1.0);
+                frame[1] = (frame[1] + right).clamp(-1.0, 1.0);
             }
         }
+        self.monitor_sides = sides;
         chunk.commit_all();
         self.shared.input_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
     }

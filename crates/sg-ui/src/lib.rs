@@ -444,6 +444,15 @@ impl Shell {
     pub fn frame(&mut self, ui: &mut egui::Ui, now_unix: u64, view: &ViewerState) -> Vec<Command> {
         let ctx = ui.ctx().clone();
         let mut commands = Vec::new();
+        // The take being made grows with the playback, with the level that came in.
+        if self.editor.recording_sound
+            && view.playing
+            && let Some(live) = &mut self.editor.timeline.live_take
+            && let Some(rate) = self.session.as_ref().and_then(|s| s.project().sequences.first().map(|s| s.rate))
+        {
+            live.heard(rate.frames_to_samples(view.frame, 48_000), view.input_level);
+            ctx.request_repaint();
+        }
         // Before the shortcuts: while the piano roll's "Keyboard" is on, the letter keys are a piano.
         self.editor.piano.take_keys(&ctx);
         for action in keymap::take_actions(&ctx, self.scope()) {
@@ -839,17 +848,38 @@ impl Shell {
                         commands.push(Command::StopRecording);
                     } else {
                         self.editor.recording_sound = true;
-                        // A track marked "R" takes the recording, from where the playhead is now.
-                        let sequence = session.project().sequences.first().cloned();
-                        self.record_onto = self.editor.timeline.record_track.zip(sequence).and_then(|(track, s)| {
-                            s.track(track)?;
-                            Some((track, s.rate.frames_to_samples(self.playhead.max(0), 48_000)))
+                        let (root, source) = (session.root.clone(), self.editor.input.clone());
+                        let armed = self.record_target(true).is_some();
+                        // Where the take goes is settled now, so that it can be said and
+                        // shown while it is made (feedback F16.10): the track marked "R",
+                        // else the lowest audio track that is free from the playhead on,
+                        // else a new one.
+                        self.record_onto = self.record_target(false);
+                        if self.record_onto.is_none()
+                            && let Some(session) = &mut self.session
+                        {
+                            if let Err(e) = session.add_track(sg_core::TrackKind::Audio) {
+                                self.error = Some(e.to_string());
+                            }
+                            self.record_onto = self.record_target(false);
+                        }
+                        self.editor.timeline.live_take = self.record_onto.map(|(track, from)| {
+                            crate::timeline::LiveTake { track, from, to: from, peaks: Vec::new() }
                         });
-                        commands.push(Command::Record {
-                            root: session.root.clone(),
-                            source: self.editor.input.clone(),
-                            lead_in: self.record_onto.is_some(),
-                        });
+                        if let (Some((track, _)), Some(session)) = (self.record_onto, &mut self.session) {
+                            let name =
+                                session.project().sequences.first().and_then(|s| Some(s.track(track)?.name.clone()));
+                            let name = name.unwrap_or_default();
+                            session.notice = Some(if armed {
+                                format!("Recording onto {name}, from the playhead on.")
+                            } else {
+                                format!(
+                                    "Recording onto {name}. To choose the track yourself, press R in its header first."
+                                )
+                            });
+                        }
+                        // (A lead-in only when punching into a track that was chosen for it.)
+                        commands.push(Command::Record { root, source, lead_in: armed });
                     }
                 }
             }
@@ -1774,12 +1804,33 @@ impl Shell {
         commands
     }
 
+    /// The track a recording started now goes onto, and the timeline sample
+    /// it starts at: the one marked "R"; unless only that one is asked
+    /// for, else the lowest audio track that sounds and has nothing from
+    /// the playhead on.
+    fn record_target(&self, only_armed: bool) -> Option<(sg_core::TrackId, i64)> {
+        let project = self.session.as_ref()?.project().clone();
+        let sequence = project.sequences.first()?;
+        let from = sequence.rate.frames_to_samples(self.playhead.max(0), 48_000);
+        let audio = |t: &&Arc<sg_core::Track>| t.kind == sg_core::TrackKind::Audio;
+        let armed =
+            self.editor.timeline.record_track.and_then(|id| sequence.tracks.iter().filter(audio).find(|t| t.id == id));
+        if only_armed || armed.is_some() {
+            return armed.map(|t| (t.id, from));
+        }
+        let free = |t: &&Arc<sg_core::Track>| {
+            !t.mix.mute && t.clips.at(from).is_none() && t.clips.first_at_or_after(from).is_none()
+        };
+        sequence.tracks.iter().rev().filter(audio).find(free).map(|t| (t.id, from))
+    }
+
     /// A recording has ended: its file is taken into the project, and laid
     /// on the timeline where it was played (`start`, in timeline samples)
     /// once it is there.
     pub fn take_recorded(&mut self, path: PathBuf, start: i64, frames: u64, lost: u64) -> Vec<Command> {
         self.editor.recording_sound = false;
         if frames == 0 {
+            self.editor.timeline.live_take = None;
             self.error = Some("Nothing was recorded: no sound arrived from the input.".to_owned());
             return Vec::new();
         }
@@ -1889,9 +1940,19 @@ impl Shell {
         self.editor.input = input;
     }
 
+    /// The take being drawn while it is recorded: its track's name and the
+    /// timeline samples it runs from and to so far.
+    pub fn live_take(&self) -> Option<(String, i64, i64)> {
+        let live = self.editor.timeline.live_take.as_ref()?;
+        let project = self.session.as_ref()?.project().clone();
+        let name = project.sequences.first()?.track(live.track)?.name.clone();
+        Some((name, live.from, live.to))
+    }
+
     /// A recording could not be started or was lost.
     pub fn recording_failed(&mut self, why: String) {
         self.editor.recording_sound = false;
+        self.editor.timeline.live_take = None;
         self.error = Some(why);
     }
 
@@ -1911,6 +1972,8 @@ impl Shell {
         let (path, start) = self.takes.remove(index);
         // (The file in the project is a copy; the one it was recorded into has done its work.)
         self.spent_takes.push(path);
+        // (What was drawn while it was made gives way to the clip.)
+        self.editor.timeline.live_take = None;
         match session.place_take(&asset, start, self.record_onto.take()) {
             Ok(Some((track, clip))) => {
                 self.editor.timeline.select_only(track, &clip);

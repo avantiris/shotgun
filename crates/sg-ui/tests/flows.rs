@@ -1497,6 +1497,20 @@ fn sound_is_recorded_while_playing_and_the_take_laid_where_it_was_played() {
     // While it runs the button ends it.
     click(&mut harness, "Stop recording");
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::StopRecording)));
+    // Where it goes is settled and shown at once: A1 has sound from the playhead on, so a
+    // new track is made for it, and the take is drawn there as the playback moves along.
+    assert_eq!(tracks(&harness).len(), 3);
+    {
+        let state = harness.state_mut();
+        (state.view.playing, state.view.frame, state.view.input_level) = (true, 60, 0.5);
+    }
+    harness.run_steps(2);
+    let live = harness.state().shell.live_take().expect("a take is being drawn");
+    assert_eq!((live.0.as_str(), live.1, live.2), ("A2", 0, 48_000));
+    {
+        let state = harness.state_mut();
+        (state.view.playing, state.view.frame, state.view.input_level) = (false, 0, 0.0);
+    }
     // The take arrives: its file is imported like any other...
     let file = root.join(".shotgun/takes/take-5.wav");
     let imports = harness.state_mut().shell.take_recorded(file.clone(), 12_345, 96_000, 0);
@@ -1521,9 +1535,16 @@ fn sound_is_recorded_while_playing_and_the_take_laid_where_it_was_played() {
     // (A1 holds the first take's sound there: the take gets a track of its own.)
     assert_eq!(placed, [("A2".to_owned(), 12_345, 96_000)]);
     assert_eq!(harness.state_mut().shell.take_spent_takes(), [file]);
-    // One undo takes the clip and its track away again.
+    assert!(harness.state().shell.live_take().is_none());
+    // Undo takes the clip away; further back (past the import of the take) the track made for it.
     harness.key_press(Key::Z);
     harness.run_steps(3);
+    assert_eq!(tracks(&harness).len(), 3);
+    assert!(project_clips(&harness, AssetId(9)) == 0);
+    for _ in 0..2 {
+        harness.key_press(Key::Z);
+        harness.run_steps(3);
+    }
     assert_eq!(tracks(&harness).len(), 2);
 }
 
@@ -2422,4 +2443,30 @@ fn the_playhead_is_moved_in_the_piano_rolls_ruler_and_the_assets_panel_is_put_aw
     assert!(harness.get_by_label("Piano roll").rect().width() > roll.width() + 100.0);
     click(&mut harness, "Assets");
     assert!(harness.query_by_label("ASSETS").is_some());
+}
+
+/// How many clips on the timeline play this asset.
+fn project_clips(harness: &Harness<'_, App>, asset: AssetId) -> usize {
+    let project = harness.state().shell.session().unwrap().project().clone();
+    project.sequences[0].tracks.iter().map(|t| t.clips.iter().filter(|c| c.asset == asset).count()).sum()
+}
+
+#[test]
+fn a_track_is_renamed_from_its_menu() {
+    let mut harness = editor();
+    // (A double click on the name does the same; the test's clock cannot make one.)
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Rename track A1");
+    harness.run_steps(2);
+    let field = harness.get_by_label("Track name");
+    field.type_text(" lead");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    assert_eq!(tracks(&harness)[1].1, "A1 lead");
+    assert!(harness.query_by_label("Track name").is_none());
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(tracks(&harness)[1].1, "A1");
 }

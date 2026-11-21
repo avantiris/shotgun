@@ -147,6 +147,8 @@ Animation and creation
 | Shift + K | metronome on or off: clicks on the beats while playing (needs a tempo), and one bar of them before a recording (stage 3, M11) |
 | L | loop on or off: plays the open note clip, the selected clips or the stretch between the markers around the playhead over and over (stage 3, M11) |
 | Shift + R | record sound: plays from the playhead and records the microphone; again, or pause, ends the take, which is laid on the timeline where it was played (stage 3, M13) |
+| R in an audio track's header | recordings go onto this track, from the playhead on, with a bar of lead-in. Without one marked, the take goes onto the lowest audio track that is free from the playhead on, or a new one. Either way the track is named when the recording starts, and the take is drawn on it in red, with its level, while it is made |
+| Double click on a track's name, or "Rename track" in its menu | type another name (Enter keeps it, Esc does not) |
 | R | live record: plays; drag the selected clip's picture in the viewer and the motion is recorded as keyframes. R again or pause ends it |
 | T | add a 3 s title at the playhead, on the topmost video track that is free there (a new track if none is) |
 | B | whip-pan on the cuts of the selected clips (feedback F12.1): the cuts between two selected clips; if no two of them touch, the cut at the start of each, or at its end if nothing touches its start. If they all have it already, it is taken off. Another kind there is replaced. With nothing selected: the cut nearest the playhead |

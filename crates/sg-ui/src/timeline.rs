@@ -26,6 +26,36 @@ use crate::stage::{Transport, ViewerState, timecode};
 use crate::theme;
 use crate::timeline_gpu::{Instance, TimelineCallback};
 
+/// A recording while it is made: the audio track it goes onto, the
+/// timeline samples it runs from and to so far, and its level, one peak
+/// (linear) for every [`LiveTake::BUCKET`] samples.
+pub struct LiveTake {
+    pub track: TrackId,
+    pub from: i64,
+    pub to: i64,
+    pub peaks: Vec<f32>,
+}
+
+impl LiveTake {
+    /// A hundredth of a second: finer than a column of the timeline at any useful zoom.
+    pub const BUCKET: i64 = 480;
+
+    /// The playback has come to timeline sample `now`, and the input was
+    /// this loud since the last call.
+    pub fn heard(&mut self, now: i64, level: f32) {
+        if now <= self.from {
+            return;
+        }
+        let bucket = ((now - self.from) / Self::BUCKET) as usize;
+        if self.peaks.len() <= bucket {
+            self.peaks.resize(bucket + 1, level);
+        } else if let Some(last) = self.peaks.last_mut() {
+            *last = last.max(level);
+        }
+        self.to = self.to.max(now);
+    }
+}
+
 const HEADER_W: f32 = 120.0;
 const RULER_H: f32 = 22.0;
 /// Track rows shrink to fit the panel, within these bounds.
@@ -177,6 +207,11 @@ pub struct Timeline {
     pub grid_step: GridStep,
     /// The audio track recordings go onto ("R" in its header), if one is marked.
     pub record_track: Option<TrackId>,
+    /// The track whose name is being typed (a double click on it, or its
+    /// menu), the text so far, and whether the field still has to take the keyboard.
+    renaming: Option<(TrackId, String, bool)>,
+    /// The recording in progress, drawn where it will lie (feedback F16.10).
+    pub live_take: Option<LiveTake>,
     /// The stretch that is played over and over, in timeline samples.
     pub loop_range: Option<(i64, i64)>,
     /// Where posters of assets belong at the heads of clips this frame; the
@@ -249,6 +284,8 @@ impl Default for Timeline {
             beat_request: None,
             grid_step: GridStep::Auto,
             record_track: None,
+            renaming: None,
+            live_take: None,
             loop_range: None,
             wave_requests: Vec::new(),
             quads: 0,
@@ -673,11 +710,50 @@ impl Timeline {
                 }
             }
         });
+        // A double click on a track's name: type another (feedback F16.11).
+        if response.double_clicked_by(PointerButton::Primary)
+            && let Some(pos) = response.interact_pointer_pos()
+            && pos.x < rect.left() + HEADER_W - 80.0
+            && pos.y >= rect.top() + RULER_H
+            && let Some(track) = sequence.tracks.get(((pos.y - rect.top() - RULER_H) / self.row_h) as usize)
+        {
+            self.renaming = Some((track.id, track.name.clone(), true));
+        }
+        if let Some((id, name, focus)) = &mut self.renaming
+            && let Some(row) = sequence.tracks.iter().position(|t| t.id == *id)
+        {
+            let y = rect.top() + RULER_H + row as f32 * self.row_h + self.row_h / 2.0;
+            let area = Rect::from_min_size(pos2(rect.left() + 6.0, y - 10.0), egui::vec2(HEADER_W - 12.0, 20.0));
+            let field = ui.put(area, egui::TextEdit::singleline(name).font(FontId::proportional(12.0)));
+            field.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Track name"));
+            if std::mem::take(focus) {
+                field.request_focus();
+            }
+            if field.lost_focus() {
+                let wanted = name.trim().to_owned();
+                let kept = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let id = *id;
+                self.renaming = None;
+                if !kept
+                    && !wanted.is_empty()
+                    && wanted != sequence.tracks[row].name
+                    && let Err(e) = session.apply(Op::SetTrackName { seq: sequence.id, track: id, name: wanted }, None)
+                {
+                    *error = Some(e.to_string());
+                }
+            }
+        } else {
+            self.renaming = None;
+        }
         // Quick switches at the right of each track name: shown or hidden for
         // video, mute and solo for audio.
         let mut settings = None;
         if self.row_h >= 18.0 {
             for (row, track) in sequence.tracks.iter().enumerate() {
+                // (The name being typed has the header to itself.)
+                if self.renaming.as_ref().is_some_and(|(id, ..)| *id == track.id) {
+                    continue;
+                }
                 let y = rect.top() + RULER_H + row as f32 * self.row_h + self.row_h / 2.0;
                 if y + 9.0 > rect.bottom() {
                     break;
@@ -872,6 +948,10 @@ impl Timeline {
             }
             if let Some(track) = self.menu_row.and_then(|row| sequence.tracks.get(row)) {
                 ui.separator();
+                if ui.button(format!("Rename track {}", track.name)).clicked() {
+                    self.renaming = Some((track.id, track.name.clone(), true));
+                    ui.close();
+                }
                 let empty = track.clips.is_empty();
                 let button = ui.add_enabled(empty, egui::Button::new(format!("Remove track {}", track.name)));
                 if button.on_disabled_hover_text("Only an empty track can be removed.").clicked() {
@@ -1738,7 +1818,12 @@ impl Timeline {
         }
         for (row, track) in sequence.tracks.iter().enumerate() {
             let y = rect.top() + RULER_H + row as f32 * row_h + row_h / 2.0;
-            painter.text(
+            // (A long name ends where the track's switches begin.)
+            let room = Rect::from_min_max(
+                pos2(rect.left(), y - row_h / 2.0),
+                pos2(rect.left() + HEADER_W - if row_h >= 18.0 { 78.0 } else { 4.0 }, y + row_h / 2.0),
+            );
+            painter.with_clip_rect(room).text(
                 pos2(rect.left() + 12.0, y),
                 Align2::LEFT_CENTER,
                 &track.name,
@@ -1775,6 +1860,43 @@ impl Timeline {
             painter.line_segment(
                 [pos2(x, rect.top() + RULER_H - if bar { 7.0 } else { 4.0 }), pos2(x, rect.top() + RULER_H)],
                 Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8)),
+            );
+        }
+        if let Some(live) = &self.live_take
+            && let Some(row) = sequence.tracks.iter().position(|t| t.id == live.track)
+        {
+            let per = Lane::of(&sequence.tracks[row], sequence).per_frame();
+            let top = rect.top() + RULER_H + row as f32 * row_h;
+            let lanes_painter = painter.with_clip_rect(lanes);
+            let (x0, x1) = (x_of(live.from as f64 / per), x_of(live.to as f64 / per));
+            let take = Rect::from_min_max(pos2(x0, top + 3.0), pos2(x1.max(x0 + 2.0), top + row_h - 4.0));
+            lanes_painter.rect_filled(take, 3.0, theme::ERROR.gamma_multiply(0.3));
+            lanes_painter.rect_stroke(take, 3.0, Stroke::new(1.5, theme::ERROR), StrokeKind::Inside);
+            // Its level as it came in: only the columns in view are drawn.
+            let (first, last) = (take.left().max(lanes.left()), take.right().min(lanes.right()));
+            let mut x = first;
+            while x < last {
+                let sample = (self.left + ((x - lanes.left()) as f64) * fpp) * per;
+                let bucket = ((sample - live.from as f64) / LiveTake::BUCKET as f64).max(0.0) as usize;
+                // (As wide as the column is: the loudest of what falls into it.)
+                let wide = ((2.0 * fpp * per / LiveTake::BUCKET as f64).ceil() as usize).max(1);
+                let end = (bucket + wide).min(live.peaks.len());
+                let peak = live.peaks.get(bucket..end).map_or(0.0, |p| p.iter().copied().fold(0.0, f32::max));
+                let half = (peak.min(1.0).sqrt() * (take.height() / 2.0 - 2.0)).max(0.5);
+                lanes_painter.line_segment(
+                    [pos2(x, take.center().y - half), pos2(x, take.center().y + half)],
+                    Stroke::new(1.5, theme::ERROR),
+                );
+                x += 2.0;
+            }
+            let seconds = (live.to - live.from).max(0) as f64 / SAMPLE_RATE as f64;
+            let label = if live.to > live.from { format!("REC {seconds:.1} s") } else { "REC from here".to_owned() };
+            lanes_painter.text(
+                pos2(take.left().max(lanes.left()) + 5.0, take.top() + 2.0),
+                Align2::LEFT_TOP,
+                label,
+                FontId::proportional(10.0),
+                theme::TEXT,
             );
         }
         for &(row, start, len, fits) in &self.ghosts {

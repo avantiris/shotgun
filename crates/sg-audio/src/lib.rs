@@ -487,7 +487,12 @@ impl Engine {
         }
         let shared = self.shared.clone();
         let playing = move || shared.running.load(Ordering::Relaxed).then(|| heard(&shared));
-        record::Recording::start(path, source, Box::new(playing))
+        // The take's level goes to the input meter: it is seen while it is made.
+        let meter = self.shared.clone();
+        let level = move |peak: f32| {
+            meter.input_meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        };
+        record::Recording::start(path, source, Box::new(playing), Box::new(level))
     }
 
     /// Opens `source` (`None`: the default input) to see its level
