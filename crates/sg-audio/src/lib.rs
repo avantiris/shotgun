@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
-pub use fx::{Tone, response_db};
+pub use fx::{Tone, process_offline, response_db};
 pub use graph::{Processor, Transport};
 pub use scope::{SCOPE_STEP, SCOPE_TAPS, SPECTRUM_BANDS, SPECTRUM_FLOOR_DB, SPECTRUM_HZ};
 

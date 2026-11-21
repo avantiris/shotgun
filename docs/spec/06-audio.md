@@ -195,6 +195,27 @@ unchanged.
     of its pitch, and at 5 ms the follower stayed far under them.
   - The low cut is fourth order (24 dB per octave), not second: mains hum
     at 50 Hz is 24 dB down with the cut at 100 Hz (it was 8 dB).
+- Changed in the night of 2026-11-22 (feedback N2.2, on seven takes of
+  his recorded through an on-board input, hum 11 to 15 dB under the voice):
+  - Listening to a voice ("Voice" on a strip) now finds a floor of noise
+    that is close under the voice (it was only looked for 35 dB below the
+    loudest moment, so on these takes none was found and no noise
+    reduction set), and tells hum (below 120 Hz) from hiss. Hum raises the
+    low cut to 105 Hz; hiss sets the noise reduction (all of it from 20 dB
+    under the voice) and holds back added air.
+  - The proposal is then checked on the sound: the take (a minute of it)
+    is run through the stages with the proposed settings and measured
+    again, up to four times, and threshold, make-up and noise reduction
+    are moved until the result is at the style's level, its loud phrases
+    stand where the style has them and the pauses are quiet
+    (`sg_play::fit_voice`). On his two long takes: -17.0 dB (aim -17),
+    loud phrases 10.2 dB above the average (aim 12), pauses 68 and 71 dB
+    under the voice (before: 15 and 11). About one second per take.
+  - The compressor has a make-up gain (0 to 24 dB, `comp_makeup_db`),
+    which the set-up uses instead of pushing the fader to its end.
+  - The leveller pushes up in full only what is within 10 dB of the
+    average, less down to 20 dB below it and nothing further down: breath
+    and room noise came out up to 12 dB louder.
 - The stages run in the order the track has them in (`order` in its mix
   settings, each of the eight once; feedback F16.22). The plugins, fader
   and sends stay after them.

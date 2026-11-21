@@ -1500,6 +1500,7 @@ impl Shell {
         track: sg_core::TrackId,
         style: Option<sg_media::voice::VoiceStyle>,
         result: Result<sg_media::voice::VoiceStats, String>,
+        fitted: Option<sg_media::voice::Suggestion>,
     ) {
         self.editor.mixer.listening = None;
         let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
@@ -1513,7 +1514,9 @@ impl Shell {
         let project = session.project().clone();
         let Some((seq, found)) = project.sequences.first().and_then(|s| Some((s.id, s.track(track)?))) else { return };
         let style = style.unwrap_or_else(|| sg_media::voice::VoiceStyle::guess(&stats));
-        let set = sg_media::voice::suggest(&stats, style);
+        // The settings checked on the sound itself, if the listening
+        // gave them; what the measurements alone propose otherwise.
+        let set = fitted.filter(|set| set.style == style).unwrap_or_else(|| sg_media::voice::suggest(&stats, style));
         let mix = mixer::with_voice(found.mix, &set);
         if let Some(heard) = self.editor.mixer.listened.get_mut(&track) {
             heard.set = Some(mix);
@@ -1541,8 +1544,20 @@ impl Shell {
                     Some(noise) => format!(", noise {:.0} dB under it", stats.loudness_db - noise),
                     None => String::new(),
                 };
+                // What no setting repairs is said, so that the next take is better.
+                let mut advice = String::new();
+                if stats.hum_db.is_some_and(|hum| stats.loudness_db - hum < 30.0) {
+                    advice += " Much of the noise is mains hum from the input: the low cut takes it out.";
+                }
+                if stats.noise_db.is_some_and(|noise| stats.loudness_db - noise < 20.0) {
+                    advice +=
+                        " The voice is close to the noise: record nearer to the microphone, or with a better input.";
+                }
+                if stats.peak_db > -0.3 {
+                    advice += " The take clips: turn the input down for the next one.";
+                }
                 session.notice = Some(format!(
-                    "{} set up as {}: heard {:.0} s at {:.0} dB{pitch}{noise}.{room} Undo takes it back.",
+                    "{} set up as {}: heard {:.0} s at {:.0} dB{pitch}{noise}.{room}{advice} Undo takes it back.",
                     found.name,
                     style.name().to_lowercase(),
                     stats.seconds,

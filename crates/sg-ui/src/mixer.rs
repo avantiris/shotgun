@@ -273,7 +273,9 @@ fn chain_of(track: &sg_core::Track, sequence: &Sequence) -> Vec<(String, String,
             Stage::DeEss => (percent(mix.deess), mix.deess > 0.0),
             Stage::Leveller => (percent(mix.level), mix.level > 0.0),
             Stage::Comp => {
-                let squeezed = format!("above {:.0} dB, {:.1} : 1", mix.comp_threshold_db, mix.comp_ratio);
+                let back =
+                    if mix.comp_makeup_db > 0.0 { format!(", +{:.0} dB", mix.comp_makeup_db) } else { String::new() };
+                let squeezed = format!("above {:.0} dB, {:.1} : 1{back}", mix.comp_threshold_db, mix.comp_ratio);
                 (squeezed, mix.comp_threshold_db < 0.0)
             }
             Stage::Drive | Stage::Whole => (percent(mix.drive), mix.drive > 0.0),
@@ -994,6 +996,12 @@ impl Mixer {
                             egui::DragValue::new(&mut mix.comp_ratio).range(1.0..=20.0).speed(0.05).fixed_decimals(1).suffix(" : 1"),
                             "4 lets one decibel through for every four above the threshold",
                         );
+                        field(
+                            ui,
+                            "Make-up",
+                            egui::DragValue::new(&mut mix.comp_makeup_db).range(0.0..=24.0).speed(0.1).fixed_decimals(1).suffix(" dB"),
+                            "Turning the loud parts down makes the whole quieter: this gives it back, after the compressor.",
+                        );
                     });
                     ui.separator();
                     if mix != track.mix {
@@ -1123,29 +1131,7 @@ impl Mixer {
 /// A track's settings with what listening to its voice proposed put on.
 /// Pan, mute and solo stay.
 pub fn with_voice(mix: TrackSettings, set: &sg_media::voice::Suggestion) -> TrackSettings {
-    TrackSettings {
-        gain_db: set.gain_db,
-        low_cut_hz: set.low_cut_hz,
-        denoise: set.denoise,
-        eq_low_db: set.eq_low_db,
-        eq_mid_db: set.eq_mid_db,
-        eq_mid_hz: set.eq_mid_hz,
-        eq_high_db: set.eq_high_db,
-        comp_threshold_db: set.comp_threshold_db,
-        comp_ratio: set.comp_ratio,
-        deess: set.deess,
-        tune: set.tune,
-        tune_key: set.tune_key,
-        tune_scale: set.tune_scale,
-        tune_speed: set.tune_speed,
-        level: set.level,
-        drive: set.drive,
-        voice: true,
-        duck_db: 0.0,
-        reverb: set.reverb,
-        echo: set.echo,
-        ..mix
-    }
+    set.onto(mix)
 }
 
 /// The mixer settings a script step names: `gain=-6`, `pan=0.3`, `mute=1`,
@@ -1164,6 +1150,7 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "eqhigh" => mix.eq_high_db = value,
         "threshold" => mix.comp_threshold_db = value,
         "ratio" => mix.comp_ratio = value,
+        "makeup" => mix.comp_makeup_db = value,
         "deess" => mix.deess = value,
         "tune" => mix.tune = value,
         "tunekey" => mix.tune_key = value as u8,

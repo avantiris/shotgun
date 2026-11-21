@@ -3368,6 +3368,7 @@ dependencies = [
  "sg-core",
  "sg-export",
  "sg-media",
+ "sg-play",
  "sg-project",
  "wgpu",
 ]

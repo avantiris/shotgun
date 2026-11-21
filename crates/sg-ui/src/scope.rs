@@ -514,6 +514,9 @@ fn fields(ui: &mut egui::Ui, stage: Stage, mix: &mut TrackSettings) {
                     .fixed_decimals(1)
                     .suffix(" : 1"),
             );
+            ui.label(RichText::new("Make-up").size(10.5).color(theme::DIM));
+            let makeup = egui::DragValue::new(&mut mix.comp_makeup_db).range(0.0..=24.0).speed(0.1).fixed_decimals(1);
+            ui.add(makeup.suffix(" dB"));
         }
         Stage::Drive => share(ui, "Saturation", &mut mix.drive),
     });

@@ -28,6 +28,11 @@ pub struct VoiceStats {
     pub peak_db: f32,
     /// Level between the phrases; `None` if the recording never pauses.
     pub noise_db: Option<f32>,
+    /// The two parts of that noise: what lies below 120 Hz (the hum of
+    /// the mains, rumble), which a low cut takes away, and the rest
+    /// (hiss), which the noise reduction is for.
+    pub hum_db: Option<f32>,
+    pub hiss_db: Option<f32>,
     /// Typical pitch of the voice in hertz; `None` if none was found.
     pub pitch_hz: Option<f32>,
     /// Share of the voiced moments at which the pitch holds still (0 to 1):
@@ -63,6 +68,13 @@ pub enum VoiceStyle {
 }
 
 impl VoiceStyle {
+    /// How far the loud phrases of a finished vocal of this style stand
+    /// above its average, and the level it has after its chain, in decibels.
+    pub fn aims(self) -> (f32, f32) {
+        let (_, _, spread, _, level, _) = self.target();
+        (spread, level)
+    }
+
     pub const ALL: [VoiceStyle; 5] =
         [VoiceStyle::RapLead, VoiceStyle::Doubles, VoiceStyle::SungHook, VoiceStyle::Melodic, VoiceStyle::AdLibs];
 
@@ -121,6 +133,8 @@ pub struct Suggestion {
     pub eq_high_db: f32,
     pub comp_threshold_db: f32,
     pub comp_ratio: f32,
+    /// What the compressor gives back after it, in decibels.
+    pub comp_makeup_db: f32,
     /// De-esser, 0 to 1.
     pub deess: f32,
     /// Pitch correction: how much (0 is off), and the key it corrects to
@@ -137,6 +151,37 @@ pub struct Suggestion {
     /// How much goes to the shared reverb and echo, 0 to 1.
     pub reverb: f32,
     pub echo: f32,
+}
+
+impl Suggestion {
+    /// A track's settings with this put on. Pan, mute, solo, group and
+    /// the order of the stages stay.
+    pub fn onto(&self, mix: sg_core::TrackSettings) -> sg_core::TrackSettings {
+        sg_core::TrackSettings {
+            gain_db: self.gain_db,
+            low_cut_hz: self.low_cut_hz,
+            denoise: self.denoise,
+            eq_low_db: self.eq_low_db,
+            eq_mid_db: self.eq_mid_db,
+            eq_mid_hz: self.eq_mid_hz,
+            eq_high_db: self.eq_high_db,
+            comp_threshold_db: self.comp_threshold_db,
+            comp_ratio: self.comp_ratio,
+            comp_makeup_db: self.comp_makeup_db,
+            deess: self.deess,
+            tune: self.tune,
+            tune_key: self.tune_key,
+            tune_scale: self.tune_scale,
+            tune_speed: self.tune_speed,
+            level: self.level,
+            drive: self.drive,
+            voice: true,
+            duck_db: 0.0,
+            reverb: self.reverb,
+            echo: self.echo,
+            ..mix
+        }
+    }
 }
 
 fn db(power: f64) -> f32 {
@@ -164,8 +209,19 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
         })
         .collect();
     let loudest = level.iter().copied().fold(f32::MIN, f32::max);
-    // The voice sounds where the level is within 35 dB of its loudest.
-    let floor = (loudest - 35.0).max(-70.0);
+    // A floor of noise under the take: its quietest moments are all alike
+    // (a voice that trails off is not). Found on the takes of 2026-11-21:
+    // hum at -32 dB under a voice at -24 was "within 35 dB of the loudest"
+    // throughout, so no pause was seen, no noise measured and none removed.
+    let mut ordered = level.clone();
+    ordered.sort_by(f32::total_cmp);
+    let (low, lowest) = (percentile(&ordered, 0.15), percentile(&ordered, 0.03));
+    // (And well below its loudest: a held note is all alike too.)
+    let noise_floor = (low - lowest < 4.0 && low > -90.0 && loudest - low > 8.0).then(|| percentile(&ordered, 0.08));
+    // The voice sounds where the level is within 35 dB of its loudest, and clearly above that floor.
+    // (4 dB above it: under these takes the noise was only 10 dB below
+    // the voice, and a wider margin took half the voice for pauses.)
+    let floor = (loudest - 35.0).max(-70.0).max(noise_floor.map_or(f32::MIN, |noise| noise + 4.0));
     let sounding: Vec<usize> = (0..frames).filter(|f| level[*f] > floor).collect();
     let seconds = sounding.len() as f32 * HOP as f32 / RATE as f32;
     if seconds < 0.5 {
@@ -200,7 +256,25 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
     // Between the phrases: what is clearly below the voice. Too little of it says nothing.
     let mut gaps: Vec<f32> = level.iter().copied().filter(|l| *l <= floor).collect();
     gaps.sort_by(f32::total_cmp);
-    let noise_db = (gaps.len() >= 20).then(|| percentile(&gaps, 0.5).max(-110.0));
+    // (With a floor found, the floor: the gaps then hold quiet ends of words too.)
+    let noise_db = (gaps.len() >= 20).then(|| noise_floor.unwrap_or(percentile(&gaps, 0.5)).max(-110.0));
+    // What the noise is made of: the share of it below 120 Hz, from up to
+    // two hundred of the pauses' frames.
+    let quiet: Vec<usize> = (0..frames).filter(|f| level[*f] <= floor && level[*f] > -100.0).collect();
+    let (mut below, mut all) = (0.0f64, 0.0f64);
+    for &f in quiet.iter().step_by((quiet.len() / 200).max(1)) {
+        for (slot, (sample, w)) in buffer.iter_mut().zip(samples[f * HOP..f * HOP + SIZE].iter().zip(&window)) {
+            *slot = Complex32::new(sample * w, 0.0);
+        }
+        fft.process(&mut buffer);
+        // (The window smears a tone over the bins beside it: 50 Hz reaches up to the third.)
+        below += buffer[..3].iter().map(|c| c.norm_sqr() as f64).sum::<f64>();
+        all += buffer[..SIZE / 2].iter().map(|c| c.norm_sqr() as f64).sum::<f64>();
+    }
+    let parts = noise_db.filter(|_| all > 0.0).map(|noise| {
+        let share = (below / all).clamp(1e-6, 1.0 - 1e-6);
+        (noise + db(share), noise + db(1.0 - share))
+    });
     let (pitch_hz, steadiness, key) = pitch(samples, &sounding);
     let middle = bands[3].max(1e-12);
     let loudness_db = db(power / sounding.len() as f64);
@@ -211,6 +285,8 @@ pub fn measure(samples: &[f32]) -> Option<VoiceStats> {
         loud_db: percentile(&peaks, 0.9),
         peak_db: *peaks.last()?,
         noise_db,
+        hum_db: parts.map(|(hum, _)| hum),
+        hiss_db: parts.map(|(_, hiss)| hiss),
         pitch_hz,
         steadiness,
         bands_db: bands.map(|b| db(b / middle)),
@@ -324,13 +400,33 @@ fn key_of(held: &[f32; 12]) -> Option<(u8, bool)> {
 pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
     let (air_target, body_allowed, spread, ratio, level_target, cut_share) = style.target();
     // Well below the voice's own pitch there is only rumble.
-    let low_cut_hz = stats.pitch_hz.map_or(90.0, |hz| (hz * cut_share).clamp(75.0, 140.0)).round();
+    let mut low_cut_hz = stats.pitch_hz.map_or(90.0, |hz| (hz * cut_share).clamp(75.0, 140.0)).round();
+    // Hum of the mains that can be heard under the voice: the cut goes
+    // above its second harmonic (at 105 Hz, 50 Hz is 26 dB down, 100 Hz
+    // 4), as far as the voice's own pitch lets it.
+    if stats.hum_db.is_some_and(|hum| stats.loudness_db - hum < 40.0) {
+        let most = stats.pitch_hz.map_or(105.0, |hz| (hz * 0.75).clamp(90.0, 130.0));
+        low_cut_hz = low_cut_hz.max(105.0f32.min(most).round());
+    }
+    // The leveller, before the compressor, has taken its share of the
+    // difference between loud and average already.
+    let level = match style {
+        VoiceStyle::RapLead => 0.6,
+        VoiceStyle::Doubles => 0.7,
+        VoiceStyle::SungHook => 0.5,
+        VoiceStyle::Melodic => 0.6,
+        VoiceStyle::AdLibs => 0.7,
+    };
+    let swing = (stats.loud_db - stats.loudness_db) * (1.0 - 0.5 * level);
     // The loud phrases are brought down to where they stand on the records.
-    let reduction = (stats.loud_db - stats.loudness_db - spread).clamp(2.0, 14.0);
-    // The quieter the pauses against the voice, the less there is to remove.
-    let denoise = match stats.noise_db.map(|noise| stats.loudness_db - noise) {
-        // (Gently: the noise reduction is made for speech and costs a little of the voice.)
-        Some(clear) if clear < 45.0 => ((45.0 - clear) / 25.0 * 0.7).clamp(0.1, 0.7),
+    let reduction = (swing - spread).clamp(2.0, 14.0);
+    // The quieter the hiss against the voice, the less there is to remove
+    // (what lies below the low cut is that one's to remove). All of it
+    // from 20 dB: the noise reduction costs a little of the voice, but
+    // noise that close costs more.
+    let clear = stats.hiss_db.or(stats.noise_db).map(|noise| stats.loudness_db - noise);
+    let denoise = match clear {
+        Some(clear) if clear < 50.0 => ((50.0 - clear) / 30.0).clamp(0.15, 1.0),
         _ => 0.0,
     };
     // Too much body (mud, about 200 Hz) or box (about 450 Hz) against the
@@ -339,14 +435,18 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
     let (excess, eq_mid_hz) = if body >= boxy { (body - body_allowed, 220.0) } else { (boxy - body_allowed, 450.0) };
     let eq_mid_db = -(excess / 2.0).clamp(0.0, 6.0);
     // Dull against the style: air is added, most of the difference. Sharp: a little is taken.
-    let eq_high_db = ((air_target - air) * 0.6).clamp(-4.0, 9.0);
+    // (Over hiss that close, air is mostly hiss: little is added.)
+    let most_air = if clear.is_some_and(|clear| clear < 30.0) { 2.0 } else { 9.0 };
+    let eq_high_db = ((air_target - air) * 0.6).clamp(-4.0, most_air);
     let eq_low_db = if stats.bands_db[0] > -12.0 { -2.0 } else { 0.0 };
     // The threshold at which the loud phrases are turned down by `reduction`.
     let slope = 1.0 - 1.0 / ratio;
-    let comp_threshold_db = (stats.loud_db - reduction / slope).clamp(-45.0, -6.0);
+    let loud_db = stats.loudness_db + swing;
+    let comp_threshold_db = (loud_db - reduction / slope).clamp(-45.0, -6.0);
     // What is left after the compressor (it has no make-up gain), brought to the style's level.
     let average_loss = ((stats.loudness_db + 3.0 - comp_threshold_db).max(0.0) * slope).min(reduction);
-    let gain_db = (level_target - (stats.loudness_db - average_loss)).clamp(-12.0, 12.0);
+    // The make-up gives back what the compressor took; the fader does the rest.
+    let gain_db = (level_target - stats.loudness_db).clamp(-12.0, 12.0);
     let round = |v: f32| (v * 10.0).round() / 10.0;
     // The S sounds are brought to where they are on the records. Added air
     // makes them sharper by about as much; the de-esser takes off up to 12 dB.
@@ -363,6 +463,8 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
         eq_high_db: round(eq_high_db),
         comp_threshold_db: round(comp_threshold_db),
         comp_ratio: ratio,
+        // (About what the compressor takes off the average; listening to the result sets it exactly.)
+        comp_makeup_db: round(average_loss),
         deess: (deess * 20.0).round() / 20.0,
         // A sung hook is corrected, fast (the sound of the records); a rap
         // verse is left alone, but the key is set so that turning the
@@ -373,13 +475,7 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
         // (At once for melodic rap: the steps between notes are the sound.)
         tune_speed: if style == VoiceStyle::Melodic { 0.0 } else { 0.15 },
         // (Choices, not measurements: how even, how dense, and how much room the beat makes.)
-        level: match style {
-            VoiceStyle::RapLead => 0.6,
-            VoiceStyle::Doubles => 0.7,
-            VoiceStyle::SungHook => 0.5,
-            VoiceStyle::Melodic => 0.6,
-            VoiceStyle::AdLibs => 0.7,
-        },
+        level,
         drive: match style {
             VoiceStyle::RapLead => 0.25,
             VoiceStyle::Doubles => 0.35,
@@ -470,15 +566,45 @@ mod tests {
         assert!(set.eq_high_db > 2.0, "{set:?}");
         // This made-up voice is even already (its loud phrases 3 dB above its
         // average, where a record has 12): the compressor only touches it, 2 dB.
-        assert!((stats.loud_db - set.comp_threshold_db - 2.0 / 0.75).abs() < 0.2, "{set:?} {stats:?}");
-        // A take that swings 20 dB is brought to the records' 12: 8 dB off its loud phrases.
-        let swinging = VoiceStats { loud_db: -6.0, loudness_db: -26.0, ..stats };
+        // (The leveller before it takes 30 % of that difference at this style's 60 %.)
+        let loud_after_leveller = |stats: &VoiceStats| stats.loudness_db + (stats.loud_db - stats.loudness_db) * 0.7;
+        assert!((loud_after_leveller(&stats) - set.comp_threshold_db - 2.0 / 0.75).abs() < 0.2, "{set:?} {stats:?}");
+        // A take that swings 30 dB reaches the compressor swinging 21 and is
+        // brought to the records' 12: 9 dB off its loud phrases.
+        let swinging = VoiceStats { loud_db: -4.0, loudness_db: -34.0, ..stats };
         let squeezed = suggest(&swinging, VoiceStyle::RapLead);
-        assert!((-6.0 - squeezed.comp_threshold_db - 8.0 / 0.75).abs() < 0.2, "{squeezed:?}");
+        assert!((loud_after_leveller(&swinging) - squeezed.comp_threshold_db - 9.0 / 0.75).abs() < 0.2, "{squeezed:?}");
+        // Hiss 35 dB under the voice: half of the noise reduction; and no hum, so the cut stays low.
+        assert!(stats.hum_db.unwrap() < stats.hiss_db.unwrap() - 15.0, "{stats:?}");
         assert_eq!(set.comp_ratio, 4.0);
         // Doubles sit further back and thinner than the lead.
         let doubles = suggest(&stats, VoiceStyle::Doubles);
         assert!(doubles.gain_db < set.gain_db && doubles.low_cut_hz > set.low_cut_hz, "{doubles:?}");
+    }
+
+    #[test]
+    fn noise_close_under_the_voice_is_found_and_told_apart() {
+        // As on the takes of 2026-11-21: mains hum 12 dB under the voice and hiss 20 dB under it.
+        let mut seed = 0x9e37_79b9u32;
+        let noisy: Vec<f32> = take(170.0, 9.0, 0.0, true)
+            .into_iter()
+            .enumerate()
+            .map(|(i, voice)| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let hiss = 0.02 * (seed as f32 / u32::MAX as f32 * 2.0 - 1.0);
+                voice + 0.04 * (2.0 * std::f32::consts::PI * 50.0 * i as f32 / RATE as f32).sin() + hiss
+            })
+            .collect();
+        let stats = measure(&noisy).unwrap();
+        let (noise, hum, hiss) = (stats.noise_db.unwrap(), stats.hum_db.unwrap(), stats.hiss_db.unwrap());
+        // The floor is seen although it is within 35 dB of the loudest moment, and most of it is hum.
+        assert!((-32.0..-27.0).contains(&noise) && hum > hiss + 3.0 && (-42.0..-34.0).contains(&hiss), "{stats:?}");
+        assert!((3.5..5.5).contains(&stats.seconds), "the voice is still all there: {stats:?}");
+        let set = suggest(&stats, VoiceStyle::RapLead);
+        // All of the noise reduction, the cut above the hum, and no air on top of the hiss.
+        assert!(set.denoise >= 0.9 && set.low_cut_hz >= 100.0 && set.eq_high_db <= 2.0, "{set:?}");
     }
 
     #[test]

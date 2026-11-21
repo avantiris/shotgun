@@ -12,7 +12,9 @@ Given at 00:35, to be worked on unattended until 08:00. No questions: decisions 
 - Said: "analyze the full vocalchain and compressor things again for errors and also optimize the autosettings they are really not good they do not avoid whitenoise and do not properly fit (you can use the audiotracks I now recorded with a dogshit mic to test)"
 - Kind: bug
 - Area: audio
-- Status: open
+- Status: fixed (this commit) for the automatic settings; see `docs/spec/06-audio.md`, "Changed in the night of 2026-11-22"
+- Found: on his takes the listening saw no noise at all (the hum was within the 35 dB it took for voice), so it set no noise reduction; it counted the hum as part of the voice's tone; and its sums for compressor and fader were for a chain that has changed since, and ended with the fader at +12 dB.
+- Verified: `sg-bench voice` on copies of his seven takes (numbers in the spec), a test with a made-up noisy voice. Not heard by anyone.
 
 ### N2.3 One look for the whole UI, not GTK-like buttons
 - Said: "optimize the full UI by making a more unified theme in a sense that buttons right now look a bit like GTK buttons, chose a style like a very \"edge based style\" or a very modern style but do not do this GTK like rounded button style from now. Give the buttons some feedback and some little details that it just looks more professional and finetuned."

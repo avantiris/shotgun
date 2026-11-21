@@ -28,6 +28,13 @@ pub fn voice(
     parts: &[(AssetId, i64, i64)],
     cancel: &Cancel,
 ) -> Result<sg_media::voice::VoiceStats, ToolError> {
+    sg_media::voice::measure(&voice_sound(root, parts, cancel)?)
+        .ok_or_else(|| ToolError::other("there is too little sound on this track to listen to"))
+}
+
+/// The sound [`voice`] listens to: the stretches one after the other,
+/// mono at 48 kHz, four minutes at most.
+pub fn voice_sound(root: &Path, parts: &[(AssetId, i64, i64)], cancel: &Cancel) -> Result<Vec<f32>, ToolError> {
     let mut loaded: std::collections::HashMap<AssetId, Vec<f32>> = std::collections::HashMap::new();
     let mut heard: Vec<f32> = Vec::new();
     for (id, from, len) in parts {
@@ -42,8 +49,7 @@ pub fn voice(
             break;
         }
     }
-    sg_media::voice::measure(&heard)
-        .ok_or_else(|| ToolError::other("there is too little sound on this track to listen to"))
+    Ok(heard)
 }
 
 /// The beats of an asset's sound: read from the cache, or found and cached.

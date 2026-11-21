@@ -1241,6 +1241,7 @@ fn tone_of(mix: &sg_core::TrackSettings) -> sg_audio::Tone {
         high_db: mix.eq_high_db,
         threshold_db: mix.comp_threshold_db,
         ratio: mix.comp_ratio,
+        makeup_db: mix.comp_makeup_db,
         deess: mix.deess,
         tune: sg_audio::tune::Tune {
             amount: mix.tune,
@@ -1256,6 +1257,84 @@ fn tone_of(mix: &sg_core::TrackSettings) -> sg_audio::Tone {
     }
 }
 
+/// A whole recording (interleaved stereo) through the stages of a track
+/// with these settings, in place: what the track sounds like before its
+/// plugins and its fader.
+pub fn process_offline(stereo: &mut [f32], mix: &sg_core::TrackSettings) {
+    sg_audio::process_offline(stereo, mix.low_cut_hz, mix.denoise, &tone_of(mix));
+}
+
+/// Listens to a voice (mono, 48 kHz) and sets a strip up for it: what
+/// [`sg_media::voice::suggest`] proposes from the measurements, then put
+/// right by ear, as it were: the take is run through the stages with the
+/// proposed settings and measured again, and fader, compressor and noise
+/// reduction are moved until what comes out is as loud and as even as
+/// the style wants and its pauses are quiet. `style`: `None` for the one
+/// that fits. `None` back if there is too little sound.
+///
+/// (Feedback N2.2: the proposal alone was worked out for a chain that has
+/// changed since, and nothing checked what it led to.)
+pub fn fit_voice(
+    samples: &[f32],
+    style: Option<sg_media::voice::VoiceStyle>,
+) -> Option<(sg_media::voice::VoiceStats, sg_media::voice::Suggestion)> {
+    use sg_media::voice;
+    let stats = voice::measure(samples)?;
+    let style = style.unwrap_or_else(|| voice::VoiceStyle::guess(&stats));
+    let mut set = voice::suggest(&stats, style);
+    let (spread, level) = style.aims();
+    // A minute from the middle is enough to judge by, and keeps this quick.
+    let most = SAMPLE_RATE as usize * 60;
+    let from = samples.len().saturating_sub(most) / 2;
+    let part = &samples[from..(from + most).min(samples.len())];
+    for _ in 0..4 {
+        let mix = set.onto(sg_core::TrackSettings::default());
+        // (The pitch correction changes no level; without it this is four times as fast.)
+        let tone = sg_audio::Tone { tune: sg_audio::tune::Tune { amount: 0.0, ..tone_of(&mix).tune }, ..tone_of(&mix) };
+        let mut stereo: Vec<f32> = part.iter().flat_map(|s| [*s, *s]).collect();
+        sg_audio::process_offline(&mut stereo, mix.low_cut_hz, mix.denoise, &tone);
+        let heard: Vec<f32> = stereo.as_chunks::<2>().0.iter().map(|frame| frame[0]).collect();
+        let Some(after) = voice::measure(&heard) else { break };
+        let mut settled = true;
+        // Noise that can still be heard in the pauses: more of the noise reduction.
+        // (Only under a take that had a floor of noise to begin with: what
+        // lies between the phrases of a clean one is breath.)
+        let noisy = stats.noise_db.is_some() && after.noise_db.is_some_and(|noise| after.loudness_db - noise < 50.0);
+        if noisy && set.denoise < 1.0 {
+            set.denoise = (set.denoise + 0.25).min(1.0);
+            settled = false;
+        }
+        // The loud phrases against the average: the compressor's threshold.
+        let off = (after.loud_db - after.loudness_db) - spread;
+        let slope = 1.0 - 1.0 / set.comp_ratio.max(1.0);
+        if off > 1.0 && set.comp_threshold_db > -44.0 {
+            set.comp_threshold_db = (set.comp_threshold_db - off / slope).max(-45.0);
+            settled = false;
+        } else if off < -2.5 && set.comp_threshold_db < -6.0 {
+            set.comp_threshold_db = (set.comp_threshold_db - off / slope * 0.7).min(-6.0);
+            settled = false;
+        }
+        // What the stages took off the level comes back after the
+        // compressor; the fader stays near where a fader belongs and
+        // does what is left.
+        let missing = level - after.loudness_db;
+        let makeup = (set.comp_makeup_db + missing).clamp(0.0, 24.0);
+        if (makeup - set.comp_makeup_db).abs() > 0.5 {
+            settled = false;
+        }
+        set.gain_db = (missing - (makeup - set.comp_makeup_db)).clamp(-12.0, 12.0);
+        set.comp_makeup_db = makeup;
+        if settled {
+            break;
+        }
+    }
+    let round = |v: f32| (v * 10.0).round() / 10.0;
+    set.gain_db = round(set.gain_db);
+    set.comp_threshold_db = round(set.comp_threshold_db);
+    set.comp_makeup_db = round(set.comp_makeup_db);
+    Some((stats, set))
+}
+
 /// What the low cut and the equaliser of these settings do to a steady
 /// tone of `hz`, in decibels: for the curve the mixer draws.
 pub fn response_db(mix: &sg_core::TrackSettings, hz: f32) -> f32 {
@@ -1269,6 +1348,46 @@ mod tests {
     use sg_core::model::{SequenceHeader, TrackHeader};
     use sg_core::time::Rate;
     use sg_core::{AssetId, Clip, ClipId, Key, Op, Param, Project, ProjectId, SequenceId, TrackId, apply};
+
+    #[test]
+    fn a_noisy_voice_is_set_up_so_that_it_comes_out_at_its_level_with_quiet_pauses() {
+        // Phrases of a gliding voice, every third one much louder, over mains hum and hiss.
+        let rate = super::SAMPLE_RATE as f32;
+        let mut seed = 0x2545_f491u32;
+        let (mut phase, mut level) = (0.0f32, 0.0f32);
+        let take: Vec<f32> = (0..super::SAMPLE_RATE as usize * 12)
+            .map(|i| {
+                let t = i as f32 / rate;
+                let wanted =
+                    if t.fract() < 0.7 { if (t as usize).is_multiple_of(3) { 0.5 } else { 0.12 } } else { 0.0 };
+                level += 0.002 * (wanted - level);
+                let hz = 160.0 * (1.0 + 0.2 * (t * 5.0).sin());
+                phase += 2.0 * std::f32::consts::PI * hz / rate;
+                let voice: f32 = (1..=20).map(|h| (phase * h as f32).sin() / h as f32).sum();
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let hiss = 0.008 * (seed as f32 / u32::MAX as f32 * 2.0 - 1.0);
+                level * 0.4 * voice + 0.03 * (2.0 * std::f32::consts::PI * 50.0 * t).sin() + hiss
+            })
+            .collect();
+        let (stats, set) = super::fit_voice(&take, Some(sg_media::voice::VoiceStyle::RapLead)).unwrap();
+        assert!(stats.noise_db.is_some_and(|noise| stats.loudness_db - noise < 25.0), "{stats:?}");
+        assert!(set.denoise >= 0.75 && set.low_cut_hz >= 100.0 && set.comp_makeup_db > 0.0, "{set:?}");
+        // The take with those settings on, as the track plays it.
+        let mix = set.onto(sg_core::TrackSettings::default());
+        let mut stereo: Vec<f32> = take.iter().flat_map(|s| [*s, *s]).collect();
+        super::process_offline(&mut stereo, &mix);
+        let heard: Vec<f32> = stereo.as_chunks::<2>().0.iter().map(|frame| frame[0]).collect();
+        let after = sg_media::voice::measure(&heard).unwrap();
+        let (spread, aim) = set.style.aims();
+        // At the style's level with the fader, the loud phrases not far above, and the pauses far below.
+        assert!((after.loudness_db + set.gain_db - aim).abs() < 1.5, "{after:?} {set:?}");
+        assert!(after.loud_db - after.loudness_db < spread + 2.5, "{after:?}");
+        assert!(after.noise_db.is_none_or(|noise| after.loudness_db - noise > 40.0), "{after:?}");
+        // The same length, and in time: the first loud phrase starts where it did.
+        assert_eq!(heard.len(), take.len());
+    }
 
     use super::*;
 

@@ -131,6 +131,8 @@ pub struct Tone {
     pub threshold_db: f32,
     /// How strongly: 4 lets one decibel through for every four above the threshold.
     pub ratio: f32,
+    /// What the compressor gives back after it, in decibels.
+    pub makeup_db: f32,
     /// De-esser, 0 (off) to 1: how much the S sounds are turned down.
     pub deess: f32,
     /// Pitch correction.
@@ -161,6 +163,7 @@ impl Default for Tone {
             high_db: 0.0,
             threshold_db: 0.0,
             ratio: 3.0,
+            makeup_db: 0.0,
             deess: 0.0,
             tune: crate::tune::Tune { amount: 0.0, key: 0, scale: 0, speed: 0.2 },
             level: 0.0,
@@ -461,7 +464,15 @@ impl TrackFx {
                                 self.average_db += (1.0 / self.sounded).max(slow) * (self.phrase_db - self.average_db);
                             }
                             let wanted = if sounding {
-                                (-(self.phrase_db - self.average_db) * tone.level.min(1.0)).clamp(-12.0, 12.0)
+                                let under = self.average_db - self.phrase_db;
+                                // Pushed up in full only what is within 10 dB of the
+                                // average, and less from there down to nothing at 20:
+                                // further below it is breath, the end of a word or the
+                                // noise of the room, which came out 12 dB louder (seen
+                                // on a clean take of his, whose pauses were silent
+                                // before the chain and 17 dB under the voice after it).
+                                let share = if under > 0.0 { ((20.0 - under) / 10.0).clamp(0.0, 1.0) } else { 1.0 };
+                                (under * tone.level.min(1.0)).clamp(-12.0, 12.0) * share
                             } else {
                                 0.0
                             };
@@ -503,6 +514,10 @@ impl TrackFx {
                             frame[1] *= gain;
                         }
                     }
+                    if tone.makeup_db > 0.0 {
+                        let gain = 10f32.powf(tone.makeup_db.min(24.0) / 20.0);
+                        block.iter_mut().for_each(|sample| *sample *= gain);
+                    }
                 }
                 _ => {
                     if tone.drive > 0.0 {
@@ -517,6 +532,25 @@ impl TrackFx {
             tap(place + 1, back, block);
         }
     }
+}
+
+/// A whole recording (interleaved stereo) through the stages, as the
+/// track would sound before its plugins and fader, in place and in time
+/// with what went in. For listening to what settings do to a take
+/// without playing it (the automatic set-up of a voice).
+pub fn process_offline(stereo: &mut [f32], low_cut_hz: f32, denoise: f32, tone: &Tone) {
+    let mut fx = TrackFx::new(denoise > 0.0, tone.tune.amount > 0.0);
+    let delay = fx.delay() * 2;
+    let length = stereo.len();
+    // The stages hand the sound back late: that much silence goes in
+    // after it, and the result is moved back to where it belongs.
+    let mut all = Vec::with_capacity(length + delay);
+    all.extend_from_slice(stereo);
+    all.resize(length + delay, 0.0);
+    for block in all.chunks_mut(2 * 1024) {
+        fx.process(block, low_cut_hz, denoise, tone);
+    }
+    stereo.copy_from_slice(&all[delay..]);
 }
 
 /// The equaliser's three bands as (kind, hertz, decibels).

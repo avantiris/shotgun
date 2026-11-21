@@ -288,11 +288,32 @@ fn main() -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
                 anyhow::ensure!(rate == 48_000, "{path}: {rate} Hz, expected 48000");
                 let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                match sg_media::voice::measure(&samples) {
-                    Some(stats) => {
-                        let style = sg_media::voice::VoiceStyle::guess(&stats);
+                let started = std::time::Instant::now();
+                match sg_play::fit_voice(&samples, None) {
+                    Some((stats, set)) => {
                         println!("{name}: {stats:?}");
-                        println!("  as {}: {:?}", style.name(), sg_media::voice::suggest(&stats, style));
+                        println!("  proposed: {:?}", sg_media::voice::suggest(&stats, set.style));
+                        println!("  fitted in {:.1} s: {set:?}", started.elapsed().as_secs_f32());
+                        // What the take is like with those settings on.
+                        let mix = set.onto(sg_core::TrackSettings::default());
+                        let mut stereo: Vec<f32> = samples.iter().flat_map(|s| [*s, *s]).collect();
+                        sg_play::process_offline(&mut stereo, &mix);
+                        let heard: Vec<f32> = stereo.as_chunks::<2>().0.iter().map(|frame| frame[0]).collect();
+                        if let Some(after) = sg_media::voice::measure(&heard) {
+                            let (spread, level) = set.style.aims();
+                            println!(
+                                "  result: {:.1} dB (aim {level:.0}) with the fader, loud phrases {:.1} dB above (aim {spread:.0}), \
+                                 pauses {} under the voice (before: {})",
+                                after.loudness_db + set.gain_db,
+                                after.loud_db - after.loudness_db,
+                                after
+                                    .noise_db
+                                    .map_or("silent".to_owned(), |n| format!("{:.0} dB", after.loudness_db - n)),
+                                stats
+                                    .noise_db
+                                    .map_or("silent".to_owned(), |n| format!("{:.0} dB", stats.loudness_db - n)),
+                            );
+                        }
                     }
                     None => println!("{name}: too little sound"),
                 }

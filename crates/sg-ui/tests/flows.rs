@@ -1209,6 +1209,8 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
         loud_db: -14.0,
         peak_db: -9.0,
         noise_db: Some(-58.0),
+        hum_db: None,
+        hiss_db: Some(-58.0),
         pitch_hz: Some(112.0),
         steadiness: 0.2,
         bands_db: [-30.0, 6.0, 1.0, 0.0, -12.0, -27.0],
@@ -1217,7 +1219,7 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
         seconds: 42.0,
     };
     let root = harness.state().root.clone();
-    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard));
+    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard), None);
     harness.run_steps(3);
     let (_, after) = strip(&harness);
     assert_eq!(after.pan, before.pan);
@@ -1237,7 +1239,7 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
     harness.run_steps(3);
     assert_eq!(strip(&harness).1, before);
     // Nothing to hear is said, not guessed.
-    harness.state_mut().shell.voice_measured(&root, track, None, Err("there is too little sound".to_owned()));
+    harness.state_mut().shell.voice_measured(&root, track, None, Err("there is too little sound".to_owned()), None);
     harness.run_steps(2);
     assert_eq!(strip(&harness).1, before);
 }
@@ -1265,6 +1267,8 @@ fn setting_a_voice_up_makes_the_other_tracks_duck_under_it() {
         loud_db: -8.0,
         peak_db: -3.0,
         noise_db: None,
+        hum_db: None,
+        hiss_db: None,
         pitch_hz: Some(180.0),
         steadiness: 0.2,
         bands_db: [-30.0, -2.0, 0.0, 0.0, -8.0, -14.0],
@@ -1273,7 +1277,7 @@ fn setting_a_voice_up_makes_the_other_tracks_duck_under_it() {
         seconds: 60.0,
     };
     let root = harness.state().root.clone();
-    harness.state_mut().shell.voice_measured(&root, before[0].0, None, Ok(heard));
+    harness.state_mut().shell.voice_measured(&root, before[0].0, None, Ok(heard), None);
     harness.run_steps(3);
     let after = audio(&harness);
     // The voice track is one; the other, which has sound on it, goes down 3 dB under it.
@@ -1981,6 +1985,8 @@ fn a_strip_set_up_by_listening_listens_again_when_another_take_is_on_its_track()
         loud_db: -14.0,
         peak_db: -9.0,
         noise_db: Some(-58.0),
+        hum_db: None,
+        hiss_db: Some(-58.0),
         pitch_hz: Some(112.0),
         steadiness: 0.2,
         bands_db: [-30.0, 6.0, 1.0, 0.0, -12.0, -27.0],
@@ -1992,7 +1998,7 @@ fn a_strip_set_up_by_listening_listens_again_when_another_take_is_on_its_track()
     let root = harness.state().root.clone();
     click(&mut harness, "Voice");
     click(&mut harness, "Listen and set up");
-    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard));
+    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard), None);
     harness.run_steps(3);
     assert_eq!(asked(&harness), [vec![AssetId(1)]]);
     // Cutting the take in two leaves the same recording on the track: nothing is listened to again.
@@ -2017,7 +2023,7 @@ fn a_strip_set_up_by_listening_listens_again_when_another_take_is_on_its_track()
     let again = asked(&harness);
     assert_eq!(again.len(), 2);
     assert!(again[1].contains(&AssetId(9)) && again[1].contains(&AssetId(1)), "{again:?}");
-    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard));
+    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard), None);
     harness.run_steps(3);
     // With a setting changed by hand it does not: it offers to, on the strip.
     let (_, mix) = strip(&harness);
