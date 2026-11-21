@@ -178,6 +178,8 @@ struct Disk {
     mix: Mix,
     feeds: Vec<Feed>,
     master: Arc<Live>,
+    /// The room's seconds and the echo's repeat, read by the graph each block.
+    space: Arc<[std::sync::atomic::AtomicU32; 2]>,
     files: HashMap<PathBuf, Option<Arc<Wav>>>,
     playing: bool,
     /// Nothing plays, but a track is played by hand: its ring is kept
@@ -577,7 +579,8 @@ impl Disk {
         });
         limiter.prepare(SAMPLE_RATE, MAX_BLOCK);
         let sends = self.mix.tracks.iter().any(|t| t.reverb > 0.0 || t.echo > 0.0);
-        let space = sends.then(|| crate::space::Space::new(self.mix.echo_samples as usize));
+        self.set_space();
+        let space = sends.then(|| crate::space::Space::new(self.mix.echo_samples as usize, self.space.clone()));
         let click = self.mix.click;
         let by_hand = self.mix.tracks.iter().any(|t| t.by_hand);
         let graph = Box::new(Graph {
@@ -599,6 +602,12 @@ impl Disk {
         if self.idle_hand {
             self.fill_idle();
         }
+    }
+
+    /// Hands the room's and the echo's settings to the graph that sounds.
+    fn set_space(&self) {
+        self.space[0].store(self.mix.room_seconds.to_bits(), Ordering::Relaxed);
+        self.space[1].store(self.mix.echo_repeat.to_bits(), Ordering::Relaxed);
     }
 
     /// Lets the device rest once the last grain has had its time.
@@ -642,6 +651,7 @@ impl Disk {
                         (feed.low_cut_hz, feed.denoise, feed.tone) = (track.low_cut_hz, track.denoise, track.tone);
                     }
                     self.master.set(self.mix.master_gain, 0.0, false);
+                    self.set_space();
                 } else if self.playing {
                     // Continue from what the callback will render next.
                     let pos = self.shared.clock_pos.load(Ordering::Relaxed)
@@ -771,6 +781,7 @@ pub fn run(
         mix: Mix::default(),
         feeds: Vec::new(),
         master: Live::new(1.0, 0.0, false),
+        space: Arc::default(),
         files: HashMap::new(),
         playing: false,
         idle_hand: false,

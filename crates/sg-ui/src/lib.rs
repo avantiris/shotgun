@@ -915,7 +915,28 @@ impl Shell {
                     let audio =
                         |n: usize| sequence?.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n);
                     let op = match (sequence, which.parse().ok().and_then(audio)) {
-                        (Some(seq), _) if which == "master" => Some(Op::SetMasterGain { id: seq.id, db: value }),
+                        // master:room=<seconds>, master:repeat=<percent>, master:note=<0 to 4>; else the fader.
+                        (Some(seq), _) if which == "master" => {
+                            let space = seq.space;
+                            Some(match field.as_str() {
+                                "room" => Op::SetSpace {
+                                    id: seq.id,
+                                    space: sg_core::Space { room_ds: (value * 10.0).round() as u8, ..space },
+                                },
+                                "repeat" => Op::SetSpace {
+                                    id: seq.id,
+                                    space: sg_core::Space { echo_repeat: value.round() as u8, ..space },
+                                },
+                                "note" => Op::SetSpace {
+                                    id: seq.id,
+                                    space: sg_core::Space {
+                                        echo_note: sg_core::EchoNote::ALL[(value as usize).min(4)],
+                                        ..space
+                                    },
+                                },
+                                _ => Op::SetMasterGain { id: seq.id, db: value },
+                            })
+                        }
                         (Some(seq), Some(track)) => {
                             let mut mix = track.mix;
                             mixer::set_field(&mut mix, &field, value).then_some(Op::SetTrackMix {

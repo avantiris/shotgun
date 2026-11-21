@@ -107,6 +107,11 @@ pub enum Op {
         clip: ClipId,
         notes: Option<Vec<crate::model::Note>>,
     },
+    /// Sets how the shared room and echo of a sequence sound.
+    SetSpace {
+        id: SequenceId,
+        space: crate::model::Space,
+    },
     /// Gives a sequence a tempo (bars and beats), changes it or takes it away.
     SetTempo {
         id: SequenceId,
@@ -194,6 +199,7 @@ impl Op {
             Op::SetSong { .. } => "set song",
             Op::SetMasterGain { .. } => "adjust master",
             Op::SetTempo { .. } => "set tempo",
+            Op::SetSpace { .. } => "set room and echo",
             Op::SetTrackPlugin { .. } => "change plugin",
             Op::SetClipNotes { .. } => "edit notes",
             Op::SetSequenceSize { .. } => "change frame size",
@@ -346,6 +352,9 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             if seq.tempo.is_some() {
                 restore.push(Op::SetTempo { id: *id, tempo: seq.tempo });
             }
+            if seq.space != crate::model::Space::default() {
+                restore.push(Op::SetSpace { id: *id, space: seq.space });
+            }
             if seq.song.is_some() {
                 restore.push(Op::SetSong { id: *id, song: seq.song });
             }
@@ -434,6 +443,11 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
         Op::SetTempo { id, tempo } => with_sequence(p, *id, |s| {
             let inverse = Op::SetTempo { id: *id, tempo: s.tempo };
             s.tempo = tempo.map(crate::model::Tempo::clamped);
+            Ok(inverse)
+        }),
+        Op::SetSpace { id, space } => with_sequence(p, *id, |s| {
+            let inverse = Op::SetSpace { id: *id, space: s.space };
+            s.space = space.clamped();
             Ok(inverse)
         }),
         Op::SetMasterGain { id, db } => with_sequence(p, *id, |s| {
@@ -1052,6 +1066,12 @@ mod mix_tests {
         // Sorted by time, and what cannot be a note is left out.
         assert_eq!(**a1(&noted).notes.get(&ClipId(77)).unwrap(), vec![note(0, 55), note(0, 60), note(960, 64)]);
         assert_eq!(apply(&noted, &unnote).unwrap().0, p2);
+        // So do the room and the echo, brought into range.
+        let wide =
+            crate::model::Space { room_ds: 200, echo_note: crate::model::EchoNote::DottedEighth, echo_repeat: 60 };
+        let (spaced, unspace) = apply(&p2, &Op::SetSpace { id: SEQ, space: wide }).unwrap();
+        assert_eq!(spaced.sequences[0].space, crate::model::Space { room_ds: 80, ..wide });
+        assert_eq!(apply(&spaced, &unspace).unwrap().0, p2);
         // A tempo comes and goes like any other setting.
         let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
         let (timed, untime) = apply(&p2, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();

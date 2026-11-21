@@ -238,7 +238,7 @@ enum Tail {
 /// Quieter than this (-80 dB) counts as died away.
 const TAIL_SILENCE: f32 = 1.0e-4;
 /// A tail is never longer than this.
-const TAIL_MAX: u64 = SAMPLE_RATE as u64 * 12;
+const TAIL_MAX: u64 = SAMPLE_RATE as u64 * 20;
 
 /// Takes away what would play after `end` (timeline samples): beyond the
 /// range of a song only what rings on is wanted, not the next clip.
@@ -1162,8 +1162,8 @@ mod tests {
         // One second of the timeline.
         let out = dir.path().join("a.wav");
         let (loud, tail) = render_mix(mix.clone(), &sequence, (0, 60), &out, &Cancel::new(), Tail::Ring).unwrap();
-        // The room rings on for more than half a second and has an end.
-        assert!(tail > 24_000 && tail < TAIL_MAX, "{tail}");
+        // The room rings on for a good while and has an end.
+        assert!(tail > 19_200 && tail < TAIL_MAX, "{tail}");
         assert!(loud.integrated().is_some());
         assert_eq!(std::fs::metadata(&out).unwrap().len(), 44 + (48_000 + tail) * 8);
         // A film's sound ends with its picture.

@@ -567,6 +567,34 @@ impl Mixer {
                     if to_db(self.master) > 0.0 {
                         ui.label(RichText::new("clipping").size(11.0).color(theme::ERROR));
                     }
+                    // The room and the echo every track sends to.
+                    ui.add_space(6.0);
+                    let mut space = sequence.space;
+                    ui.label(RichText::new("Room").size(11.0).color(theme::DIM));
+                    let mut seconds = space.room_ds as f32 / 10.0;
+                    let field = egui::DragValue::new(&mut seconds).range(0.3..=8.0).speed(0.02).max_decimals(1).suffix(" s");
+                    if ui.add(field).on_hover_text("How long the shared reverb rings").changed() {
+                        space.room_ds = (seconds * 10.0).round() as u8;
+                    }
+                    ui.label(RichText::new("Echo").size(11.0).color(theme::DIM));
+                    egui::ComboBox::from_id_salt("echo-note")
+                        .width(52.0)
+                        .selected_text(space.echo_note.label())
+                        .show_ui(ui, |ui| {
+                            for note in sg_core::EchoNote::ALL {
+                                ui.selectable_value(&mut space.echo_note, note, note.label());
+                            }
+                        })
+                        .response
+                        .on_hover_text("The time between the repeats, as a note value of the tempo (1/8. is a dotted eighth)");
+                    let mut repeat = space.echo_repeat as i32;
+                    let field = egui::DragValue::new(&mut repeat).range(0..=85).speed(0.3).suffix(" %");
+                    if ui.add(field).on_hover_text("How much of each repeat is repeated again: more, and it goes on longer").changed() {
+                        space.echo_repeat = repeat.clamp(0, 85) as u8;
+                    }
+                    if space != sequence.space {
+                        ops.push(Op::SetSpace { id: sequence.id, space });
+                    }
                 });
             });
         });

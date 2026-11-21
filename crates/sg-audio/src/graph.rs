@@ -473,6 +473,7 @@ impl Rt {
             for chunk_start in (0..len).step_by(MAX_BLOCK * 2) {
                 let block = &mut out[chunk_start..(chunk_start + MAX_BLOCK * 2).min(len)];
                 if let Some(space) = &mut graph.space {
+                    space.follow();
                     space.to_reverb[..block.len()].fill(0.0);
                     space.to_echo[..block.len()].fill(0.0);
                 }

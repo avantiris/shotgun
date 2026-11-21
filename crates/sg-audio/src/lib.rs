@@ -135,6 +135,10 @@ pub struct Mix {
     pub master_gain: f32,
     /// Samples between the repeats of the shared echo (a beat of the song).
     pub echo_samples: u32,
+    /// How long the shared room rings, in seconds, and how much of each
+    /// repeat of the shared echo is repeated again (0 to 0.9).
+    pub room_seconds: f32,
+    pub echo_repeat: f32,
     /// The metronome, while it is on. Never in an export.
     pub click: Option<space::Click>,
     /// For a master: the limiter holds the wave between the samples
@@ -145,7 +149,15 @@ pub struct Mix {
 
 impl Default for Mix {
     fn default() -> Mix {
-        Mix { tracks: Vec::new(), master_gain: 1.0, echo_samples: SAMPLE_RATE * 3 / 8, click: None, true_peak_db: None }
+        Mix {
+            tracks: Vec::new(),
+            master_gain: 1.0,
+            echo_samples: SAMPLE_RATE * 3 / 8,
+            room_seconds: space::ROOM_SECONDS,
+            echo_repeat: space::ECHO_REPEAT,
+            click: None,
+            true_peak_db: None,
+        }
     }
 }
 

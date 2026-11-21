@@ -500,8 +500,16 @@ chain second version, M16 mixing and mastering.
     below -80 dB, 12 s at most; clips after the range are not played
     into it, and every track file is as long as the song. A film's sound
     still ends with its picture.
-  - Still to do: pitch correction by hand per note; settings
-    for the room and the echo.
+  - Settings (2026-11-21): on the master strip, how long the room rings
+    (0.3 to 8 s; 1.5 s as before), the echo's time as a note value of
+    the tempo (1/2, 1/4, dotted 1/8, 1/8, 1/16) and how much of each
+    repeat is repeated (0 to 85 %). Kept with the sequence
+    (`Op::SetSpace`, a `space` line in the `.sg` file); the room's length
+    and the repeats change while it sounds, the echo's time takes a new
+    graph. Checked: unit tests (a room set longer is louder a second
+    later, an echo set to repeat nothing does not), a flow, and exports
+    of the same note with the room at 0.4 s and at 5 s.
+  - Still to do: pitch correction by hand per note.
 - [ ] M16 Mixing and mastering
   - Built 2026-11-20:
     - Loudness in LUFS (`sg_audio::loudness`, ITU-R BS.1770): the last

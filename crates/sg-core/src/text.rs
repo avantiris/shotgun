@@ -201,6 +201,10 @@ fn write_sequence(seq: &Sequence) -> String {
     if let Some(tempo) = seq.tempo {
         let _ = writeln!(out, "tempo {} {}", tempo.milli_bpm, tempo.beats_per_bar);
     }
+    if seq.space != crate::model::Space::default() {
+        let space = seq.space;
+        let _ = writeln!(out, "space {} {} {}", space.room_ds, space.echo_note.label(), space.echo_repeat);
+    }
     for marker in seq.markers.iter() {
         let _ = writeln!(out, "marker {} {}", marker.frame, quote(&marker.label));
     }
@@ -250,6 +254,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
     let (mut id, mut name, mut rate, mut size) = (None, None, None, None);
     let mut master_db = 0.0f32;
     let mut tempo = None;
+    let mut space = crate::model::Space::default();
     let mut song = None;
     let mut markers: Vec<Marker> = Vec::new();
     // The track being read: its header and clips so far.
@@ -345,6 +350,17 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                 });
                 tempo = Some(parsed.ok_or_else(|| err(n, "bad tempo"))?.clamped());
             }
+            "space" => {
+                let mut words = rest.split(' ');
+                let parsed = (|| {
+                    Some(crate::model::Space {
+                        room_ds: words.next()?.parse().ok()?,
+                        echo_note: crate::model::EchoNote::from_label(words.next()?)?,
+                        echo_repeat: words.next()?.parse().ok()?,
+                    })
+                })();
+                space = parsed.ok_or_else(|| err(n, "bad room and echo"))?.clamped();
+            }
             "master" => {
                 let level = rest.parse::<f32>().ok().filter(|db| db.is_finite());
                 master_db = level.ok_or_else(|| err(n, "bad master level"))?.clamp(-60.0, 12.0);
@@ -383,6 +399,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
         tempo,
         song,
         markers: Arc::new(markers),
+        space,
     })
 }
 
@@ -485,6 +502,9 @@ mod tests {
         let (p, _) = apply(&p, &Op::SetMasterGain { id: SEQ, db: -2.0 }).unwrap();
         let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
         let (p, _) = apply(&p, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();
+        let space =
+            crate::model::Space { room_ds: 32, echo_note: crate::model::EchoNote::DottedEighth, echo_repeat: 55 };
+        let (p, _) = apply(&p, &Op::SetSpace { id: SEQ, space }).unwrap();
         let surge = crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge \"XT\".vst3".into() };
         let (p, _) = apply(&p, &Op::SetTrackPlugin { seq: SEQ, track: A1, plugin: Some(surge) }).unwrap();
         let notes = vec![

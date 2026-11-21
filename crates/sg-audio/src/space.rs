@@ -33,14 +33,18 @@ impl Line {
 /// then four all-pass filters in a row (the well-known Schroeder/Moorer
 /// arrangement with the "Freeverb" tunings, scaled to 48 kHz).
 struct Tank {
-    combs: Vec<(Line, f32)>,
+    /// Each comb: its line, the state of its damping, and how much of
+    /// what comes out of it goes round again.
+    combs: Vec<(Line, f32, f32)>,
     passes: Vec<Line>,
 }
 
 const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
 const PASSES: [usize; 4] = [556, 441, 341, 225];
-/// How much of a comb's output goes round again: about 1.8 s of tail.
-const ROOM: f32 = 0.86;
+/// How long the room rings unless told otherwise, in seconds.
+pub const ROOM_SECONDS: f32 = 1.5;
+/// How much of each repeat of the echo is repeated again unless told otherwise.
+pub const ECHO_REPEAT: f32 = 0.38;
 /// How much the highs are held back on each round: a tail that darkens.
 const DAMP: f32 = 0.35;
 
@@ -48,17 +52,26 @@ impl Tank {
     fn new(spread: usize) -> Tank {
         let scale = |n: usize| (n + spread) * SAMPLE_RATE as usize / 44_100;
         Tank {
-            combs: COMBS.iter().map(|n| (Line::new(scale(*n)), 0.0)).collect(),
+            combs: COMBS.iter().map(|n| (Line::new(scale(*n)), 0.0, 0.0)).collect(),
             passes: PASSES.iter().map(|n| Line::new(scale(*n))).collect(),
+        }
+    }
+
+    /// Sets how long the room rings: each comb gives back what loses
+    /// 60 dB in that time over its own length, so that all fade together.
+    fn ring(&mut self, seconds: f32) {
+        for (line, _, back) in &mut self.combs {
+            let round = line.buffer.len() as f32 / SAMPLE_RATE as f32;
+            *back = 10f32.powf(-3.0 * round / seconds.max(0.1)).min(0.98);
         }
     }
 
     fn process(&mut self, input: f32) -> f32 {
         let mut out = 0.0;
-        for (line, low) in &mut self.combs {
+        for (line, low, back) in &mut self.combs {
             let heard = line.read();
             *low = heard * (1.0 - DAMP) + *low * DAMP;
-            line.write(input + *low * ROOM);
+            line.write(input + *low * *back);
             out += heard;
         }
         for line in &mut self.passes {
@@ -78,16 +91,33 @@ pub struct Reverb {
     early: [Line; 2],
     /// Low cut state: a room without rumble.
     low: [f32; 2],
+    /// How long it rings now, in seconds.
+    seconds: f32,
 }
 
 impl Default for Reverb {
     fn default() -> Reverb {
         let early = SAMPLE_RATE as usize / 50;
-        Reverb { tanks: [Tank::new(0), Tank::new(23)], early: [Line::new(early), Line::new(early)], low: [0.0; 2] }
+        let mut reverb = Reverb {
+            tanks: [Tank::new(0), Tank::new(23)],
+            early: [Line::new(early), Line::new(early)],
+            low: [0.0; 2],
+            seconds: 0.0,
+        };
+        reverb.ring(ROOM_SECONDS);
+        reverb
     }
 }
 
 impl Reverb {
+    /// Sets how long the room rings. Realtime-safe; does nothing if unchanged.
+    pub fn ring(&mut self, seconds: f32) {
+        if seconds != self.seconds {
+            self.seconds = seconds;
+            self.tanks.iter_mut().for_each(|tank| tank.ring(seconds));
+        }
+    }
+
     /// Replaces what was sent (interleaved stereo) with the room's answer.
     pub fn process(&mut self, bus: &mut [f32]) {
         // A one-pole low cut at about 250 Hz.
@@ -111,16 +141,15 @@ pub struct Echo {
     lines: [Line; 2],
     low: [f32; 2],
     high: [f32; 2],
+    /// How much of each repeat is repeated again.
+    pub repeat: f32,
 }
-
-/// How much of each repeat is repeated again.
-const FEEDBACK: f32 = 0.38;
 
 impl Echo {
     /// `samples` between repeats (a beat of the song, usually).
     pub fn new(samples: usize) -> Echo {
         let samples = samples.clamp(480, SAMPLE_RATE as usize * 2);
-        Echo { lines: [Line::new(samples), Line::new(samples)], low: [0.0; 2], high: [0.0; 2] }
+        Echo { lines: [Line::new(samples), Line::new(samples)], low: [0.0; 2], high: [0.0; 2], repeat: ECHO_REPEAT }
     }
 
     /// Replaces what was sent with its repeats.
@@ -129,11 +158,12 @@ impl Echo {
         // Repeats keep what lies between about 300 Hz and 4 kHz: they sit behind the voice.
         let top = 1.0 - (-std::f32::consts::TAU * 4000.0 / rate).exp();
         let bottom = 1.0 - (-std::f32::consts::TAU * 300.0 / rate).exp();
+        let repeat = self.repeat.clamp(0.0, 0.9);
         for frame in bus.as_chunks_mut::<2>().0 {
             let heard = [self.lines[0].read(), self.lines[1].read()];
             for (side, out) in frame.iter_mut().enumerate() {
                 // What goes round crosses over: the repeats wander from side to side.
-                let round = *out + heard[1 - side] * FEEDBACK;
+                let round = *out + heard[1 - side] * repeat;
                 self.high[side] += top * (round - self.high[side]);
                 self.low[side] += bottom * (self.high[side] - self.low[side]);
                 self.lines[side].write(self.high[side] - self.low[side]);
@@ -149,16 +179,28 @@ pub struct Space {
     pub echo: Echo,
     pub to_reverb: Vec<f32>,
     pub to_echo: Vec<f32>,
+    /// What can be changed while it sounds: seconds of ringing and the
+    /// echo's share repeated, as float bits. Written by the disk thread.
+    pub live: std::sync::Arc<[std::sync::atomic::AtomicU32; 2]>,
 }
 
 impl Space {
-    pub fn new(echo_samples: usize) -> Space {
+    pub fn new(echo_samples: usize, live: std::sync::Arc<[std::sync::atomic::AtomicU32; 2]>) -> Space {
         Space {
             reverb: Reverb::default(),
             echo: Echo::new(echo_samples),
             to_reverb: vec![0.0; MAX_BLOCK * 2],
             to_echo: vec![0.0; MAX_BLOCK * 2],
+            live,
         }
+    }
+
+    /// Takes over the settings as they are now. Once a block, on the realtime thread.
+    pub fn follow(&mut self) {
+        let read = |n: usize| f32::from_bits(self.live[n].load(std::sync::atomic::Ordering::Relaxed));
+        let (seconds, repeat) = (read(0), read(1));
+        self.reverb.ring(seconds);
+        self.echo.repeat = repeat;
     }
 }
 
@@ -225,6 +267,37 @@ mod tests {
         assert!(bus.as_chunks::<2>().0[10_000..20_000].iter().any(|f| (f[0] - f[1]).abs() > 1e-4));
         let peak = bus.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak.is_finite() && peak < 1.0, "{peak} {tail}");
+    }
+
+    #[test]
+    fn a_room_rings_as_long_as_it_is_set_to_and_an_echo_repeats_as_much() {
+        // How loud the room still is between 1.0 s and 1.5 s after a burst.
+        let late = |seconds: f32| {
+            let mut reverb = Reverb::default();
+            reverb.ring(seconds);
+            let mut bus = vec![0.0f32; 48_000 * 2 * 2];
+            for (n, frame) in bus.as_chunks_mut::<2>().0.iter_mut().take(4800).enumerate() {
+                *frame = [(n as f32 * 0.09).sin(); 2];
+            }
+            reverb.process(&mut bus);
+            assert!(bus.iter().all(|s| s.is_finite() && s.abs() < 1.5));
+            rms(&bus[48_000 * 2..72_000 * 2])
+        };
+        let (short, usual, long) = (late(0.4), late(ROOM_SECONDS), late(5.0));
+        assert!(short < usual * 0.1 && usual < long * 0.5, "{short} {usual} {long}");
+        // The third repeat of an echo, by how much is repeated.
+        let third = |repeat: f32| {
+            let mut echo = Echo::new(12_000);
+            echo.repeat = repeat;
+            let mut bus = vec![0.0f32; 48_000 * 2];
+            for (n, frame) in bus.as_chunks_mut::<2>().0.iter_mut().take(2400).enumerate() {
+                *frame = [(n as f32 * 0.13).sin(); 2];
+            }
+            echo.process(&mut bus);
+            rms(&bus[36_000 * 2..38_400 * 2])
+        };
+        assert!(third(0.0) < 1e-6);
+        assert!(third(0.7) > third(ECHO_REPEAT) * 2.0);
     }
 
     #[test]

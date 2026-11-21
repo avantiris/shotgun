@@ -1725,3 +1725,21 @@ fn the_input_level_is_shown_and_the_input_heard_only_when_asked() {
     assert_eq!(monitor(&harness), Some(None));
     assert!(harness.query_by_label("Hear").is_none());
 }
+
+#[test]
+fn the_room_and_the_echo_are_set_on_the_master_strip() {
+    let mut harness = editor();
+    let space = |harness: &Harness<'_, App>| harness.state().shell.session().unwrap().project().sequences[0].space;
+    assert_eq!(space(&harness), sg_core::Space::default());
+    harness.key_press(Key::M);
+    harness.run_steps(3);
+    // The echo's time is chosen as a note value of the tempo.
+    harness.get_by_value("1/4").click();
+    harness.run_steps(3);
+    click(&mut harness, "1/8.");
+    assert_eq!(space(&harness).echo_note, sg_core::EchoNote::DottedEighth);
+    // One undo step back.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(space(&harness), sg_core::Space::default());
+}

@@ -1044,11 +1044,20 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
             echo: track.mix.echo * track.mix.echo,
         })
         .collect();
-    // The echo repeats on the beat; without a tempo, every 3/8 of a second.
-    let echo_samples = sequence
-        .tempo
-        .map_or(SAMPLE_RATE * 3 / 8, |t| (SAMPLE_RATE as u64 * 60_000 / t.milli_bpm.max(1) as u64) as u32);
-    Mix { tracks, master_gain: db(sequence.master_db), echo_samples, click: None, true_peak_db: None }
+    // The echo repeats in time with the beat, at the note value chosen;
+    // without a tempo a beat is taken as 3/8 of a second.
+    let beat =
+        sequence.tempo.map_or(SAMPLE_RATE as u64 * 3 / 8, |t| SAMPLE_RATE as u64 * 60_000 / t.milli_bpm.max(1) as u64);
+    let (num, den) = sequence.space.echo_note.beats();
+    Mix {
+        tracks,
+        master_gain: db(sequence.master_db),
+        echo_samples: (beat * num as u64 / den as u64) as u32,
+        room_seconds: sequence.space.room_ds as f32 / 10.0,
+        echo_repeat: sequence.space.echo_repeat as f32 / 100.0,
+        click: None,
+        true_peak_db: None,
+    }
 }
 
 /// The notes of a track's note clips in timeline samples, in order. A

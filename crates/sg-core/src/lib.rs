@@ -22,8 +22,8 @@ pub use history::{Document, History, HistoryError, Record};
 pub use ids::ScenarioId;
 pub use ids::{AssetId, ClipId, IdGen, ProjectId, SequenceId, TrackId};
 pub use model::{
-    Marker, Note, PluginRef, Project, Sequence, SequenceHeader, Song, TICKS_PER_BEAT, Tempo, Track, TrackHeader,
-    TrackKind, TrackSettings,
+    EchoNote, Marker, Note, PluginRef, Project, Sequence, SequenceHeader, Song, Space, TICKS_PER_BEAT, Tempo, Track,
+    TrackHeader, TrackKind, TrackSettings,
 };
 pub use ops::{Op, OpError, apply};
 pub use props::{ClipProps, Ease, Key, Param, Shift, Title, Transition, TransitionKind};

@@ -44,6 +44,72 @@ pub struct Sequence {
     pub tempo: Option<Tempo>,
     /// Sorted by frame, at most one per frame.
     pub markers: Arc<Vec<Marker>>,
+    /// The room and the echo the tracks of this sequence send to.
+    pub space: Space,
+}
+
+/// How the shared reverb and echo of a sequence sound (09-daw.md, M15).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Space {
+    /// How long the room rings, in tenths of a second (3 to 80).
+    pub room_ds: u8,
+    /// The time between the echo's repeats as a note value.
+    pub echo_note: EchoNote,
+    /// How much of each repeat is repeated again, in percent (0 to 85).
+    pub echo_repeat: u8,
+}
+
+/// A note value for the echo; a beat is a quarter note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EchoNote {
+    Half,
+    Quarter,
+    DottedEighth,
+    Eighth,
+    Sixteenth,
+}
+
+impl EchoNote {
+    pub const ALL: [EchoNote; 5] =
+        [EchoNote::Half, EchoNote::Quarter, EchoNote::DottedEighth, EchoNote::Eighth, EchoNote::Sixteenth];
+
+    /// Its length in beats, as a fraction.
+    pub fn beats(self) -> (u32, u32) {
+        match self {
+            EchoNote::Half => (2, 1),
+            EchoNote::Quarter => (1, 1),
+            EchoNote::DottedEighth => (3, 4),
+            EchoNote::Eighth => (1, 2),
+            EchoNote::Sixteenth => (1, 4),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EchoNote::Half => "1/2",
+            EchoNote::Quarter => "1/4",
+            EchoNote::DottedEighth => "1/8.",
+            EchoNote::Eighth => "1/8",
+            EchoNote::Sixteenth => "1/16",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<EchoNote> {
+        EchoNote::ALL.into_iter().find(|n| n.label() == label)
+    }
+}
+
+impl Default for Space {
+    fn default() -> Space {
+        Space { room_ds: 15, echo_note: EchoNote::Quarter, echo_repeat: 38 }
+    }
+}
+
+impl Space {
+    pub fn clamped(self) -> Space {
+        Space { room_ds: self.room_ds.clamp(3, 80), echo_repeat: self.echo_repeat.min(85), ..self }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -156,6 +222,7 @@ impl From<SequenceHeader> for Sequence {
             tempo: None,
             song: None,
             markers: Arc::default(),
+            space: Space::default(),
         }
     }
 }
