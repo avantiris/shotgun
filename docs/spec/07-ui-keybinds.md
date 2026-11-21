@@ -189,6 +189,7 @@ Panels and output
 | J / Shift + J | A/B: look chain / match of the shown scenario off and on |
 | B | whip-pan on the nearest cut; again removes it (kind and settings in the clip inspector) |
 | The Assets button (top bar, beside the project's name) | hides the assets panel, or shows it again |
+| "Files" and "Lyrics" at the top of the assets panel | the project's recordings, or its words: a text kept with the project (saved, undone and in checkpoints like the rest; put down when the typing pauses), with A- and A+ for the size of the letters, to read while recording |
 | The Chain button | in place of the inspector: one audio track alone (the open piano roll's, or the selected clip's; another can be chosen in the panel), with what its sound goes through listed in the engine's order (source, low cut, noise reduction, tune, equaliser, de-esser, compressor, leveller, saturation, plugins, fader, sends, group, master) beside its strip |
 | M, or the Mixer button | mixer in place of the inspector: per audio track a level meter, fader (double-click: 0 dB), pan, mute, solo, low cut, noise reduction; master fader |
 | F1, or the Keys button | every key and what it does |

@@ -24,6 +24,9 @@ pub struct Project {
     pub assets: Arc<BTreeMap<AssetId, Arc<Asset>>>,
     /// Groups of assets that are matched and given a look together.
     pub scenarios: Arc<BTreeMap<ScenarioId, Arc<Scenario>>>,
+    /// Words kept with the project: lyrics, ideas, what is left to do.
+    /// (Shared: every other edit copies the project, not this text.)
+    pub lyrics: Arc<str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -244,7 +247,14 @@ pub struct TrackHeader {
 
 impl Project {
     pub fn new(id: ProjectId, name: impl Into<String>) -> Project {
-        Project { id, name: name.into(), sequences: Vec::new(), assets: Arc::default(), scenarios: Arc::default() }
+        Project {
+            id,
+            name: name.into(),
+            sequences: Vec::new(),
+            assets: Arc::default(),
+            scenarios: Arc::default(),
+            lyrics: Arc::from(""),
+        }
     }
 
     pub fn sequence(&self, id: SequenceId) -> Option<&Arc<Sequence>> {

@@ -2470,3 +2470,25 @@ fn a_track_is_renamed_from_its_menu() {
     harness.run_steps(3);
     assert_eq!(tracks(&harness)[1].1, "A1");
 }
+
+#[test]
+fn lyrics_are_written_beside_the_assets_and_kept_with_the_project() {
+    let mut harness = editor();
+    let words = |harness: &Harness<'_, App>| harness.state().shell.session().unwrap().project().lyrics.to_string();
+    click(&mut harness, "Lyrics");
+    assert!(harness.query_by_label("ASSETS").is_none());
+    let field = harness.get_by_label("Lyrics field");
+    field.focus();
+    harness.run_steps(2);
+    harness.get_by_label("Lyrics field").type_text("first bar");
+    harness.run_steps(2);
+    // Typed, and put away at once: it is in the project all the same.
+    click(&mut harness, "Files");
+    assert_eq!(words(&harness), "first bar");
+    assert!(harness.query_by_label("ASSETS").is_some());
+    // An undo is seen in the field when it is opened again.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(words(&harness), "");
+    assert_eq!(harness.state().shell.error_shown(), None);
+}

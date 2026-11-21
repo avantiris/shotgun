@@ -46,6 +46,8 @@ pub struct Editor {
     pub assets_hidden: bool,
     pub timeline: Timeline,
     pub clip_panel: ClipPanel,
+    /// The project's words, a tab beside the assets.
+    pub lyrics: crate::lyrics::Lyrics,
     pub mixer: crate::mixer::Mixer,
     pub colour: crate::colour_panel::ColourPanel,
     /// What the colour panel asked for this frame; taken by the shell.
@@ -153,8 +155,29 @@ impl Editor {
         );
         if !self.assets_hidden {
             egui::Panel::left("assets").default_size(320.0).min_size(170.0).show(ui, |ui| {
-                self.assets.ui(ui, &project, asset_requests);
+                ui.horizontal(|ui| {
+                    let files = ui.selectable_label(!self.lyrics.open, "Files");
+                    if files.on_hover_text("The project's recordings, pictures and videos").clicked() {
+                        self.lyrics.open = false;
+                    }
+                    let words = ui.selectable_label(self.lyrics.open, "Lyrics");
+                    if words
+                        .on_hover_text("Words kept with the project: lyrics to read while recording, ideas, notes")
+                        .clicked()
+                    {
+                        self.lyrics.open = true;
+                    }
+                });
+                if self.lyrics.open {
+                    self.lyrics.ui(ui, session, error);
+                } else {
+                    self.assets.ui(ui, &project, asset_requests);
+                }
             });
+        }
+        // Words typed and then put out of sight are not lost.
+        if self.lyrics.pending() && (self.assets_hidden || !self.lyrics.open) {
+            self.lyrics.flush(session, error);
         }
         // The clip the inspector and the viewer act on, as of this frame.
         let target = self.target(session, view.frame);

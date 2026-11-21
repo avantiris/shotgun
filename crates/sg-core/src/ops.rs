@@ -23,6 +23,10 @@ pub enum Op {
     SetProjectName {
         name: String,
     },
+    /// Replaces the words kept with the project.
+    SetLyrics {
+        text: String,
+    },
     /// Adds an empty sequence at `index`.
     AddSequence {
         index: usize,
@@ -220,6 +224,7 @@ impl Op {
     pub fn label(&self) -> &'static str {
         match self {
             Op::SetProjectName { .. } => "rename project",
+            Op::SetLyrics { .. } => "write lyrics",
             Op::AddSequence { .. } => "add sequence",
             Op::RemoveSequence { .. } => "remove sequence",
             Op::SetSequenceName { .. } => "rename sequence",
@@ -369,6 +374,10 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
         Op::SetProjectName { name } => {
             let inverse = Op::SetProjectName { name: p.name.clone() };
             Ok((Project { name: name.clone(), ..p.clone() }, inverse))
+        }
+        Op::SetLyrics { text } => {
+            let inverse = Op::SetLyrics { text: p.lyrics.to_string() };
+            Ok((Project { lyrics: Arc::from(text.as_str()), ..p.clone() }, inverse))
         }
         Op::AddSequence { index, sequence } => {
             if p.sequence(sequence.id).is_some() {
@@ -774,6 +783,9 @@ pub(crate) mod tests {
         let p = base();
         let p2 = round_trip(&p, &Op::SetProjectName { name: "Other".into() });
         assert_eq!(p2.name, "Other");
+        let words = round_trip(&p2, &Op::SetLyrics { text: "first line\nsecond \"line\"\n".into() });
+        assert_eq!(&*words.lyrics, "first line\nsecond \"line\"\n");
+        assert_eq!(crate::text::from_files(&crate::text::to_files(&words)).unwrap(), *words);
         let p3 = round_trip(&p2, &Op::SetSequenceName { id: SEQ, name: "Cut 2".into() });
         assert_eq!(p3.sequences[0].name, "Cut 2");
         let p4 = round_trip(&p3, &Op::SetTrackName { seq: SEQ, track: V1, name: "Lead vocal".into() });

@@ -15,6 +15,7 @@ mod history;
 mod icons;
 pub mod keymap;
 mod library;
+mod lyrics;
 mod mixer;
 mod perf;
 mod piano_roll;
@@ -317,6 +318,8 @@ pub enum DevStep {
     Hero,
     /// Open the "Chain" panel (the selected track's chain).
     Chain,
+    /// Open the "Lyrics" tab with these words in the project ("|" for a new line).
+    Lyrics(String),
     /// Set the sequence frame size.
     Size(u32, u32),
     /// Export with a preset: master, vertical, gif or share:<megabytes>.
@@ -1083,6 +1086,14 @@ impl Shell {
                     {
                         self.error = Some(e.to_string());
                     }
+                }
+            }
+            DevStep::Lyrics(text) => {
+                self.editor.lyrics.open = true;
+                if let Some(session) = &mut self.session
+                    && let Err(e) = session.apply(Op::SetLyrics { text: text.replace('|', "\n") }, None)
+                {
+                    self.error = Some(e.to_string());
                 }
             }
             DevStep::Chain => {

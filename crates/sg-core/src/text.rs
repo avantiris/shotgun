@@ -51,6 +51,9 @@ struct ProjectToml {
     /// File stems under `sequences/`, in project order.
     #[serde(default)]
     sequences: Vec<String>,
+    /// The project's words (absent while there are none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    lyrics: String,
 }
 
 /// Name and id from a `project.toml`, without touching sequences. Used by
@@ -134,7 +137,13 @@ pub fn to_files(p: &Project) -> BTreeMap<String, String> {
         files.insert(sequence_path(&stem), write_sequence(seq));
         stems.push(stem);
     }
-    let header = ProjectToml { format: FORMAT_VERSION, id: p.id, name: p.name.clone(), sequences: stems };
+    let header = ProjectToml {
+        format: FORMAT_VERSION,
+        id: p.id,
+        name: p.name.clone(),
+        sequences: stems,
+        lyrics: p.lyrics.to_string(),
+    };
     // Serialising a struct of strings and integers cannot fail.
     let text = toml::to_string(&header).unwrap_or_default();
     files.insert(PROJECT_FILE.to_owned(), text);
@@ -181,6 +190,7 @@ pub fn from_files(files: &BTreeMap<String, String>) -> Result<Project, TextError
         sequences,
         assets: Arc::new(assets),
         scenarios: Arc::new(scenarios),
+        lyrics: Arc::from(header.lyrics.as_str()),
     })
 }
 
