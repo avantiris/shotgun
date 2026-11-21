@@ -211,6 +211,8 @@ pub struct Click {
     /// A beat lasts `beat.0 / beat.1` samples.
     pub beat: (u64, u64),
     pub beats_per_bar: u32,
+    /// The timeline sample the first bar begins at.
+    pub origin: i64,
 }
 
 /// Length of a click in frames (30 ms).
@@ -222,7 +224,7 @@ impl Click {
     pub fn add(&self, block: &mut [f32], position: i64) {
         let (num, den) = (self.beat.0.max(1) as i128, self.beat.1.max(1) as i128);
         for (n, frame) in block.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-            let at = position + n as i64;
+            let at = position + n as i64 - self.origin;
             // The beat this sample belongs to, and where that beat began.
             let beat = (at as i128 * den).div_euclid(num);
             let began = (beat * num + den - 1).div_euclid(den) as i64;
@@ -318,7 +320,7 @@ mod tests {
     #[test]
     fn clicks_fall_on_the_beats_without_drifting() {
         // 93 beats a minute: a beat is 30967.74... samples.
-        let click = Click { beat: (2_880_000_000, 93_000), beats_per_bar: 4 };
+        let click = Click { beat: (2_880_000_000, 93_000), beats_per_bar: 4, origin: 0 };
         let onset = |position: i64| {
             let mut block = vec![0.0f32; 4096 * 2];
             click.add(&mut block, position);
@@ -331,6 +333,11 @@ mod tests {
         assert_eq!(onset(30_967_700), Some(30_967_743));
         // Between beats there is nothing.
         assert_eq!(onset(10_000), None);
+        // A first bar that begins elsewhere: the beats are counted from there.
+        let late = Click { origin: 10_000, ..click };
+        let mut block = vec![0.0f32; 4096 * 2];
+        late.add(&mut block, 9_990);
+        assert_eq!(block.as_chunks::<2>().0.iter().position(|f| f[0].abs() > 1e-4), Some(11));
         // Before the start of the timeline the beats go on backwards.
         assert_eq!(onset(-31_000), Some(-30_966));
     }

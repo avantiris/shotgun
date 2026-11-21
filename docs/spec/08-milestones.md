@@ -308,9 +308,13 @@ chain second version, M16 mixing and mastering.
   - From a beat that already exists (2026-11-21): with an asset set as
     the song, "Bars at this tempo" under SONG gives the sequence the
     tempo that was found in it (a whole number if the finding is within
-    0.3 of one). Bars count from the start of the timeline: the song is
-    then moved by hand so that a beat lies on a bar line. Not built: a
-    tempo whose first bar begins elsewhere than at the start.
+    0.3 of one), with the first bar on the song's first beat. A tempo
+    has a place where its first bar begins (`Tempo::origin`, in samples;
+    a third number on the `tempo` line): "Bar 1 here" above the timeline
+    puts it at the playhead, for a song that counts differently or for
+    music that does not start with the timeline. Ruler, grid, snapping,
+    metronome and what plugins are told all count from there. Not
+    checked: on a real beat, by ear against the metronome.
   - Loop (2026-11-21): L or "Loop" above the timeline plays a stretch
     over and over: the note clip whose piano roll is open, else the
     selected clips, else what lies between the markers around the

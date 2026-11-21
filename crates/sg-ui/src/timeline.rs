@@ -1858,13 +1858,15 @@ impl Timeline {
         // room for its number, thinned out by twos when zoomed far out.
         if let Some(tempo) = sequence.tempo {
             let bar = tempo.frames_per_beat(rate) * tempo.beats_per_bar as f64;
+            // (Bars are counted from where the first one begins, which need not be the start.)
+            let origin = tempo.origin_frames(rate);
             let mut stride = 1.0;
             while bar * stride / fpp < 46.0 && stride < 65_536.0 {
                 stride *= 2.0;
             }
-            let mut n = (self.left / (bar * stride)).floor().max(0.0);
-            while n * bar * stride <= right {
-                let x = x_of(n * bar * stride);
+            let mut n = ((self.left - origin) / (bar * stride)).floor();
+            while origin + n * bar * stride <= right {
+                let x = x_of(origin + n * bar * stride);
                 if x >= lanes.left() {
                     painter.line_segment(
                         [pos2(x, rect.top() + 13.0), pos2(x, rect.top() + RULER_H)],
@@ -2232,7 +2234,8 @@ impl Timeline {
         let beat = sequence.tempo.map_or(fps / 2.0, |t| t.frames_per_beat(sequence.rate));
         let per_bar = sequence.tempo.map_or(4.0, |t| t.beats_per_bar as f64);
         let bar = beat * per_bar;
-        let from = if sequence.tempo.is_some() { (frame / bar).floor() * bar } else { frame };
+        let origin = sequence.tempo.map_or(0.0, |t| t.origin_frames(sequence.rate));
+        let from = if sequence.tempo.is_some() { ((frame - origin) / bar).floor() * bar + origin } else { frame };
         let (start, mut len) = (lane.units(from.max(0.0).round() as i64), lane.units((bar * 2.0).round() as i64));
         if let Some(next) = track.clips.first_at_or_after(start) {
             len = len.min(next.start - start);
@@ -2819,6 +2822,24 @@ impl Timeline {
     }
 
     /// Tempo of the song as the grid shows it, in beats per minute.
+    /// Where the first beat that was found in the song lies on the
+    /// timeline, in samples: through the first clip of the song that plays it.
+    pub fn first_beat(&self, sequence: &Sequence) -> Option<i64> {
+        let song = sequence.song?;
+        let first = *self.grid.first()?;
+        sequence
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            // (Looked for among the first clips of each track only: this is asked every frame the
+            // song's settings are on screen, and a song lies near the start of its track.)
+            .filter_map(|t| {
+                t.clips.iter().take(64).find(|c| c.asset == song.asset && c.src_in <= first && first < c.src_in + c.len)
+            })
+            .map(|c| c.start + first - c.src_in)
+            .min()
+    }
+
     pub fn bpm(&self, sequence: &Sequence) -> Option<f32> {
         let song = sequence.song?;
         let (_, beats) = self.song_beats.as_ref().filter(|(id, _)| *id == song.asset)?;
@@ -2852,14 +2873,15 @@ impl Timeline {
             while !roomy(unit) && unit < bar * (1 << 20) as f64 {
                 unit *= 2.0;
             }
-            let mut index = (f0.max(0.0) / unit).ceil() as usize;
+            let origin = tempo.origin_frames(sequence.rate);
+            let mut index = ((f0.max(0.0) - origin) / unit).ceil();
             let mut lines = Vec::new();
-            while (index as f64) * unit < f1 && lines.len() < 4096 {
-                let at = index as f64 * unit;
+            while origin + index * unit < f1 && lines.len() < 4096 {
+                let along = index * unit;
                 // (The caller draws every fourth line strongly: bars count as that.)
-                let on_bar = ((at / bar).round() * bar - at).abs() < 1e-6 * bar;
-                lines.push((at, if on_bar { 0 } else { 1 }));
-                index += 1;
+                let on_bar = ((along / bar).round() * bar - along).abs() < 1e-6 * bar;
+                lines.push((origin + along, if on_bar { 0 } else { 1 }));
+                index += 1.0;
             }
             return lines;
         }
@@ -2902,7 +2924,8 @@ impl Timeline {
                 Some(beats) => beat * beats,
                 None => [beat / 4.0, beat].into_iter().find(|u| roomy(*u)).unwrap_or(bar),
             };
-            return Some((frame / unit).round() * unit);
+            let origin = tempo.origin_frames(sequence.rate);
+            return Some(((frame - origin) / unit).round() * unit + origin);
         }
         let (clip, per) = self.song_clips(sequence, frame - 1.0, frame + 1.0).into_iter().next()?;
         let at = clip.src_in + (frame * per) as i64 - clip.start;

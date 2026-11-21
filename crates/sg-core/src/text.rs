@@ -199,7 +199,8 @@ fn write_sequence(seq: &Sequence) -> String {
         let _ = writeln!(out, "master {}", seq.master_db);
     }
     if let Some(tempo) = seq.tempo {
-        let _ = writeln!(out, "tempo {} {}", tempo.milli_bpm, tempo.beats_per_bar);
+        let origin = if tempo.origin != 0 { format!(" {}", tempo.origin) } else { String::new() };
+        let _ = writeln!(out, "tempo {} {}{origin}", tempo.milli_bpm, tempo.beats_per_bar);
     }
     for (n, group) in seq.groups.iter().enumerate() {
         if *group != crate::model::Group::default() {
@@ -368,9 +369,18 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                 });
             }
             "tempo" => {
-                let parsed = rest.split_once(' ').and_then(|(bpm, beats)| {
-                    Some(crate::model::Tempo { milli_bpm: bpm.parse().ok()?, beats_per_bar: beats.parse().ok()? })
-                });
+                let mut words = rest.split(' ');
+                let parsed = (|| {
+                    Some(crate::model::Tempo {
+                        milli_bpm: words.next()?.parse().ok()?,
+                        beats_per_bar: words.next()?.parse().ok()?,
+                        // (Where the first bar begins; left out when it begins with the timeline.)
+                        origin: match words.next() {
+                            Some(origin) => origin.parse().ok()?,
+                            None => 0,
+                        },
+                    })
+                })();
                 tempo = Some(parsed.ok_or_else(|| err(n, "bad tempo"))?.clamped());
             }
             "group" => {
@@ -534,7 +544,7 @@ mod tests {
         };
         let (p, _) = apply(&base(), &Op::SetTrackMix { seq: SEQ, track: A1, mix }).unwrap();
         let (p, _) = apply(&p, &Op::SetMasterGain { id: SEQ, db: -2.0 }).unwrap();
-        let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
+        let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3, origin: -4_800 };
         let (p, _) = apply(&p, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();
         let space =
             crate::model::Space { room_ds: 32, echo_note: crate::model::EchoNote::DottedEighth, echo_repeat: 55 };

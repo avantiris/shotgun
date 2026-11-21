@@ -754,7 +754,7 @@ fn sends_add_a_room_and_repeats_and_the_click_is_heard_only_when_asked_for() {
     let silent = rendered(Mix { tracks: vec![muted], echo_samples: 24_000, ..Mix::default() }, 96_000);
     assert!(rms(&silent) < 1e-6);
     // The metronome: a click at the start of every beat, here every 12 000 samples.
-    let click = sg_audio::space::Click { beat: (12_000, 1), beats_per_bar: 4 };
+    let click = sg_audio::space::Click { beat: (12_000, 1), beats_per_bar: 4, origin: 0 };
     let clicked = rendered(Mix { tracks: vec![track(vec![span])], click: Some(click), ..Mix::default() }, 96_000);
     assert!(rms(&clicked[36_000 * 2..36_500 * 2]) > 0.05 && rms(&clicked[40_000 * 2..47_000 * 2]) < 1e-4);
 }

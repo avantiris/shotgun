@@ -464,6 +464,7 @@ impl State {
         Some(sg_audio::space::Click {
             beat: (SAMPLE_RATE as u64 * 60_000, tempo.milli_bpm.max(1) as u64),
             beats_per_bar: tempo.beats_per_bar.max(1) as u32,
+            origin: tempo.origin,
         })
     }
 
@@ -1092,6 +1093,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
         echo_samples: (beat * num as u64 / den as u64) as u32,
         groups: sequence.groups.map(|g| (db(g.gain_db), g.mute)),
         bpm: sequence.tempo.map_or(120.0, sg_core::Tempo::bpm),
+        bar_origin: sequence.tempo.map_or(0, |t| t.origin),
         room_seconds: sequence.space.room_ds as f32 / 10.0,
         echo_repeat: sequence.space.echo_repeat as f32 / 100.0,
         stop_at: None,

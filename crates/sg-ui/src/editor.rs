@@ -362,8 +362,22 @@ impl Editor {
                 // Tempo and grid where the bars are (09-daw.md, M11).
                 ui.separator();
                 self.tempo_fields(ui, session, sequence, error, true);
-                if sequence.tempo.is_some() {
+                if let Some(tempo) = sequence.tempo {
                     self.grid_menu(ui);
+                    let here = sequence.rate.frames_to_samples(view.frame.max(0), 48_000);
+                    let button = ui.add_enabled(tempo.origin != here, egui::Button::new("Bar 1 here"));
+                    if button
+                        .on_hover_text(
+                            "The first bar begins at the playhead: for music that does not start with the timeline. \
+                             Bars, the grid and the metronome move with it; nothing on the timeline does.",
+                        )
+                        .clicked()
+                    {
+                        let moved = sg_core::Tempo { origin: here, ..tempo };
+                        if let Err(e) = session.apply(Op::SetTempo { id: sequence.id, tempo: Some(moved) }, None) {
+                            *error = Some(e.to_string());
+                        }
+                    }
                 }
             });
         });
@@ -513,14 +527,17 @@ impl Editor {
                     // (Songs made to a click are at a whole tempo; what was found is that within a hair.)
                     let whole = bpm.round();
                     let bpm = if (bpm - whole).abs() < 0.3 { whole } else { (bpm * 10.0).round() / 10.0 };
+                    // The first bar begins where the song's first beat lies on the timeline.
                     let wanted = sg_core::Tempo {
                         milli_bpm: (bpm as f64 * 1000.0).round() as u32,
                         beats_per_bar: sequence.tempo.map_or(4, |t| t.beats_per_bar),
+                        origin: self.timeline.first_beat(sequence).unwrap_or(0),
                     };
                     let tip = format!(
                         "Gives the sequence the song's tempo ({bpm} beats per minute): the ruler counts bars, the \
-                         metronome and the echo go by it. Bars count from the start of the timeline: move the song \
-                         so that one of its beats lies on a bar line."
+                         metronome and the echo go by it. The first bar begins on the song's first beat; if the \
+                         song counts differently, put the playhead on its one and press \"Bar 1 here\" above the \
+                         timeline."
                     );
                     let button = ui.add_enabled(sequence.tempo != Some(wanted), egui::Button::new("Bars at this tempo"));
                     if button.on_hover_text(tip).clicked()

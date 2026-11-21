@@ -159,8 +159,9 @@ pub struct Mix {
     /// The faders of the four groups: gain as a factor, and mute.
     pub groups: [(f32, bool); 4],
     /// The tempo of the song in beats per minute, which plugins are told
-    /// (120 without one).
+    /// (120 without one), and the timeline sample its first bar begins at.
     pub bpm: f64,
+    pub bar_origin: i64,
     /// How long the shared room rings, in seconds, and how much of each
     /// repeat of the shared echo is repeated again (0 to 0.9).
     pub room_seconds: f32,
@@ -184,6 +185,7 @@ impl Default for Mix {
             echo_samples: SAMPLE_RATE * 3 / 8,
             groups: [(1.0, false); 4],
             bpm: 120.0,
+            bar_origin: 0,
             room_seconds: space::ROOM_SECONDS,
             echo_repeat: space::ECHO_REPEAT,
             stop_at: None,

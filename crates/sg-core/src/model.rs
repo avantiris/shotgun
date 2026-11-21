@@ -450,16 +450,36 @@ impl TrackSettings {
 pub struct Tempo {
     pub milli_bpm: u32,
     pub beats_per_bar: u8,
+    /// Where the first bar begins on the timeline, in samples at 48 kHz:
+    /// 0 unless the music does not start with the timeline (a beat that
+    /// was made elsewhere and begins with a pause or an upbeat).
+    #[serde(default)]
+    pub origin: i64,
 }
 
 impl Tempo {
     /// 120 beats a minute in four-beat bars.
-    pub const DEFAULT: Tempo = Tempo { milli_bpm: 120_000, beats_per_bar: 4 };
+    pub const DEFAULT: Tempo = Tempo { milli_bpm: 120_000, beats_per_bar: 4, origin: 0 };
+
+    /// A tempo whose first bar begins with the timeline.
+    pub const fn new(milli_bpm: u32, beats_per_bar: u8) -> Tempo {
+        Tempo { milli_bpm, beats_per_bar, origin: 0 }
+    }
+
+    /// Where the first bar begins, in frames of `rate` (not a whole number in general).
+    pub fn origin_frames(self, rate: crate::Rate) -> f64 {
+        self.origin as f64 * rate.num() as f64 / (rate.den() as f64 * crate::time::SAMPLE_RATE as f64)
+    }
 
     /// Brought into the range the program works with: 20 to 400 beats a
     /// minute, 1 to 16 beats to the bar.
     pub fn clamped(self) -> Tempo {
-        Tempo { milli_bpm: self.milli_bpm.clamp(20_000, 400_000), beats_per_bar: self.beats_per_bar.clamp(1, 16) }
+        Tempo {
+            milli_bpm: self.milli_bpm.clamp(20_000, 400_000),
+            beats_per_bar: self.beats_per_bar.clamp(1, 16),
+            // (Within a day either way.)
+            origin: self.origin.clamp(-4_147_200_000, 4_147_200_000),
+        }
     }
 
     pub fn bpm(self) -> f64 {
@@ -474,9 +494,11 @@ impl Tempo {
 
     /// Bar and beat of a frame, both counted from 1, as a ruler names them.
     pub fn bar_and_beat(self, frame: i64, rate: crate::Rate) -> (i64, i64) {
-        let beat = (frame.max(0) as f64 / self.frames_per_beat(rate) + 1e-6).floor() as i64;
+        // (Before the first bar the bars count down: 0, -1, ...)
+        let beat =
+            ((frame.max(0) as f64 - self.origin_frames(rate)) / self.frames_per_beat(rate) + 1e-6).floor() as i64;
         let per_bar = self.beats_per_bar.max(1) as i64;
-        (beat / per_bar + 1, beat % per_bar + 1)
+        (beat.div_euclid(per_bar) + 1, beat.rem_euclid(per_bar) + 1)
     }
 }
 
@@ -520,10 +542,15 @@ mod tempo_tests {
         assert_eq!(tempo.bar_and_beat(120, Rate::FPS_60), (2, 1));
         assert_eq!(tempo.bar_and_beat(7 * 120 + 95, Rate::FPS_60), (8, 4));
         // Three to the bar, and a tempo that does not divide the frame rate.
-        let waltz = Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
+        // A first bar that begins two seconds in: before it the bars count down.
+        let late = Tempo { origin: 96_000, ..tempo };
+        assert_eq!(late.bar_and_beat(120, Rate::FPS_60), (1, 1));
+        assert_eq!(late.bar_and_beat(150, Rate::FPS_60), (1, 2));
+        assert_eq!(late.bar_and_beat(0, Rate::FPS_60), (0, 1));
+        let waltz = Tempo::new(93_500, 3);
         assert!((waltz.frames_per_beat(Rate::FPS_60) - 38.502_67).abs() < 1e-3);
         assert_eq!(waltz.bar_and_beat(116, Rate::FPS_60), (2, 1));
         // Out of range values are brought in.
-        assert_eq!(Tempo { milli_bpm: 1, beats_per_bar: 0 }.clamped(), Tempo { milli_bpm: 20_000, beats_per_bar: 1 });
+        assert_eq!(Tempo::new(1, 0).clamped(), Tempo::new(20_000, 1));
     }
 }

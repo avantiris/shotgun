@@ -2158,5 +2158,28 @@ fn the_songs_tempo_becomes_the_tempo_of_the_sequence() {
     harness.run_steps(3);
     click(&mut harness, "Bars at this tempo");
     let tempo = harness.state().shell.session().unwrap().project().sequences[0].tempo;
-    assert_eq!(tempo, Some(sg_core::Tempo { milli_bpm: 140_000, beats_per_bar: 4 }));
+    // (The song lies at the start of the timeline and its first beat at its start: so does the first bar.)
+    assert_eq!(tempo, Some(sg_core::Tempo::new(140_000, 4)));
+}
+
+#[test]
+fn the_first_bar_can_begin_at_the_playhead_and_the_grid_moves_with_it() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let tempo = |harness: &Harness<'_, App>| harness.state().shell.session().unwrap().project().sequences[0].tempo;
+    click(&mut harness, "Set tempo");
+    // The music begins 20 frames in (not on a beat of a grid that starts with the timeline).
+    playhead(&mut harness, 20);
+    click(&mut harness, "Bar 1 here");
+    assert_eq!(tempo(&harness).map(|t| t.origin), Some(20 * 800));
+    // A clip dragged along now lands on a beat counted from there: 20 + a whole number of 30 frames.
+    let on_clip = on_timeline(&harness, 60.0, 0);
+    drag(&mut harness, on_clip, on_clip + vec2(103.0, 0.0));
+    let start = clips(&harness, 0)[0].0;
+    assert!(start > 20 && (start - 20) % 30 == 0, "{start}");
+    // Undo, twice: the clip back, then the first bar back at the start.
+    harness.key_press(Key::Z);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(tempo(&harness).map(|t| t.origin), Some(0));
 }

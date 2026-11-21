@@ -296,6 +296,7 @@ fn same_structure(a: &Mix, b: &Mix, notes_too: bool) -> bool {
         && a.click == b.click
         && a.echo_samples == b.echo_samples
         && a.bpm == b.bpm
+        && a.bar_origin == b.bar_origin
         && a.true_peak_db == b.true_peak_db
         && a.stop_at == b.stop_at
         && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
@@ -677,7 +678,7 @@ impl Disk {
         for (_, client) in self.plugins.values_mut() {
             client.reset();
             // Where the song is and how fast: what the plugin's own sense of bars goes by.
-            client.set_tempo(self.mix.bpm, pos);
+            client.set_tempo(self.mix.bpm, pos - self.mix.bar_origin);
         }
         // (Positions start anew: what was heard of the voices before does not apply.)
         self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
@@ -940,7 +941,7 @@ impl Disk {
                     self.loading.remove(&spec.key);
                     match client {
                         Some(mut client) => {
-                            client.set_tempo(self.mix.bpm, self.built_at);
+                            client.set_tempo(self.mix.bpm, self.built_at - self.mix.bar_origin);
                             self.plugins.insert(spec.key, (spec, *client));
                         }
                         None => {

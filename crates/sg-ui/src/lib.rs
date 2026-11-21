@@ -1187,8 +1187,7 @@ impl Shell {
                 if let Some(session) = &mut self.session
                     && let Some(id) = session.project().sequences.first().map(|s| s.id)
                 {
-                    let tempo = (bpm > 0.0)
-                        .then(|| sg_core::Tempo { milli_bpm: (bpm * 1000.0).round() as u32, beats_per_bar: 4 });
+                    let tempo = (bpm > 0.0).then(|| sg_core::Tempo::new((bpm * 1000.0).round() as u32, 4));
                     if let Err(e) = session.apply(Op::SetTempo { id, tempo }, None) {
                         self.error = Some(e.to_string());
                     }

@@ -370,7 +370,7 @@ fn bench_audio(target: Option<&str>, secs: u64, dir: &Path) -> anyhow::Result<()
     // The realtime thread's whole load: the track sends to the reverb and
     // the echo, the metronome clicks and the loudness is measured.
     let track = TrackMix { reverb: 0.2, echo: 0.2, ..TrackMix::plain(vec![clip]) };
-    let click = sg_audio::space::Click { beat: (24_000, 1), beats_per_bar: 4 };
+    let click = sg_audio::space::Click { beat: (24_000, 1), beats_per_bar: 4, origin: 0 };
     engine.set_mix(Mix { tracks: vec![track], click: Some(click), ..Mix::default() });
 
     // Play start: from the call until the realtime thread renders the first block.

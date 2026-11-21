@@ -1159,7 +1159,7 @@ mod mix_tests {
         assert_eq!(apply(&grouped, &ungroup).unwrap().0, p2);
         assert!(apply(&p2, &Op::SetGroup { id: SEQ, group: 4, settings: quiet }).is_err());
         // A tempo comes and goes like any other setting.
-        let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
+        let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3, origin: 12_345 };
         let (timed, untime) = apply(&p2, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();
         assert_eq!(timed.sequences[0].tempo, Some(waltz));
         assert_eq!(apply(&timed, &untime).unwrap().0, p2);
