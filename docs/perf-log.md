@@ -459,11 +459,14 @@ stand-in keyboard; ffmpeg's `ebur128=peak=true` on exported files.
 | Sampler: a 110 Hz recording from its root key and an octave above, exported | 110 Hz, 220 Hz | | pass |
 | Full-quality frame after a seek, 4K60 HEVC, 1 s GOP | p95 334 ms | 150 ms p95 | MISS (as before, unchanged) |
 
-The miss that is left: the thread that feeds a hand-played track is an
-ordinary one, and when the machine is busy starting other programs it
-is now and then late by more than the 16 ms the ring allows. Each time is
-one audible gap on that track. Realtime priority for that thread (through
-RTKit) is the remedy; not built.
+Afterwards (same night): the feeding thread asks RTKit for nice -11,
+and a mistake was found that explains part of the above: since 815cd3e
+the graph was rebuilt whenever the device's block size was first learnt,
+a gap each time. With both changed, the run with the stand-in keyboard
+and a recording of the sink beside it, which had run dry 3, 3 and 9
+times, did not in five repeats. Under heavier load than this machine had
+tonight it may still happen; then each time is one audible gap on that
+track.
 
 Not measured: anything through a real sound device, a real MIDI keyboard,
 a bridged Windows plugin, how the delay of hand play feels.

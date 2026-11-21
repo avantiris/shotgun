@@ -997,6 +997,16 @@ pub fn run(
         settles: Vec::new(),
         events: Vec::new(),
     };
+    // With a sound device: this thread feeds what the realtime callback
+    // plays, a track played by hand only milliseconds ahead. As an
+    // ordinary thread it was late for that now and then when the machine
+    // was busy (docs/perf-log.md, 2026-11-21).
+    if disk.activate.is_some() {
+        match raise_priority() {
+            Ok(nice) => log::info!("the audio feeding thread runs at nice {nice}"),
+            Err(e) => log::info!("the audio feeding thread keeps its ordinary priority: {e}"),
+        }
+    }
     loop {
         // Idle costs nothing: without playback the thread sleeps until told otherwise.
         let message = if let Some(until) = disk.grain_until.filter(|_| !disk.playing && !disk.idle_hand) {
@@ -1027,11 +1037,14 @@ pub fn run(
         {
             return;
         }
-        // The device's block was not known when the graph was built (or has
-        // changed): a hand-played track gets the ring that goes with it.
+        // The device's block was not known when the graph was built and
+        // turns out larger than a hand-played track's ring can serve: that
+        // track gets the ring that goes with it. (Only then: a new graph
+        // is a gap in the sound, and a ring that is merely larger than
+        // needed costs nothing but a little delay.)
         if (disk.playing || disk.idle_hand)
             && disk.feeds.iter().any(|f| f.by_hand)
-            && hand_frames(disk.shared.quantum.load(Ordering::Relaxed)) != disk.hand_built
+            && disk.shared.quantum.load(Ordering::Relaxed) as usize * 3 > disk.hand_built
             && disk.shared.adopted.load(Ordering::Acquire) >= disk.offered
         {
             let (pos, playing) = (if disk.playing { disk.resume_at() } else { disk.built_at }, disk.playing);
@@ -1049,6 +1062,27 @@ pub fn run(
         // Free graphs the callback has finished with.
         drop(disk.slot.collect());
     }
+}
+
+/// Asks RTKit (the service PipeWire gets its realtime thread from) for a
+/// high priority for the calling thread: not realtime, which would put
+/// file reads and plugin calls under its time limit, but ahead of every
+/// ordinary thread. Returns the nice level the thread runs at afterwards.
+fn raise_priority() -> Result<i32, String> {
+    const NICE: i32 = -11;
+    // SAFETY: gettid takes no arguments and cannot fail.
+    let thread = unsafe { libc::gettid() };
+    let bus = zbus::blocking::Connection::system().map_err(|e| format!("no system bus ({e})"))?;
+    bus.call_method(
+        Some("org.freedesktop.RealtimeKit1"),
+        "/org/freedesktop/RealtimeKit1",
+        Some("org.freedesktop.RealtimeKit1"),
+        "MakeThreadHighPriority",
+        &(thread as u64, NICE),
+    )
+    .map_err(|e| format!("RTKit said no ({e})"))?;
+    // SAFETY: getpriority only reads; the thread id is this thread's own.
+    Ok(unsafe { libc::getpriority(libc::PRIO_PROCESS, thread as libc::id_t) })
 }
 
 /// Scheduling policy of PipeWire's data thread, read from /proc (the realtime

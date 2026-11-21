@@ -555,11 +555,13 @@ chain second version, M16 mixing and mastering.
     rebuilds the engine's graph, which cut every instrument off and left
     a gap; the tracks take the new notes as they are, and a note that
     was sounding and is gone is let go.
-  - Known limit: the track played by hand is fed by an ordinary thread,
-    four blocks ahead. In 10 to 20 s runs it mostly never ran dry, but
-    in runs during which other programs were started it did two or three
-    times (a click each). The remedy is realtime priority for that
-    thread (through RTKit, as PipeWire gets it); not built.
+  - The thread that feeds the rings asks RTKit for a high priority
+    (nice -11; not realtime, which would put file reads and plugin
+    calls under RTKit's time limit). With that, and without a mistake of
+    the same night (a new graph whenever the device's block size was
+    first learnt), the run that had run dry two to nine times did not in
+    five repeats. Without RTKit the thread keeps its ordinary priority
+    and says so in the log.
   - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
     as VST3 or CLAP too); plugin parameters as keyframes.
   - Slow and hung plugins (2026-11-21): a plugin starts on a thread of
