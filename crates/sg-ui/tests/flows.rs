@@ -1893,3 +1893,77 @@ fn a_box_drawn_with_ctrl_selects_the_notes_it_touches() {
     harness.run_steps(3);
     assert_eq!(notes(&harness), 1);
 }
+
+#[test]
+fn a_strip_set_up_by_listening_listens_again_when_another_take_is_on_its_track() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    click(&mut harness, "Mixer");
+    let strip = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        (track.id, track.mix)
+    };
+    let asked = |harness: &Harness<'_, App>| -> Vec<Vec<AssetId>> {
+        let all = harness.state().commands.iter();
+        all.filter_map(|c| match c {
+            Command::MeasureVoice { parts, .. } => Some(parts.iter().map(|p| p.0).collect()),
+            _ => None,
+        })
+        .collect()
+    };
+    let heard = sg_media::voice::VoiceStats {
+        loudness_db: -26.0,
+        loud_db: -14.0,
+        peak_db: -9.0,
+        noise_db: Some(-58.0),
+        pitch_hz: Some(112.0),
+        steadiness: 0.2,
+        bands_db: [-30.0, 6.0, 1.0, 0.0, -12.0, -27.0],
+        sibilance_db: Some(-5.0),
+        key: Some((9, true)),
+        seconds: 42.0,
+    };
+    let (track, _) = strip(&harness);
+    let root = harness.state().root.clone();
+    click(&mut harness, "Voice");
+    click(&mut harness, "Listen and set up");
+    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard));
+    harness.run_steps(3);
+    assert_eq!(asked(&harness), [vec![AssetId(1)]]);
+    // Cutting the take in two leaves the same recording on the track: nothing is listened to again.
+    playhead(&mut harness, 120);
+    let on_clip = on_timeline(&harness, 30.0, 1);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    harness.key_press(Key::S);
+    harness.run_steps(3);
+    assert_eq!(asked(&harness).len(), 1);
+    // Another take recorded onto the track: the strip, untouched since, listens again by itself.
+    click(&mut harness, "R");
+    playhead(&mut harness, 300);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::R);
+    harness.run_steps(3);
+    harness.state_mut().shell.take_recorded(root.join(".shotgun/takes/take-3.wav"), 240_000, 96_000, 0);
+    let mut asset = take(9, "take-3");
+    asset.kind = AssetKind::Audio;
+    asset.video = None;
+    asset.audio = Some(AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 2, samples: 96_000 });
+    harness.state_mut().shell.import_event(ImportEvent::Usable { job: 9, root: root.clone(), asset: Box::new(asset) });
+    harness.run_steps(3);
+    let again = asked(&harness);
+    assert_eq!(again.len(), 2);
+    assert!(again[1].contains(&AssetId(9)) && again[1].contains(&AssetId(1)), "{again:?}");
+    harness.state_mut().shell.voice_measured(&root, track, None, Ok(heard));
+    harness.run_steps(3);
+    // With a setting changed by hand it does not: it offers to, on the strip.
+    let (_, mix) = strip(&harness);
+    harness.state_mut().shell.dev(sg_ui::DevStep::Mix("0".into(), "threshold".into(), mix.comp_threshold_db - 3.0));
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Listen again").is_none());
+    // (The new take is selected from being placed: the delete key takes it off the track again.)
+    harness.key_press(Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!(asked(&harness).len(), 2);
+    click(&mut harness, "Listen again");
+    assert_eq!(asked(&harness).len(), 3);
+}

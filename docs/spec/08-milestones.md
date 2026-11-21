@@ -380,7 +380,15 @@ chain second version, M16 mixing and mastering.
     already worked out; 10.5 dB shown in the loud one, as threshold and
     ratio give). Not shown yet: noise reduction, the leveller and the
     pitch correction.
-  - Still to do for M12: listening again by itself when the takes change.
+  - Listening again (2026-11-21): a strip that was set up by listening
+    listens again by itself when other recordings are on its track than
+    the ones it was set up from (a new take; cutting, moving or trimming
+    the same recording does not count), as long as its settings are
+    still the ones the listening gave. If they were changed by hand
+    since, it does not touch them and offers "Listen again" on the strip
+    instead. `PROPOSED`: that rule, and that the result is an undo step
+    of its own. Which strips were set up by listening is remembered for
+    the session, not in the project.
 - [ ] M13 Recording
   - Built 2026-11-20: Shift+R or "Record sound" above the timeline plays
     from the playhead and records the default input (`SHOTGUN_AUDIO_IN`

@@ -583,6 +583,7 @@ impl Shell {
         }
         self.colour_requests(colour_requests, &mut commands);
         self.hand_commands(&mut commands);
+        self.relisten(&mut commands);
         for request in std::mem::take(&mut self.editor.input_requests) {
             commands.push(match request {
                 editor::InputRequest::List => Command::ListInputs,
@@ -1304,7 +1305,48 @@ impl Shell {
             return None;
         }
         mixer.listening = Some(track);
+        let mut assets: Vec<AssetId> = found.clips.iter().take(512).map(|c| c.asset).collect();
+        assets.sort_unstable();
+        assets.dedup();
+        mixer.listened.insert(track, mixer::Listened { assets, style, set: None, seen: found.clone(), stale: false });
         Some(Command::MeasureVoice { root: session.root.clone(), track, style, parts })
+    }
+
+    /// A strip that was set up by listening follows its track: when other
+    /// recordings are on it than the ones it was set up from, it listens
+    /// again by itself, as long as nobody has changed its settings by hand
+    /// since (then "Listen again" is offered on the strip instead).
+    /// Looks only at the tracks that were listened to, and at their clips
+    /// only when the track has changed.
+    fn relisten(&mut self, commands: &mut Vec<Command>) {
+        let Some(session) = &self.session else { return };
+        let mixer = &mut self.editor.mixer;
+        if mixer.listening.is_some() || self.editor.recording_sound || mixer.listened.is_empty() {
+            return;
+        }
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return };
+        mixer.listened.retain(|id, _| sequence.track(*id).is_some());
+        let mut again = None;
+        for (id, heard) in mixer.listened.iter_mut() {
+            let Some(track) = sequence.track(*id).filter(|t| !Arc::ptr_eq(t, &heard.seen)) else { continue };
+            heard.seen = track.clone();
+            let mut assets: Vec<AssetId> = track.clips.iter().take(512).map(|c| c.asset).collect();
+            assets.sort_unstable();
+            assets.dedup();
+            // (Cut, moved or trimmed, the same recordings are the same voice.)
+            if assets == heard.assets || assets.is_empty() {
+                heard.stale = false;
+            } else if heard.set == Some(track.mix) {
+                again = Some((*id, heard.style));
+                break;
+            } else {
+                heard.stale = true;
+            }
+        }
+        if let Some((track, style)) = again {
+            commands.extend(Shell::measure_voice(session, mixer, track, style, &mut self.error));
+        }
     }
 
     /// The voice on a track was listened to: its strip is set for the
@@ -1330,6 +1372,9 @@ impl Shell {
         let style = style.unwrap_or_else(|| sg_media::voice::VoiceStyle::guess(&stats));
         let set = sg_media::voice::suggest(&stats, style);
         let mix = mixer::with_voice(found.mix, &set);
+        if let Some(heard) = self.editor.mixer.listened.get_mut(&track) {
+            heard.set = Some(mix);
+        }
         let mut ops = vec![Op::SetTrackMix { seq, track, mix }];
         // The beat makes room: every other sounding track that is not a
         // voice itself and does not duck yet goes down a little under it.

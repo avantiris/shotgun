@@ -14,6 +14,22 @@ const FADER_H: f32 = 150.0;
 const FLOOR_DB: f32 = -60.0;
 const TOP_DB: f32 = 12.0;
 
+/// What a strip set up by listening was set up from, to notice when the
+/// takes on its track are no longer those.
+pub struct Listened {
+    /// The recordings that were on the track.
+    pub assets: Vec<sg_core::AssetId>,
+    /// The style that was asked for (`None`: whichever fits).
+    pub style: Option<sg_media::voice::VoiceStyle>,
+    /// The settings the listening gave, once it has.
+    pub set: Option<sg_core::TrackSettings>,
+    /// The track as it was last looked at.
+    pub seen: std::sync::Arc<sg_core::Track>,
+    /// Other takes are on the track now, and the strip was changed by
+    /// hand since: the user is offered to listen again.
+    pub stale: bool,
+}
+
 #[derive(Default)]
 pub struct Mixer {
     pub open: bool,
@@ -30,6 +46,8 @@ pub struct Mixer {
     pub voice_request: Option<(sg_core::TrackId, Option<sg_media::voice::VoiceStyle>)>,
     /// The track being listened to right now.
     pub listening: Option<sg_core::TrackId>,
+    /// What each strip that was set up by listening was set up from.
+    pub listened: std::collections::HashMap<sg_core::TrackId, Listened>,
     /// The plugins found on the machine (name, path), once they were looked for.
     pub available: Option<Vec<(String, String)>>,
     /// The plugins should be looked for; taken by the shell.
@@ -309,6 +327,20 @@ impl Mixer {
                             });
                             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Voice"));
                             response.on_hover_text("Set this strip up for a recorded voice by listening to it");
+                            // Other takes than the ones the strip was set up from, and settings
+                            // changed by hand since (else it would have listened again by itself).
+                            if let Some(heard) = self.listened.get(&track.id).filter(|h| h.stale && !busy) {
+                                let again = ui.button(RichText::new("Listen again").size(10.5).color(theme::ACCENT));
+                                if again
+                                    .on_hover_text(
+                                        "The takes on this track are not the ones this strip was set up from. \
+                                         Listening again replaces the settings you changed by hand since.",
+                                    )
+                                    .clicked()
+                                {
+                                    self.voice_request = Some((track.id, heard.style));
+                                }
+                            }
                         });
                         // The track's plugins: effects after the stages of this strip, in
                         // their order, and an instrument that plays its note clips.
