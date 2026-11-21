@@ -59,6 +59,16 @@ fn hand_frames(quantum: u32) -> usize {
 }
 /// Frames written before a graph is offered, so playback starts with data.
 const PREFILL_FRAMES: usize = 4096;
+/// A track played by hand is topped up in whole pieces of this many
+/// frames (2.7 ms), not in whatever has become free since the last look a
+/// millisecond ago: its instrument may be a plugin in another process,
+/// and a thousand tiny blocks a second would be all overhead.
+const HAND_BLOCK: usize = 128;
+
+fn hand_block(free: usize) -> usize {
+    free / HAND_BLOCK * HAND_BLOCK
+}
+
 /// How often the rings are topped up while playing.
 const FILL_INTERVAL: Duration = Duration::from_millis(5);
 /// The same while a track is played by hand.
@@ -477,6 +487,9 @@ impl Disk {
     /// Writes up to `limit` frames into feed `index`.
     fn fill(&mut self, index: usize, limit: usize) {
         let mut frames = (self.feeds[index].producer.slots() / 2).min(limit).min(MAX_BLOCK);
+        if self.feeds[index].by_hand {
+            frames = hand_block(frames);
+        }
         let ducks = self.feeds[index].tone.duck_db > 0.0 && !self.feeds[index].tone.voice;
         if ducks {
             // Only as far as the voices have been laid down: their level there is needed.
@@ -557,7 +570,7 @@ impl Disk {
             if !self.feeds[index].by_hand {
                 continue;
             }
-            let frames = (self.feeds[index].producer.slots() / 2).min(MAX_BLOCK);
+            let frames = hand_block((self.feeds[index].producer.slots() / 2).min(MAX_BLOCK));
             if frames == 0 {
                 continue;
             }
