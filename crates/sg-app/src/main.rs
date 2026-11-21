@@ -608,6 +608,19 @@ impl App {
                     use sg_project::plugins;
                     use sg_ui::{NiStep, PluginRequest, PluginUpdate};
                     let found = move |proxy: &EventLoopProxy<UserEvent>, library: &Path| {
+                        // The program was updated since the Windows plugins were set up: their
+                        // loaders are of the bridge before, and are made anew before they are listed.
+                        if plugins::bridge_stale() {
+                            let line = |text: &str| {
+                                let _ = proxy.send_event(UserEvent::Plugins(PluginUpdate::Line(text.to_owned())));
+                            };
+                            line("The bridge to Windows plugins was updated: setting the plugins up again.");
+                            if let Err(e) =
+                                plugins::bridge(&plugins::ni_prefix(library), &sg_media::Cancel::new(), line)
+                            {
+                                line(&format!("That did not work: {e}"));
+                            }
+                        }
                         let update = PluginUpdate::Found {
                             plugins: plugins::scan(&plugins::folders()),
                             ni: plugins::ni_state(library),
@@ -615,6 +628,8 @@ impl App {
                         let _ = proxy.send_event(UserEvent::Plugins(update));
                     };
                     match request {
+                        // (Done by the shell itself: it never comes this far.)
+                        PluginRequest::Play(..) => {}
                         PluginRequest::Stop => {
                             if let Some(cancel) = &self.plugin_step {
                                 cancel.cancel();

@@ -605,6 +605,17 @@ chain second version, M16 mixing and mastering.
     open) is ended like one that crashed: its track plays without it and
     the program says so. Checked with a stand-in host that loads and then
     never answers (`crates/sg-plug/tests/hang.rs`).
+  - Kontakt 8 runs (2026-11-21, on the user's installation after he had
+    gone through the walkthrough): loads in 10 to 21 s, its window opens
+    and draws, a block of 512 frames takes about 0.1 ms through the
+    bridge, its state is kept. What had to be put right, and what is
+    still open (a modal box of a plugin blocks its other calls), is in
+    docs/spikes/s7-plugin-host.md. Not checked: its sound by ear.
+  - "Play it" (2026-11-21, feedback F15.6): beside every plugin in the
+    Plugins panel. One press makes an audio track with the plugin on it
+    and a note clip at the playhead, opens the piano roll with the
+    computer keyboard as a piano, and asks for the plugin's window,
+    which opens as soon as the plugin has started.
   - A Windows plugin says that it is starting (2026-11-21): put on a
     track, a bridged plugin starts Wine first; the bar at the bottom says
     so at once and says when it is ready (also for any plugin that took

@@ -1305,7 +1305,7 @@ fn the_plugins_popover_lists_plugins_and_walks_through_the_native_instruments_se
             .state()
             .commands
             .iter()
-            .filter_map(|c| if let Command::Plugins(r) = c { Some(*r) } else { None })
+            .filter_map(|c| if let Command::Plugins(r) = c { Some(r.clone()) } else { None })
             .collect()
     };
     // The button in the top bar opens it and has the folders searched.
@@ -2223,4 +2223,48 @@ fn keys_of_a_track_get_recordings_of_their_own_as_a_drum_kit() {
     harness.key_press(Key::Z);
     harness.run_steps(3);
     assert_eq!(pads(&harness).len(), 2);
+}
+
+#[test]
+fn play_it_in_the_plugins_panel_sets_an_instrument_up_ready_to_play() {
+    use sg_project::plugins::{Format, NiState, Plugin};
+    let mut harness = editor();
+    click(&mut harness, "Plugins");
+    let kontakt = Plugin {
+        name: "Kontakt 8".to_owned(),
+        path: "/home/x/.vst3/yabridge/Kontakt 8.vst3".into(),
+        format: Format::Vst3,
+        bridged: true,
+    };
+    let ni = NiState {
+        tools: true,
+        prefix: "/x".into(),
+        prefix_ready: true,
+        access: true,
+        installed: vec!["Kontakt 8".to_owned()],
+        bridged: vec!["Kontakt 8".to_owned()],
+    };
+    harness.state_mut().shell.plugins_update(sg_ui::PluginUpdate::Found { plugins: vec![kontakt], ni });
+    harness.run_steps(3);
+    click(&mut harness, "Play Kontakt 8");
+    harness.run_steps(3);
+    // A new audio track with the plugin on it and a note clip, whose piano roll is open...
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = project.sequences[0].tracks.last().unwrap().clone();
+    assert_eq!((track.name.as_str(), track.clips.len()), ("A2", 1));
+    assert_eq!(track.plugins.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Kontakt 8"]);
+    assert!(harness.query_by_label("Piano roll").is_some());
+    // ...its window asked for, and its track the one the keyboard plays: A is middle C at once.
+    let key = track.plugins[0].id;
+    let commands = &harness.state().commands;
+    assert!(
+        commands.iter().any(|c| matches!(c, Command::PluginEditor { track: t, key: k } if *t == track.id && *k == key))
+    );
+    assert!(commands.iter().any(|c| matches!(c, Command::Hand(Some(t)) if *t == track.id)));
+    harness.key_down(Key::A);
+    harness.run_steps(2);
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Note { on: true, pitch: 60, .. })));
+    // The panel has made way, and the bar at the bottom says what to do next.
+    assert!(harness.query_by_label("PLUGINS").is_none());
+    assert_eq!(harness.state().shell.error_shown(), None);
 }

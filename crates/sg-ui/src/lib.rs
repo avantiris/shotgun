@@ -613,11 +613,15 @@ impl Shell {
         }
         self.monitor_commands(&mut commands);
         let gif_range = self.gif_range();
-        if let Some(request) = self.plugins.ui(&ctx) {
-            if let PluginRequest::Run(step) = request {
-                self.plugins.started(step);
+        match self.plugins.ui(&ctx) {
+            Some(PluginRequest::Play(name, path)) => self.play_plugin(name, path, &mut commands),
+            Some(request) => {
+                if let PluginRequest::Run(step) = request {
+                    self.plugins.started(step);
+                }
+                commands.push(Command::Plugins(request));
             }
-            commands.push(Command::Plugins(request));
+            None => {}
         }
         match self.export.ui(&ctx, gif_range) {
             Some(ExportAction::Start(request)) => self.start_export(request, &mut commands),
@@ -1786,6 +1790,41 @@ impl Shell {
             self.monitor = monitor.clone();
             commands.push(Command::Monitor(monitor));
         }
+    }
+
+    /// "Play it" in the plugins panel: a new audio track with the plugin
+    /// on it, a note clip at the playhead with its piano roll open and the
+    /// computer keyboard as a piano, and the plugin's own window asked
+    /// for. Everything a first note needs, in one step.
+    fn play_plugin(&mut self, name: String, path: String, commands: &mut Vec<Command>) {
+        let Some(session) = &mut self.session else {
+            self.error = Some("Open a project first: an instrument needs a track to play on.".to_owned());
+            return;
+        };
+        if let Err(e) = session.add_track(sg_core::TrackKind::Audio) {
+            self.error = Some(e.to_string());
+            return;
+        }
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return };
+        let Some(track) = sequence.tracks.iter().rev().find(|t| t.kind == sg_core::TrackKind::Audio) else { return };
+        let plugin = sg_core::PluginRef { name: name.clone(), path, id: session.new_plugin_id() };
+        let key = plugin.key(track.id);
+        let op = Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins: vec![plugin] };
+        if let Err(e) = session.apply(op, None) {
+            self.error = Some(e.to_string());
+            return;
+        }
+        // (The note clip opens its piano roll with the next frame.)
+        self.editor.timeline.add_note_clip(session, sequence, track, self.playhead.max(0) as f64, &mut self.error);
+        self.editor.piano.set_keyboard(true);
+        commands.push(Command::PluginEditor { track: track.id, key });
+        self.plugins.cancel();
+        session.notice = Some(format!(
+            "{name} is on a new track ({}). Its window opens when it has started: load a sound there, then play with \
+             the keys A S D F G H J (W E T Z U are the black ones), or draw notes.",
+            track.name
+        ));
     }
 
     /// Tells the application which track's instrument is played by hand

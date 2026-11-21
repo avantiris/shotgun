@@ -282,6 +282,8 @@ struct Disk {
     control: Sender<Control>,
     /// Asked to settle while plugins were still starting: answered when they have.
     settles: Vec<Sender<()>>,
+    /// Plugins whose window was asked for before they were running.
+    editor_wanted: std::collections::HashSet<u64>,
     events: Vec<sg_plug::NoteEvent>,
 }
 
@@ -401,7 +403,15 @@ impl Disk {
                         Some(Box::new(client))
                     }
                     Err(e) => {
-                        say(&shared, format!("{}: {e}", spec.path.display()));
+                        // (What most often stops a Windows plugin: Wine for its prefix is
+                        // already running from an older version of the program.)
+                        let hint = if spec.path.components().any(|c| c.as_os_str() == "yabridge") {
+                            " If Native Access is open, close it; then open Plugins and press \"Look again\", \
+                             and put the plugin on the track once more."
+                        } else {
+                            ""
+                        };
+                        say(&shared, format!("{}: {e}.{hint}", spec.path.display()));
                         None
                     }
                 };
@@ -886,7 +896,12 @@ impl Disk {
                 let said = match opened {
                     Some((true, _)) => None,
                     Some((false, name)) => Some(format!("{name} has no window of its own.")),
-                    None if self.loading.contains_key(&key) => Some("The plugin is still starting.".to_owned()),
+                    // Not there yet (still starting, or asked for in the same breath as
+                    // it was put on its track): its window opens as soon as it is.
+                    None if !self.failed.contains_key(&key) => {
+                        self.editor_wanted.insert(key);
+                        Some("Note: the plugin is starting; its window opens as soon as it is ready.".to_owned())
+                    }
                     None => Some("The plugin is not running.".to_owned()),
                 };
                 if let Some(said) = said {
@@ -993,6 +1008,10 @@ impl Disk {
                     match client {
                         Some(mut client) => {
                             client.set_tempo(self.mix.bpm, self.built_at - self.mix.bar_origin);
+                            // Its window was asked for while it was starting.
+                            if self.editor_wanted.remove(&spec.key) {
+                                client.open_editor();
+                            }
                             self.plugins.insert(spec.key, (spec, *client));
                         }
                         None => {
@@ -1077,6 +1096,7 @@ pub fn run(
         failed: HashMap::new(),
         control: sender,
         settles: Vec::new(),
+        editor_wanted: std::collections::HashSet::new(),
         events: Vec::new(),
     };
     // With a sound device: this thread feeds what the realtime callback

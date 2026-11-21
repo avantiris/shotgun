@@ -212,6 +212,24 @@ pub fn ni_log(library: &Path) -> PathBuf {
     library.join("native-instruments-setup.log")
 }
 
+/// Whether the bridged plugins were set up by another build of the bridge
+/// than the one that is here now (the program was updated since): each
+/// bridged plugin is a copy of the bridge's loader, and an old loader
+/// does not start with a new bridge. [`bridge`] sets them up anew.
+pub fn bridge_stale() -> bool {
+    let Some(loader) = bridge_root().map(|root| root.join("lib/libyabridge-chainloader-vst3.so")) else { return false };
+    let Ok(current) = std::fs::read(loader) else { return false };
+    let Ok(bundles) = std::fs::read_dir(home().join(".vst3/yabridge")) else { return false };
+    bundles.flatten().any(|bundle| {
+        let inside = bundle.path().join("Contents/x86_64-linux");
+        let Ok(files) = std::fs::read_dir(inside) else { return false };
+        files.flatten().filter(|f| f.path().extension().is_some_and(|x| x == "so")).any(|f| {
+            // (Compared by content: the loader is small, and there are few plugins.)
+            std::fs::read(f.path()).is_ok_and(|copy| copy != current)
+        })
+    })
+}
+
 /// Step 3: tells the bridge about the plugins installed in the prefix,
 /// after which they are found by [`scan`] like native ones.
 pub fn bridge(prefix: &Path, cancel: &Cancel, mut on_line: impl FnMut(&str)) -> Result<(), ToolError> {

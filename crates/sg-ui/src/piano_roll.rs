@@ -186,6 +186,11 @@ impl PianoRoll {
         self.open.is_some() && self.keys
     }
 
+    /// Switches the computer keyboard as a piano on or off.
+    pub fn set_keyboard(&mut self, on: bool) {
+        self.keys = on;
+    }
+
     /// A key going down or up as if played by hand (scripted runs).
     pub fn play(&mut self, pitch: u8, on: bool) {
         if self.open.is_some() {

@@ -3,9 +3,13 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   # Native Access and Kontakt under Wine, and a yabridge built against the
-  # same Wine (docs/spec/09-daw.md, "Kontakt"). It keeps its own nixpkgs:
-  # its Wine is the one it was tested with.
+  # same Wine (docs/spec/09-daw.md, "Kontakt"). It uses this flake's
+  # nixpkgs, not the older one it pins: its Wine then had an older C
+  # library than the system's graphics drivers, could load none of them
+  # (no OpenGL, no Vulkan), and Kontakt's window stopped at "Failed to
+  # initialize graphics backend for D3D11" (docs/spikes/s7-plugin-host.md).
   inputs.ni-wine.url = "github:selimbucher/native-instruments";
+  inputs.ni-wine.inputs.nixpkgs.follows = "nixpkgs";
 
   outputs = { self, nixpkgs, ni-wine }:
     let
@@ -86,7 +90,9 @@
         ];
         LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
         postFixup = ''
+          # (What the library path was before: plugins are started with that one.)
           wrapProgram $out/bin/shotgun \
+            --run 'export SHOTGUN_OUTER_LD_LIBRARY_PATH="''${LD_LIBRARY_PATH:-}"' \
             --prefix PATH : ${pkgs.lib.makeBinPath runtimeTools} \
             --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibs}
         '';
@@ -141,6 +147,9 @@
           export SHOTGUN_LIBRARY=''${SHOTGUN_LIBRARY:-/disk/shotgun}
           # A native plugin (instrument and effect) for the plugin host's tests.
           export SHOTGUN_TEST_VST3=${pkgs.surge-xt}/lib/vst3
+          # Plugins run with the library path the system has, not this shell's
+          # (crates/sg-plug: `Client::start`). The shell replaces the path, so: none.
+          export SHOTGUN_OUTER_LD_LIBRARY_PATH=
           mkdir -p "$CARGO_TARGET_DIR" "$SHOTGUN_DEV_DIR/media" 2>/dev/null || true
         '';
       };

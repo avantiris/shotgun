@@ -212,6 +212,20 @@ impl Client {
         if let Some(root) = bridge_root() {
             command.env("NIX_PROFILES", root);
         }
+        // The program runs with libraries of its own package on the library
+        // path (graphics, sound). A plugin is other people's software and
+        // must find the system's: Wine, handed Shotgun's OpenGL and Vulkan
+        // loaders, finds no graphics driver at all, and Kontakt's window
+        // then stops at "Failed to initialize graphics backend for D3D11".
+        // Whoever starts the program says what the path was before
+        // (flake.nix: the wrapper and the dev shell).
+        if let Some(outer) = std::env::var_os("SHOTGUN_OUTER_LD_LIBRARY_PATH") {
+            if outer.is_empty() {
+                command.env_remove("LD_LIBRARY_PATH");
+            } else {
+                command.env("LD_LIBRARY_PATH", outer);
+            }
+        }
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

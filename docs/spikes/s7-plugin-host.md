@@ -90,3 +90,54 @@ SHOTGUN_TEST_BRIDGED=~/.vst3/yabridge/<Plugin>.vst3 \
 
 It loads the plugin, plays a note, times 512-frame blocks through the
 bridge, moves the state into a second instance and opens the window.
+
+## Kontakt 8 through the bridge (2026-11-21, on the user's installation)
+
+After the user had installed Native Access and Kontakt 8 through the
+walkthrough, the test above was run on the real plugin
+(`~/.vst3/yabridge/Kontakt 8.vst3`), its window kept on the hidden
+workspace.
+
+| | Result |
+|---|---|
+| Load and initialise | 10 to 21 s |
+| Recognised as | instrument, with a window |
+| 512 frames through the bridge | 80 to 100 us |
+| State out and into a second instance | 8.7 kB, accepted |
+| Its window | opens in 1 s, 1010 x 647, draws (a capture of it shows the browser with 892 presets) |
+| Blocks, reset, tempo and state with the window open | all answer at once |
+
+A new Kontakt has no instrument loaded, so a note is silent until one is
+loaded in its window.
+
+Two things had to be put right first:
+
+- **Wine could load no graphics driver.** ni-wine pinned an older nixpkgs;
+  its Wine had glibc 2.42, the system's Mesa drivers need 2.44. No OpenGL,
+  no Vulkan, and Kontakt's window stopped at a message box, "Failed to
+  initialize graphics backend for D3D11". While that box was up, asking the
+  plugin for its state did not return (state is fetched on the plugin's
+  window thread), which in the program would have stalled the sound.
+  Fix: ni-wine follows this flake's nixpkgs (`flake.nix`); Wine is now
+  11.21 with the system's glibc.
+- **The plugin process inherited Shotgun's library path** (its own OpenGL
+  and Vulkan loaders). Not the cause here, but wrong for other people's
+  software: plugins are now started with the path from before the
+  program's wrapper (`SHOTGUN_OUTER_LD_LIBRARY_PATH`).
+
+What follows from changing the Wine build:
+
+- Bridged plugins are copies of the bridge's loader; an old copy does not
+  start with a new bridge ("Assertion `bridge' failed"). The program now
+  sets them up again by itself when it finds old copies
+  (`plugins::bridge_stale`).
+- A Wine server of the old build that is still running for the prefix
+  (Native Access leaves its licence service running) makes the new one
+  fail at once ("terminate called without an active exception"). It has to
+  be stopped once (`wineserver -k` with the prefix, or a log-out).
+
+Still open: a call that needs the plugin's window thread (state, opening
+the window) blocks every other call to that plugin while a modal box of
+the plugin is up, because the host process answers one request at a time.
+Processing sound on a thread of its own in `shotgun-plugin` would remove
+that; not built.

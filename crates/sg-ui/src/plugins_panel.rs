@@ -21,8 +21,11 @@ pub enum NiStep {
 }
 
 /// What the panel asks the application to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PluginRequest {
+    /// Make a track for this plugin (name, path) with a note clip on it,
+    /// and open the piano roll and the plugin's window: ready to play.
+    Play(String, String),
     /// Look for plugins and at the state of the set-up.
     Scan,
     Run(NiStep),
@@ -128,6 +131,21 @@ impl PluginsPanel {
                         egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                             for plugin in &self.plugins {
                                 ui.horizontal(|ui| {
+                                    let play = ui.button("Play it");
+                                    play.widget_info(|| {
+                                        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Play {}", plugin.name))
+                                    });
+                                    if play
+                                        .on_hover_text(
+                                            "Makes a track with this instrument on it and a clip for notes, and opens the \
+                                             piano roll and the instrument's own window: load a sound there and play. \
+                                             (An effect goes on a track's strip instead: Mixer, \"Add plugin\".)",
+                                        )
+                                        .clicked()
+                                    {
+                                        request =
+                                            Some(PluginRequest::Play(plugin.name.clone(), plugin.path.display().to_string()));
+                                    }
                                     ui.label(&plugin.name);
                                     let kind = match (plugin.format, plugin.bridged) {
                                         (Format::Vst3, true) => "VST3, Windows through the bridge",
