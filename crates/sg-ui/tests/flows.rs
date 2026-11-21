@@ -652,6 +652,12 @@ fn the_wheel_moves_along_the_timeline_and_with_ctrl_zooms_around_the_pointer() {
     harness.run_steps(3);
     let (here_again, further_again) = (seek_at(&mut harness, at), seek_at(&mut harness, at + vec2(200.0, 0.0)));
     assert_eq!((here_again, further_again), (here, further));
+    // From there the wheel also zooms out, beyond what a short project opens with (feedback F16.21).
+    // (Measured over a short way: a seek stops at the end of the sequence.)
+    let near = seek_at(&mut harness, at + vec2(20.0, 0.0)) - here;
+    wheel(&mut harness, at, vec2(0.0, -240.0), Modifiers::CTRL);
+    let near_out = seek_at(&mut harness, at + vec2(20.0, 0.0)) - seek_at(&mut harness, at);
+    assert!(near_out > near * 2, "{near} -> {near_out}");
 }
 
 #[test]
@@ -2399,8 +2405,9 @@ fn the_chain_tab_shows_the_selected_track_alone_with_what_its_sound_goes_through
     assert!(harness.query_by_label("CHAIN").is_some());
     assert!(harness.query_by_label("Master").is_some(), "the last step of the chain");
     assert!(harness.query_by_label("recordings, notes on the built-in instrument").is_some());
-    // (In the list and on the strip.)
-    assert_eq!(harness.query_all_by_label("Low cut").count(), 2);
+    // In the list, to be chosen for its picture, and on the strip.
+    assert!(harness.query_by_label("See Low cut").is_some());
+    assert_eq!(harness.query_all_by_label("Low cut").count(), 1);
     // One strip only, and no master strip beside it: one "Add plugin".
     assert_eq!(harness.query_all_by_label("Add plugin").count(), 1);
     // Another track is chosen in the panel.
@@ -2413,6 +2420,54 @@ fn the_chain_tab_shows_the_selected_track_alone_with_what_its_sound_goes_through
     click(&mut harness, "Chain");
     click(&mut harness, "Chain");
     assert!(harness.query_by_label("CHAIN").is_none() && harness.query_by_label("MIXER").is_none());
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
+fn a_stage_of_the_chain_is_seen_at_work_and_set_by_pulling_in_its_picture() {
+    let mut harness = editor();
+    click(&mut harness, "Chain");
+    let mix = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap();
+        track.mix
+    };
+    // Nothing played yet: the picture says so. The shell asks for the first audio track's levels.
+    assert_eq!(harness.state().shell.watched(), Some(0));
+    assert!(harness.query_by_label("Play the track: its sound moves through here").is_none(), "painted, not a label");
+    assert_eq!(harness.query_all_by_label("Whole chain").count(), 2);
+    // The engine's readings: loud until the compressor, quieter after it.
+    harness.state_mut().view.scope =
+        (0..700).map(|n| (n % 50 < 40).then(|| std::array::from_fn(|tap| if tap < 7 { 0.5 } else { 0.2 }))).collect();
+    harness.state_mut().view.scope_ahead = 75;
+    harness.state_mut().view.eq_response = Some(|mix, _| mix.eq_mid_db);
+    click(&mut harness, "See Compressor");
+    harness.run_steps(2);
+    // The threshold is the line in the picture: pulled to a quarter of the way down from the top.
+    let picture = harness.get_by_label("Compressor threshold line").rect();
+    let before = mix(&harness);
+    let from = picture.center_top() + vec2(0.0, 6.0);
+    drag(&mut harness, from, picture.center_top() + vec2(0.0, picture.height() / 4.0));
+    let pulled = mix(&harness).comp_threshold_db;
+    assert!((-32.0..-22.0).contains(&pulled), "{pulled}");
+    // One pull is one step back.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(mix(&harness), before);
+    // The equaliser's bell follows its handle up and to the right; the low cut its own along the bottom.
+    click(&mut harness, "See Equaliser");
+    harness.run_steps(2);
+    let bell = harness.get_by_label("Bell handle").rect().center();
+    drag(&mut harness, bell, bell + vec2(60.0, -20.0));
+    let set = mix(&harness);
+    assert!(set.eq_mid_db > before.eq_mid_db + 3.0 && set.eq_mid_hz > before.eq_mid_hz * 1.5, "{set:?}");
+    let cut = harness.get_by_label("Low cut handle").rect().center();
+    drag(&mut harness, cut, cut + vec2(140.0, 0.0));
+    let hz = mix(&harness).low_cut_hz;
+    assert!((60.0..200.0).contains(&hz), "{hz}");
+    // Outside the chain nothing is asked of the engine.
+    click(&mut harness, "Mixer");
+    assert_eq!(harness.state().shell.watched(), None);
     assert_eq!(harness.state().shell.error_shown(), None);
 }
 

@@ -41,6 +41,10 @@ pub struct Mixer {
     /// panel stays until then.
     pub chain_track: Option<sg_core::TrackId>,
     followed: Option<sg_core::TrackId>,
+    /// The stage whose picture is shown beside the chain.
+    pub stage: crate::scope::Stage,
+    /// Which of the audio tracks the chain is shown of now, for the shell.
+    pub watching: Option<usize>,
     /// Meter readings as shown: they fall back slowly so that peaks can be read.
     levels: Vec<f32>,
     master: f32,
@@ -235,10 +239,12 @@ fn chain_of(track: &sg_core::Track, sequence: &Sequence) -> Vec<(String, String,
     if mix.voice {
         chain.push(("De-esser".to_owned(), percent(mix.deess), mix.deess > 0.0));
     }
+    if mix.voice {
+        chain.push(("Leveller".to_owned(), percent(mix.level), mix.level > 0.0));
+    }
     let squeezed = format!("above {:.0} dB, {:.1} : 1", mix.comp_threshold_db, mix.comp_ratio);
     chain.push(("Compressor".to_owned(), squeezed, mix.comp_threshold_db < 0.0));
     if mix.voice {
-        chain.push(("Leveller".to_owned(), percent(mix.level), mix.level > 0.0));
         chain.push(("Saturation".to_owned(), percent(mix.drive), mix.drive > 0.0));
     }
     for plugin in track.plugins.iter() {
@@ -347,6 +353,7 @@ impl Mixer {
             wanted.or(tracks.first().map(|t| t.id))
         });
         let only = only.flatten();
+        self.watching = only.and_then(|id| tracks.iter().position(|t| t.id == id));
         ui.label(RichText::new(if self.chain { "CHAIN" } else { "MIXER" }).size(11.0).strong().color(theme::DIM));
         if self.chain && !tracks.is_empty() {
             ui.horizontal_wrapped(|ui| {
@@ -362,6 +369,15 @@ impl Mixer {
             });
         }
         egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+            if let Some(track) = tracks.iter().find(|t| Some(t.id) == only) {
+                // On top, the picture of the chosen stage; its handles set what the strip below sets.
+                let mut mix = track.mix;
+                ui.scope(|ui| crate::scope::ui(ui, self.stage, view, &mut mix));
+                if mix != track.mix {
+                    ops.push(Op::SetTrackMix { seq: sequence.id, track: track.id, mix });
+                }
+                ui.separator();
+            }
             ui.horizontal_top(|ui| {
                 if let Some(track) = tracks.iter().find(|t| Some(t.id) == only) {
                     let width = (ui.available_width() - STRIP_W - 24.0).clamp(140.0, 260.0);
@@ -369,12 +385,32 @@ impl Mixer {
                         ui.set_width(width);
                         ui.label(RichText::new("What the sound goes through, from the top").size(10.5).color(theme::DIM));
                         ui.add_space(2.0);
+                        let whole = ui.selectable_label(self.stage == crate::scope::Stage::Whole, "Whole chain");
+                        if whole.on_hover_text("See the recording against what the whole chain makes of it").clicked() {
+                            self.stage = crate::scope::Stage::Whole;
+                        }
                         for (place, (name, set, on)) in chain_of(track, sequence).into_iter().enumerate() {
                             let colour = if on { theme::TEXT } else { theme::DIM };
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 ui.label(RichText::new(format!("{:>2}", place + 1)).monospace().size(10.0).color(theme::DIM));
-                                ui.label(RichText::new(name).size(11.5).strong().color(colour));
+                                // The stages with a picture are chosen by a click on their name.
+                                match crate::scope::Stage::named(&name) {
+                                    Some(stage) => {
+                                        let text = RichText::new(&name).size(11.5).strong().color(colour);
+                                        let chosen = ui.selectable_label(self.stage == stage, text);
+                                        chosen.widget_info(|| {
+                                            let label = format!("See {name}");
+                                            egui::WidgetInfo::selected(egui::Role::Button, true, self.stage == stage, label)
+                                        });
+                                        if chosen.on_hover_text("See this stage at work, and set it").clicked() {
+                                            self.stage = stage;
+                                        }
+                                    }
+                                    None => {
+                                        ui.label(RichText::new(&name).size(11.5).strong().color(colour));
+                                    }
+                                }
                                 let set = if on { set.as_str() } else { "off" };
                                 ui.label(RichText::new(set).size(10.5).color(theme::DIM));
                             });
@@ -382,8 +418,9 @@ impl Mixer {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(
-                                "Each is set on the strip to the right. \"Voice\" there sets the whole chain up by \
-                                 listening to the track; \"Add plugin\" puts an effect or an instrument on it.",
+                                "Click a stage to see it at work. All are also set on the strip to the right. \
+                                 \"Voice\" there sets the whole chain up by listening to the track; \"Add plugin\" \
+                                 puts an effect or an instrument on it.",
                             )
                             .size(10.5)
                             .color(theme::DIM),
@@ -832,8 +869,8 @@ impl Mixer {
                                 ui,
                                 "Leveller",
                                 egui::DragValue::new(&mut level).range(0.0..=100.0).speed(1.0).fixed_decimals(0).suffix(" %"),
-                                "A hand on the fader: loud phrases are pulled down and quiet ones up, towards the track's \
-                                 own average. It needs no threshold.",
+                                "A hand on the fader: loud phrases are pulled down and quiet ones up, to the track's \
+                                 own average, by up to 12 dB at 100 %. It needs no threshold. Before the compressor.",
                             );
                             mix.level = level / 100.0;
                             let mut drive = mix.drive * 100.0;

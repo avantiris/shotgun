@@ -1005,7 +1005,11 @@ impl Timeline {
     /// frame at `x` points from the left of the lanes where it is.
     fn zoom_around(&mut self, factor: f64, x: f32, lanes_width: f32, end: f64) {
         let anchor = self.left + x as f64 * self.frames_per_point;
-        let widest = ((end * 2.0).max(600.0) / lanes_width.max(1.0) as f64).max(0.01);
+        // Out to four times the sequence, and to ten minutes whatever its
+        // length: it was twice the sequence or 600 frames, which in a new
+        // or short project is less than what it opens with, so that Ctrl +
+        // wheel did nothing outwards (feedback F16.21).
+        let widest = ((end * 4.0).max(36_000.0) / lanes_width.max(1.0) as f64).max(0.01);
         self.frames_per_point = (self.frames_per_point * factor).clamp(0.005, widest);
         self.left = anchor - x as f64 * self.frames_per_point;
     }

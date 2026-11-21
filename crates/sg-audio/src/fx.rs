@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use nnnoiseless::DenoiseState;
 
 use crate::SAMPLE_RATE;
+use crate::scope::Probe;
 
 /// Samples the noise reduction works on at a time.
 const FRAME: usize = DenoiseState::FRAME_SIZE;
@@ -22,6 +23,13 @@ pub const NETWORK_DELAY: usize = FRAME;
 /// frame to collect a block for the network plus the network's own delay.
 pub const LOOKAHEAD: usize = FRAME + NETWORK_DELAY;
 
+/// The two sections of the low cut (a fourth-order Butterworth, 24 dB per
+/// octave). It was one section, 12 dB per octave, until feedback F16.19:
+/// the hum of the mains at 50 Hz under his voice was only 8 dB down with
+/// the cut at 100 Hz, and getting rid of it took a cut at 300 Hz, which
+/// takes the body of the voice along. Now it is 24 dB down at 100 Hz.
+const CUT_Q: [f32; 2] = [0.541_196_1, 1.306_563];
+
 /// Second-order high-pass (Butterworth), one channel.
 #[derive(Clone, Copy, Default)]
 struct HighPass {
@@ -31,15 +39,17 @@ struct HighPass {
 }
 
 impl HighPass {
-    fn set(&mut self, hz: f32) {
-        self.set_at(hz.clamp(10.0, 2000.0));
+    /// A corner at `hz`, as flat as can be above it.
+    fn set_at(&mut self, hz: f32) {
+        self.set_q(hz, std::f32::consts::FRAC_1_SQRT_2);
     }
 
-    /// The same without the low cut's range: any corner frequency.
-    fn set_at(&mut self, hz: f32) {
+    /// With the sharpness of the corner chosen: two of these in a row
+    /// with [`CUT_Q`] fall twice as steeply and are as flat above.
+    fn set_q(&mut self, hz: f32, q: f32) {
         let w = 2.0 * std::f32::consts::PI * hz / SAMPLE_RATE as f32;
         let (sin, cos) = w.sin_cos();
-        let alpha = sin / std::f32::consts::SQRT_2;
+        let alpha = sin / (2.0 * q);
         let a0 = 1.0 + alpha;
         self.b = [(1.0 + cos) / 2.0 / a0, -(1.0 + cos) / a0, (1.0 + cos) / 2.0 / a0];
         self.a = [-2.0 * cos / a0, (1.0 - alpha) / a0];
@@ -275,7 +285,8 @@ impl DeEsser {
 
 /// The clean-up and tone of one track.
 pub struct TrackFx {
-    filters: [HighPass; 2],
+    /// The low cut: per channel, its two sections.
+    filters: [[HighPass; 2]; 2],
     cut_hz: f32,
     denoiser: Option<Denoiser>,
     bands: [Band; 3],
@@ -286,6 +297,10 @@ pub struct TrackFx {
     /// The leveller's view of the phrase (fast) and of the track (slow), in decibels.
     phrase_db: f32,
     average_db: f32,
+    /// What the leveller's hand is at, in decibels.
+    ride_db: f32,
+    /// Frames of sound the leveller's average has taken in.
+    sounded: f32,
     /// What the stages did to the last block: the strongest reduction of
     /// the de-esser and of the compressor, in decibels (0 or below).
     pub work: [f32; 2],
@@ -297,7 +312,7 @@ impl TrackFx {
     /// change afterwards.
     pub fn new(denoise: bool, tune: bool) -> TrackFx {
         TrackFx {
-            filters: [HighPass::default(); 2],
+            filters: [[HighPass::default(); 2]; 2],
             cut_hz: 0.0,
             denoiser: denoise.then(Denoiser::new),
             bands: [Band::default(); 3],
@@ -306,6 +321,8 @@ impl TrackFx {
             corrector: tune.then(crate::tune::PitchCorrector::new),
             phrase_db: -120.0,
             average_db: -120.0,
+            ride_db: 0.0,
+            sounded: 0.0,
             work: [0.0; 2],
         }
     }
@@ -318,30 +335,58 @@ impl TrackFx {
 
     /// Treats interleaved stereo in place: low cut (`low_cut_hz` of 0 is
     /// off), noise reduction (`denoise` is the share of the treated sound),
-    /// equaliser, compressor.
+    /// tune, equaliser, de-esser, leveller, compressor, saturation.
     pub fn process(&mut self, block: &mut [f32], low_cut_hz: f32, denoise: f32, tone: &Tone) {
+        self.process_watched(block, low_cut_hz, denoise, tone, None);
+    }
+
+    /// [`TrackFx::process`], with the level after every stage noted for
+    /// the picture of the chain if a `probe` is given.
+    pub fn process_watched(
+        &mut self,
+        block: &mut [f32],
+        low_cut_hz: f32,
+        denoise: f32,
+        tone: &Tone,
+        mut probe: Option<Probe>,
+    ) {
+        // How far the sound trails the block that came in, in frames.
+        let mut back = 0;
+        let mut tap = |tap: usize, back: usize, block: &[f32]| {
+            if let Some(probe) = &mut probe {
+                probe.tap(tap, back, block);
+            }
+        };
+        tap(0, back, block);
         if low_cut_hz > 0.0 {
             if low_cut_hz != self.cut_hz {
-                self.filters.iter_mut().for_each(|f| f.set(low_cut_hz));
+                for channel in &mut self.filters {
+                    for (section, q) in channel.iter_mut().zip(CUT_Q) {
+                        section.set_q(low_cut_hz.clamp(10.0, 2000.0), q);
+                    }
+                }
             }
             for frame in block.as_chunks_mut::<2>().0 {
-                frame[0] = self.filters[0].run(frame[0]);
-                frame[1] = self.filters[1].run(frame[1]);
+                for (sample, channel) in frame.iter_mut().zip(&mut self.filters) {
+                    let first = channel[0].run(*sample);
+                    *sample = channel[1].run(first);
+                }
             }
         }
         self.cut_hz = low_cut_hz;
+        tap(1, back, block);
         if let Some(denoiser) = &mut self.denoiser {
             denoiser.process(block, denoise.clamp(0.0, 1.0));
+            back += LOOKAHEAD;
         }
+        tap(2, back, block);
         // On the cleaned voice, before tone and level are shaped.
         if let Some(corrector) = &mut self.corrector {
             corrector.process(block, &tone.tune);
+            back += crate::tune::TUNE_DELAY;
         }
-        for (band, (kind, hz, db)) in self.bands.iter_mut().zip([
-            (0u8, 120.0, tone.low_db),
-            (1, tone.mid_hz, tone.mid_db),
-            (2, 8000.0, tone.high_db),
-        ]) {
+        tap(3, back, block);
+        for (band, (kind, hz, db)) in self.bands.iter_mut().zip(bands(tone)) {
             if db != 0.0 {
                 band.set(kind, hz, db.clamp(-24.0, 24.0));
                 for frame in block.as_chunks_mut::<2>().0 {
@@ -350,6 +395,7 @@ impl TrackFx {
                 }
             }
         }
+        tap(4, back, block);
         // After the equaliser (which may have added air and with it S), before
         // the compressor (which would otherwise pump on every S).
         self.work = [0.0; 2];
@@ -357,15 +403,79 @@ impl TrackFx {
             self.deesser.process(block, tone.deess.clamp(0.0, 1.0));
             self.work[0] = self.deesser.most_db;
         }
+        tap(5, back, block);
+        if tone.level > 0.0 {
+            // A hand on the fader: the phrase's level (about 80 ms) is
+            // compared with the track's own average while it sounds (about
+            // 10 s), and the difference is taken back, at most 12 dB either
+            // way. No threshold: it works the same on a quiet take.
+            // (It was 60 % of the difference against 3 s until feedback
+            // F16.20: a loud stretch of a few seconds became the average
+            // itself and passed. On his take the loudest moments came out
+            // 6 dB lower with this.)
+            // Before the compressor (feedback F16.16): that one then meets
+            // phrases of about one level and squeezes them alike, instead
+            // of working hard on the loud ones and not at all on the quiet.
+            //
+            // The phrase's level rises with the sound (5 ms) and falls
+            // slowly, and the hand moves down quickly (20 ms) but up slowly
+            // (300 ms): otherwise the first syllable after a pause or after
+            // a quiet phrase met a fader still pushed up and came out up to
+            // 9 dB too loud, a peak on every phrase (feedback F16.18).
+            let rate = SAMPLE_RATE as f32;
+            let time = |seconds: f32| 1.0 - (-1.0 / (seconds * rate)).exp();
+            let (rise, fast, slow) = (time(0.005), time(0.08), time(10.0));
+            let (down, up) = (time(0.02), time(0.3));
+            for frame in block.as_chunks_mut::<2>().0 {
+                let now_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
+                self.phrase_db += if now_db > self.phrase_db { rise } else { fast } * (now_db - self.phrase_db);
+                // (Not far below where sound counts: as for the compressor
+                // below, a word must not have to be climbed up to from the
+                // bottom of a pause.)
+                if self.sounded > 0.0 {
+                    self.phrase_db = self.phrase_db.max(self.average_db - 25.0);
+                }
+                // Pauses are neither part of the average nor raised.
+                let sounding = self.phrase_db > self.average_db - 25.0 && self.phrase_db > -70.0;
+                if sounding {
+                    // The plain mean of what has sounded so far until that
+                    // is as long as the average's own memory: the track is
+                    // known from its first phrase on, not after ten seconds.
+                    self.sounded = (self.sounded + 1.0).min(1e9);
+                    self.average_db += (1.0 / self.sounded).max(slow) * (self.phrase_db - self.average_db);
+                }
+                let wanted = if sounding {
+                    (-(self.phrase_db - self.average_db) * tone.level.min(1.0)).clamp(-12.0, 12.0)
+                } else {
+                    0.0
+                };
+                self.ride_db += if wanted < self.ride_db { down } else { up } * (wanted - self.ride_db);
+                let gain = 10f32.powf(self.ride_db / 20.0);
+                frame[0] *= gain;
+                frame[1] *= gain;
+            }
+        }
+        tap(6, back, block);
         if tone.threshold_db < 0.0 {
             // Level follower: up within about 5 ms, down within about 120 ms.
+            // On a voice up within 1 ms: a voice is short spikes, one per
+            // cycle of its pitch, and at 5 ms the follower stayed so far
+            // under them that the loudest moments of his take passed
+            // (feedback F16.20). Drums keep the 5 ms that lets a hit through.
+            let up = if tone.voice { 0.001 } else { 0.005 };
             let (attack, release) =
-                (1.0 - (-1.0 / (0.005 * SAMPLE_RATE as f32)).exp(), 1.0 - (-1.0 / (0.12 * SAMPLE_RATE as f32)).exp());
+                (1.0 - (-1.0 / (up * SAMPLE_RATE as f32)).exp(), 1.0 - (-1.0 / (0.12 * SAMPLE_RATE as f32)).exp());
             let slope = 1.0 - 1.0 / tone.ratio.max(1.0);
             for frame in block.as_chunks_mut::<2>().0 {
                 let peak_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
                 let toward = if peak_db > self.level_db { attack } else { release };
                 self.level_db += toward * (peak_db - self.level_db);
+                // Never far below the threshold: the follower works in
+                // decibels, and from the -90 dB of a pause it took 10 to
+                // 20 ms to get up to a word, whose start went through
+                // untouched (feedback F16.18, seen on his take: the loudest
+                // moments left the compressor as they came in).
+                self.level_db = self.level_db.max(tone.threshold_db - 1.0);
                 // Both channels by the same amount: the stereo picture stays.
                 let over = (self.level_db - tone.threshold_db).max(0.0);
                 self.work[1] = self.work[1].min(-over * slope);
@@ -374,31 +484,7 @@ impl TrackFx {
                 frame[1] *= gain;
             }
         }
-        if tone.level > 0.0 {
-            // A hand on the fader: the phrase's level (about 80 ms) is
-            // compared with the track's own average while it sounds (about
-            // 3 s), and 60 % of the difference is taken back, at most 9 dB
-            // either way. No threshold: it works the same on a quiet take.
-            let rate = SAMPLE_RATE as f32;
-            let (fast, slow) = (1.0 - (-1.0 / (0.08 * rate)).exp(), 1.0 - (-1.0 / (3.0 * rate)).exp());
-            for frame in block.as_chunks_mut::<2>().0 {
-                let now_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
-                self.phrase_db += fast * (now_db - self.phrase_db);
-                // Pauses are neither part of the average nor raised.
-                let sounding = self.phrase_db > self.average_db - 25.0 && self.phrase_db > -70.0;
-                if self.average_db < -110.0 {
-                    self.average_db = self.phrase_db;
-                } else if sounding {
-                    self.average_db += slow * (self.phrase_db - self.average_db);
-                }
-                if sounding {
-                    let ride = (-(self.phrase_db - self.average_db) * 0.6 * tone.level.min(1.0)).clamp(-9.0, 9.0);
-                    let gain = 10f32.powf(ride / 20.0);
-                    frame[0] *= gain;
-                    frame[1] *= gain;
-                }
-            }
-        }
+        tap(7, back, block);
         if tone.drive > 0.0 {
             // Quiet sound passes as it is; the louder, the rounder.
             let push = 1.0 + 4.0 * tone.drive.min(1.0);
@@ -406,7 +492,44 @@ impl TrackFx {
                 *sample = (*sample * push).tanh() / push;
             }
         }
+        tap(8, back, block);
     }
+}
+
+/// The equaliser's three bands as (kind, hertz, decibels).
+fn bands(tone: &Tone) -> [(u8, f32, f32); 3] {
+    [(0, 120.0, tone.low_db), (1, tone.mid_hz, tone.mid_db), (2, 8000.0, tone.high_db)]
+}
+
+/// What the low cut and the equaliser together do to a steady tone of
+/// `hz`, in decibels: the curve the mixer draws. From the same filters
+/// that run on the sound.
+pub fn response_db(low_cut_hz: f32, tone: &Tone, hz: f32) -> f32 {
+    // |H| of a second-order section at `hz`.
+    let gain = |b: [f32; 3], a: [f32; 2]| {
+        let w = 2.0 * std::f32::consts::PI * hz / SAMPLE_RATE as f32;
+        let (re1, im1) = (w.cos(), -w.sin());
+        let (re2, im2) = ((2.0 * w).cos(), -(2.0 * w).sin());
+        let top = (b[0] + b[1] * re1 + b[2] * re2, b[1] * im1 + b[2] * im2);
+        let bottom = (1.0 + a[0] * re1 + a[1] * re2, a[0] * im1 + a[1] * im2);
+        (top.0.hypot(top.1) / bottom.0.hypot(bottom.1).max(1e-9)).max(1e-9)
+    };
+    let mut all = 1.0;
+    if low_cut_hz > 0.0 {
+        for q in CUT_Q {
+            let mut cut = HighPass::default();
+            cut.set_q(low_cut_hz.clamp(10.0, 2000.0), q);
+            all *= gain(cut.b, cut.a);
+        }
+    }
+    for (kind, band_hz, db) in bands(tone) {
+        if db != 0.0 {
+            let mut band = Band::default();
+            band.set(kind, band_hz, db.clamp(-24.0, 24.0));
+            all *= gain(band.b, band.a);
+        }
+    }
+    20.0 * all.log10()
 }
 
 #[cfg(test)]
@@ -434,6 +557,88 @@ mod tests {
     }
 
     #[test]
+    fn a_phrase_after_a_pause_does_not_come_in_louder_than_it_is() {
+        // Quiet phrase, pause, loud phrase; again and again. The leveller
+        // has pushed the quiet one up and must not meet the loud one so.
+        let level_at = |t: f32| match (t % 3.0) as u32 {
+            0 => 0.05,
+            1 => 0.0,
+            _ => 0.5,
+        };
+        let mut sound: Vec<f32> = (0..SAMPLE_RATE as usize * 9)
+            .flat_map(|i| {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                let v = level_at(t) * (2.0 * std::f32::consts::PI * 200.0 * t).sin();
+                [v, v]
+            })
+            .collect();
+        let mut fx = TrackFx::new(false, false);
+        let tone = Tone { level: 1.0, ..Tone::default() };
+        for block in sound.chunks_mut(2 * 512) {
+            fx.process(block, 0.0, 0.0, &tone);
+        }
+        // The loud phrase of the last round, from its first sample: never above what went in.
+        let (from, to) = (SAMPLE_RATE as usize * 8 * 2, SAMPLE_RATE as usize * 9 * 2);
+        let peak = sound[from..to].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak <= 0.5 * 1.06, "{peak}");
+    }
+
+    #[test]
+    fn the_low_cut_takes_mains_hum_away_and_leaves_the_voice_and_the_curve_says_so() {
+        let tone_through = |hz: f32, cut: f32| {
+            let mut block: Vec<f32> = (0..SAMPLE_RATE as usize)
+                .flat_map(|i| {
+                    let v = 0.5 * (2.0 * std::f32::consts::PI * hz * i as f32 / SAMPLE_RATE as f32).sin();
+                    [v, v]
+                })
+                .collect();
+            TrackFx::new(false, false).process(&mut block, cut, 0.0, &Tone::default());
+            20.0 * (rms(block[block.len() / 2..].iter().copied()) / (0.5 * std::f32::consts::FRAC_1_SQRT_2)).log10()
+        };
+        // Cut at 100 Hz: the hum at 50 Hz is 24 dB down, a low voice at 200 Hz within half a decibel.
+        let (hum, voice) = (tone_through(50.0, 100.0), tone_through(200.0, 100.0));
+        assert!((-25.5..-23.0).contains(&hum) && voice > -0.5, "{hum} {voice}");
+        // The curve the mixer draws is what the filters do.
+        for (hz, measured) in [(50.0, hum), (200.0, voice), (100.0, tone_through(100.0, 100.0))] {
+            let drawn = response_db(100.0, &Tone::default(), hz);
+            assert!((drawn - measured).abs() < 0.2, "{hz}: {drawn} {measured}");
+        }
+        // And the equaliser's bell is on it: 6 dB up at its centre.
+        let bell = Tone { mid_db: 6.0, mid_hz: 1000.0, ..Tone::default() };
+        assert!((response_db(0.0, &bell, 1000.0) - 6.0).abs() < 0.1 && response_db(0.0, &bell, 60.0).abs() < 0.3);
+    }
+
+    #[test]
+    fn the_picture_of_the_chain_has_the_level_after_each_stage_where_it_is_heard() {
+        // A steady loud tone through noise reduction (which delays) and a compressor.
+        let mut block: Vec<f32> = (0..SAMPLE_RATE as usize)
+            .flat_map(|i| {
+                let v = 0.5 * (2.0 * std::f32::consts::PI * 300.0 * i as f32 / SAMPLE_RATE as f32).sin();
+                [v, v]
+            })
+            .collect();
+        let scope = crate::scope::Scope::default();
+        let mut last = [i64::MIN; crate::SCOPE_TAPS];
+        let mut fx = TrackFx::new(true, false);
+        let tone = Tone { threshold_db: -18.0, ratio: 4.0, ..Tone::default() };
+        let mut at = 96_000;
+        for part in block.chunks_mut(2 * 1000) {
+            let probe = Probe { scope: &scope, last: &mut last, at };
+            fx.process_watched(part, 0.0, 0.0, &tone, Some(probe));
+            at += 1000;
+        }
+        // Half a second in: the source at 0.5, the same until the compressor, about 9 dB less after it.
+        let taps = scope.read((96_000 + 24_000) / crate::SCOPE_STEP).expect("laid down");
+        assert!((taps[0] - 0.5).abs() < 0.01 && (taps[6] - 0.5).abs() < 0.02, "{taps:?}");
+        let down = 20.0 * (taps[7] / taps[6]).log10();
+        assert!((-10.5..-8.0).contains(&down) && taps[8] == taps[7], "{taps:?}");
+        // What came out of the noise reduction late was put where it belongs:
+        // the stretch before the tone began is silent at every tap.
+        let before = scope.read(96_000 / crate::SCOPE_STEP - 1).expect("laid down by the late taps");
+        assert!(before.iter().all(|level| *level < 1e-3), "{before:?}");
+    }
+
+    #[test]
     fn the_leveller_evens_out_phrases_and_saturation_rounds_the_peaks() {
         // A loud phrase, a quiet one, a pause; again and again. 14 dB between the two.
         let phrases: Vec<f32> = (0..SAMPLE_RATE as usize * 12)
@@ -458,10 +663,13 @@ mod tests {
             let (a, b) = ((from * SAMPLE_RATE as f32) as usize * 2, (to * SAMPLE_RATE as f32) as usize * 2);
             20.0 * rms(v[a..b].iter().copied()).max(1e-9).log10()
         };
-        // Once it knows the track (the last round): the 14 dB between loud and quiet are about 6.
-        let before = level(&phrases, 9.4, 9.9) - level(&phrases, 10.4, 10.9);
-        let after = level(&evened, 9.4, 9.9) - level(&evened, 10.4, 10.9);
-        assert!((13.5..14.5).contains(&before) && (4.5..8.0).contains(&after), "{before} {after}");
+        // The 14 dB between loud and quiet are gone but for a little, in
+        // the first round already (the track is known from its first phrase on).
+        for round in [0.0, 9.0] {
+            let before = level(&phrases, round + 0.5, round + 0.9) - level(&phrases, round + 1.5, round + 1.9);
+            let after = level(&evened, round + 0.5, round + 0.9) - level(&evened, round + 1.5, round + 1.9);
+            assert!((13.5..14.5).contains(&before) && (-1.0..4.0).contains(&after), "{round}: {before} {after}");
+        }
         // The pause stays a pause.
         assert!(level(&evened, 11.3, 11.9) < -100.0);
         // Saturation: a quiet tone passes nearly as it is, a loud one loses its peaks.

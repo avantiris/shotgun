@@ -23,6 +23,7 @@ mod null;
 mod pw;
 pub mod record;
 mod sampler;
+mod scope;
 pub mod space;
 mod synth;
 pub mod tune;
@@ -31,8 +32,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
-pub use fx::Tone;
+pub use fx::{Tone, response_db};
 pub use graph::{Processor, Transport};
+pub use scope::{SCOPE_STEP, SCOPE_TAPS};
 
 /// Internal rate. Everything on the timeline's audio tracks is in samples
 /// at this rate.
@@ -296,6 +298,8 @@ pub(crate) struct Shared {
     /// reductions of de-esser, compressor and ducking in eighths of a
     /// decibel, a byte each.
     pub(crate) stages: Stages,
+    /// The level along the chain of the one track whose chain is on screen.
+    pub(crate) scope: scope::Scope,
 }
 
 /// The slots of the stage readings: [`STAGE_SLOTS`] for each of [`MAX_METERS`] tracks.
@@ -652,6 +656,22 @@ impl Meters {
             let fresh = playing && slot >> 32 == step as u32 as u64;
             *out = [0, 1, 2].map(|n| if fresh { -(((slot >> (8 * n)) & 255) as f32) / 8.0 } else { 0.0 });
         }
+    }
+
+    /// Which track's chain is on screen (`None`: none): its level after
+    /// every stage is noted from now on.
+    pub fn watch(&self, track: Option<usize>) {
+        self.shared.scope.watch(track);
+    }
+
+    /// The watched track's level after every stage (linear peaks, one
+    /// array per stretch of [`SCOPE_STEP`] samples) for the `behind`
+    /// stretches up to what is heard now and the `ahead` ones that come
+    /// next, oldest first. A stretch nothing is known of is `None`.
+    pub fn scope(&self, behind: usize, ahead: usize, out: &mut Vec<Option<[f32; SCOPE_TAPS]>>) {
+        let now = heard(&self.shared).div_euclid(SCOPE_STEP);
+        out.clear();
+        out.extend((now - behind as i64 + 1..=now + ahead as i64).map(|step| self.shared.scope.read(step)));
     }
 
     /// Peak level of the monitored input since the last call (linear).

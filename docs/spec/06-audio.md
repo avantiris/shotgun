@@ -110,7 +110,7 @@ Speed changes use a high-quality time-stretch/resample stage in the source.
 - Fader, pan and mute (and solo, which mutes the others) act at once: the
   realtime thread reads them from atomics and spreads a change over one
   block. No new graph is built for them, so nothing is refilled.
-- Low cut (second-order high-pass) and noise reduction run on the disk
+- Low cut (fourth-order high-pass since 2026-11-21, see below) and noise reduction run on the disk
   thread, before the ring buffer, not in the realtime graph. `PROPOSED`
   reason: the noise reduction is RNNoise (crate `nnnoiseless`), a neural
   network made for speech with 20 ms of delay and an FFT that may allocate.
@@ -174,9 +174,31 @@ unchanged.
 
 ## Leveller, saturation, ducking (2026-11-20, stage 3)
 
-- After the compressor: a leveller (80 ms against a 3 s average of the
-  sounding parts, 60 % of the difference taken back, at most 9 dB either
-  way) and a saturation (`tanh`, unity gain for quiet sound).
+- A leveller (the phrase's level, up within 5 ms and down within 80 ms,
+  against the average of the sounding parts over 10 s; the difference
+  taken back, at most 12 dB either way; the hand moves down within 20 ms
+  and up within 300 ms) and, last, a saturation (`tanh`, unity gain for
+  quiet sound).
+- Changed 2026-11-21 (feedback F16.16, F16.18, F16.20, measured on a take
+  of his with his settings: the loudest moments left the chain at -6.4 dB
+  against -17 dB for nine tenths of the take, now -14.0 against -21.7):
+  - The leveller is before the compressor, not after it.
+  - It was 60 % of the difference against a 3 s average, at most 9 dB: a
+    loud stretch of a few seconds became the average and passed.
+  - Its hand used to follow the phrase both ways alike: the first
+    syllable after a pause or a quiet phrase came out up to 5 dB too loud.
+  - Both followers work in decibels and sank to the bottom of a pause, from
+    where a word took 10 to 20 ms to be climbed up to; they now stay just
+    below where they start to act.
+  - The compressor comes up within 1 ms on a voice track (5 ms elsewhere,
+    which lets a drum hit through): a voice is one short spike per cycle
+    of its pitch, and at 5 ms the follower stayed far under them.
+  - The low cut is fourth order (24 dB per octave), not second: mains hum
+    at 50 Hz is 24 dB down with the cut at 100 Hz (it was 8 dB).
+- The level after every stage of one track (the one whose chain is on
+  screen) is kept per 5 ms of the timeline for 11 s (`sg-audio/scope.rs`),
+  written by the disk thread as it lays the sound down and read by the UI
+  around the position that is heard (`PROPOSED`).
 - Ducking is done on the disk thread, not with a sidechain input in the
   realtime graph (`PROPOSED`): voice feeds are laid down first and leave
   their level along the timeline (peak per 64 frames, fader included, a

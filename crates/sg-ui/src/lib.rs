@@ -20,6 +20,8 @@ mod mixer;
 mod perf;
 mod piano_roll;
 mod plugins_panel;
+mod scope;
+pub use scope::TAPS as SCOPE_TAPS;
 mod session;
 mod stage;
 pub mod theme;
@@ -318,6 +320,8 @@ pub enum DevStep {
     Hero,
     /// Open the "Chain" panel (the selected track's chain).
     Chain,
+    /// Show the picture of this stage in the "Chain" panel, by its name there.
+    Stage(String),
     /// Open the "Lyrics" tab with these words in the project ("|" for a new line).
     Lyrics(String),
     /// Set the sequence frame size.
@@ -1100,6 +1104,10 @@ impl Shell {
                 (self.editor.mixer.open, self.editor.mixer.chain) = (true, true);
                 self.editor.colour.open = false;
             }
+            DevStep::Stage(name) => match scope::Stage::named(&name) {
+                Some(stage) => self.editor.mixer.stage = stage,
+                None => self.error = Some(format!("no stage called {name}")),
+            },
             DevStep::Hero => {
                 // The selected asset becomes what its scenario is matched to.
                 if let (Some(session), Some(asset)) = (&mut self.session, self.editor.assets.selected)
@@ -1949,6 +1957,14 @@ impl Shell {
     /// The input remembered from the last run.
     pub fn set_input(&mut self, input: Option<String>) {
         self.editor.input = input;
+    }
+
+    /// The audio track (counted among the audio tracks) whose chain is on
+    /// screen, for the engine to report the level along it; `None` while
+    /// the chain is not shown.
+    pub fn watched(&self) -> Option<usize> {
+        let mixer = &self.editor.mixer;
+        (self.session.is_some() && mixer.open && mixer.chain).then_some(mixer.watching).flatten()
     }
 
     /// The take being drawn while it is recorded: its track's name and the

@@ -238,6 +238,39 @@ fn spread(path: &Path, side: usize) -> std::io::Result<()> {
     }
 }
 
+/// Takes what does not belong to the sound out of a take as it is
+/// written: the offset an input sits at, and with it the thump of an
+/// input that has just woken up (feedback F16.18: a take of his began at
+/// full scale for 36 ms and came back to the middle over half a second,
+/// far louder than the voice after it).
+#[derive(Default)]
+struct Settle {
+    /// Per side: the last sample that came in and the last that went out.
+    last: [(f32, f32); 2],
+    frames: u64,
+}
+
+impl Settle {
+    /// Frames over which a take comes in from silence (20 ms).
+    const FADE: u64 = 960;
+
+    /// `samples`: interleaved stereo, whole frames, the next of the take.
+    fn run(&mut self, samples: &mut [f32]) {
+        // A high-pass at 20 Hz, below anything a voice or an instrument has.
+        let keep = 1.0 - 2.0 * std::f32::consts::PI * 20.0 / crate::SAMPLE_RATE as f32;
+        for frame in samples.as_chunks_mut::<2>().0 {
+            for (side, sample) in frame.iter_mut().enumerate() {
+                let (x1, y1) = self.last[side];
+                // The first sample is where the input sits: nothing of it gets through.
+                let y = if self.frames == 0 { 0.0 } else { *sample - x1 + keep * y1 };
+                self.last[side] = (*sample, y);
+                *sample = y * (self.frames as f32 / Self::FADE as f32).min(1.0);
+            }
+            self.frames += 1;
+        }
+    }
+}
+
 fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::io::Result<u64> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -248,22 +281,28 @@ fn write(path: &Path, mut ring: rtrb::Consumer<f32>, meeting: &Meeting) -> std::
     let mut bytes = Vec::new();
     // The energy of each side over the whole take.
     let mut energy = [0.0f64; 2];
+    let mut settle = Settle::default();
+    let mut block: Vec<f32> = Vec::new();
     loop {
         let stopping = meeting.stop.load(Ordering::Acquire);
-        let ready = ring.slots();
+        let ready = ring.slots() & !1;
         if ready > 0
             && let Ok(chunk) = ring.read_chunk(ready)
         {
             bytes.clear();
             let (a, b) = chunk.as_slices();
-            for (index, sample) in a.iter().chain(b).enumerate() {
-                let side = (samples as usize + index) % 2;
-                energy[side] += (*sample as f64) * (*sample as f64);
-            }
-            bytes.extend(a.iter().chain(b).flat_map(|s| s.to_le_bytes()));
+            block.clear();
+            block.extend(a.iter().chain(b).copied());
             chunk.commit_all();
+            // (The capture writes whole frames, so a block is whole frames.)
+            settle.run(&mut block);
+            for frame in block.as_chunks::<2>().0 {
+                energy[0] += (frame[0] as f64) * (frame[0] as f64);
+                energy[1] += (frame[1] as f64) * (frame[1] as f64);
+            }
+            bytes.extend(block.iter().flat_map(|s| s.to_le_bytes()));
             file.write_all(&bytes)?;
-            samples += ready as u64;
+            samples += block.len() as u64;
         }
         if stopping && ring.slots() == 0 {
             break;
@@ -472,6 +511,33 @@ impl Drop for Monitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_thump_of_an_input_waking_up_is_not_in_the_take() {
+        // As measured on a take of his: full scale at once, back to the
+        // middle over half a second; under it a voice-like tone of 0.1.
+        let frames = crate::SAMPLE_RATE as usize;
+        let take: Vec<f32> = (0..frames)
+            .flat_map(|i| {
+                let t = i as f32 / crate::SAMPLE_RATE as f32;
+                let thump = (4.0 * (-t / 0.17).exp()).min(1.0);
+                let v = (thump + 0.1 * (2.0 * std::f32::consts::PI * 200.0 * t).sin()).min(1.0);
+                [v, v]
+            })
+            .collect();
+        let mut settled = take.clone();
+        let mut settle = Settle::default();
+        // In blocks, as the writer gets them.
+        for block in settled.chunks_mut(2 * 700) {
+            settle.run(block);
+        }
+        let peak = settled.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak < 0.2, "{peak}");
+        // The tone is as it was once the thump is over.
+        let rms = |v: &[f32]| (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+        let tail = rms(&settled[frames * 2 * 3 / 4..]);
+        assert!((tail - 0.1 * std::f32::consts::FRAC_1_SQRT_2).abs() < 0.004, "{tail}");
+    }
 
     #[test]
     fn a_take_with_sound_on_one_side_only_gets_it_on_both() {

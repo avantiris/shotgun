@@ -25,6 +25,14 @@ pub struct ViewerState {
     /// What de-esser, compressor and ducking take off each audio track
     /// right now, in decibels (0 or below).
     pub stages: Vec<[f32; 3]>,
+    /// The level after every stage of the watched track's chain
+    /// ([`crate::Shell::watched`]), per stretch of 5 ms, oldest first: up to what is heard now, then `scope_ahead` stretches
+    /// that are about to be. `None`: nothing known of that stretch.
+    pub scope: Vec<Option<[f32; crate::SCOPE_TAPS]>>,
+    pub scope_ahead: usize,
+    /// What low cut and equaliser of these settings do to a tone of that
+    /// many hertz, in decibels: the engine's own filters, for the curve.
+    pub eq_response: Option<fn(&sg_core::TrackSettings, f32) -> f32>,
     /// The camera angles side by side, while the sequence has camera tracks.
     pub angles: Option<AnglesView>,
     /// Lines for the performance overlay.

@@ -64,6 +64,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         }
         "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
         "chain" => Step::Dev(DevStep::Chain),
+        "stage" => Step::Dev(DevStep::Stage(need()?)),
         "lyrics" => Step::Dev(DevStep::Lyrics(need()?)),
         "help" => Step::Dev(DevStep::Act(Action::Help)),
         "colourpanel" => Step::Dev(DevStep::Act(Action::Colour)),

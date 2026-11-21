@@ -906,7 +906,19 @@ impl App {
             self.angles_texture = Some((texture, generation));
             sg_ui::AnglesView { texture, count, cols, rows }
         });
+        // The chain on screen: 3.5 s of it behind what is heard, and the
+        // 0.4 s that are laid down already and about to be.
+        player.watch(self.shell.watched());
+        let per_second = 48_000 / sg_play::SCOPE_STEP as usize;
+        let (behind, ahead) = (per_second * 7 / 2, per_second * 2 / 5);
+        let mut scope = Vec::new();
+        if self.shell.watched().is_some() {
+            player.scope(behind, ahead, &mut scope);
+        }
         ViewerState {
+            scope,
+            scope_ahead: ahead,
+            eq_response: Some(sg_play::response_db),
             texture: Some(texture),
             frame: player.frame(),
             playing: player.is_playing(),

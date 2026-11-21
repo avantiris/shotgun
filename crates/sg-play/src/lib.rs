@@ -25,7 +25,7 @@ use sg_render::{Compositor, LayerDraw, Source, plan, plan_track, sequence_frames
 
 use crate::frames::{Decoded, FrameKey, Pool, Quality, TextureCache};
 
-pub use sg_audio::{AudioError, Backend, DEFAULT_QUANTUM, MAX_METERS, Stats as AudioStats};
+pub use sg_audio::{AudioError, Backend, DEFAULT_QUANTUM, MAX_METERS, SCOPE_STEP, SCOPE_TAPS, Stats as AudioStats};
 
 /// VRAM spent on decoded preview frames.
 const TEXTURE_BUDGET: u64 = 768 << 20;
@@ -336,6 +336,19 @@ impl Player {
     /// track do to what is heard right now, in decibels (0 or below).
     pub fn stages(&self, tracks: &mut [[f32; 3]]) {
         self.meters.stages(tracks);
+    }
+
+    /// Which audio track's chain is on screen (`None`: none): the level
+    /// after each of its stages is then kept for [`Player::scope`].
+    pub fn watch(&self, track: Option<usize>) {
+        self.meters.watch(track);
+    }
+
+    /// The watched track's level after every stage, for the `behind`
+    /// stretches of [`SCOPE_STEP`] samples up to what is heard now and
+    /// the `ahead` ones after it, oldest first.
+    pub fn scope(&self, behind: usize, ahead: usize, out: &mut Vec<Option<[f32; SCOPE_TAPS]>>) {
+        self.meters.scope(behind, ahead, out);
     }
 
     /// Peak level of the monitored input since the last call (linear).
@@ -1057,25 +1070,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
             mute: track.mix.mute || (any_solo && !track.mix.solo),
             low_cut_hz: track.mix.low_cut_hz,
             denoise: track.mix.denoise,
-            tone: sg_audio::Tone {
-                low_db: track.mix.eq_low_db,
-                mid_db: track.mix.eq_mid_db,
-                mid_hz: track.mix.eq_mid_hz,
-                high_db: track.mix.eq_high_db,
-                threshold_db: track.mix.comp_threshold_db,
-                ratio: track.mix.comp_ratio,
-                deess: track.mix.deess,
-                tune: sg_audio::tune::Tune {
-                    amount: track.mix.tune,
-                    key: track.mix.tune_key,
-                    scale: track.mix.tune_scale,
-                    speed: track.mix.tune_speed,
-                },
-                level: track.mix.level,
-                drive: track.mix.drive,
-                voice: track.mix.voice,
-                duck_db: track.mix.duck_db,
-            },
+            tone: tone_of(&track.mix),
             plugins: track
                 .plugins
                 .iter()
@@ -1216,6 +1211,35 @@ fn speed_warp(sequence: &Sequence, clip: &sg_core::Clip, own: &ClipProps) -> Vec
     at.dedup();
     let per_frame = samples(1_000_000) as f64 / 1_000_000.0;
     at.into_iter().map(|f| (samples(f), ramp.integral(f) * num as f64 / den as f64 * per_frame)).collect()
+}
+
+/// A track's settings as the engine's stages take them.
+fn tone_of(mix: &sg_core::TrackSettings) -> sg_audio::Tone {
+    sg_audio::Tone {
+        low_db: mix.eq_low_db,
+        mid_db: mix.eq_mid_db,
+        mid_hz: mix.eq_mid_hz,
+        high_db: mix.eq_high_db,
+        threshold_db: mix.comp_threshold_db,
+        ratio: mix.comp_ratio,
+        deess: mix.deess,
+        tune: sg_audio::tune::Tune {
+            amount: mix.tune,
+            key: mix.tune_key,
+            scale: mix.tune_scale,
+            speed: mix.tune_speed,
+        },
+        level: mix.level,
+        drive: mix.drive,
+        voice: mix.voice,
+        duck_db: mix.duck_db,
+    }
+}
+
+/// What the low cut and the equaliser of these settings do to a steady
+/// tone of `hz`, in decibels: for the curve the mixer draws.
+pub fn response_db(mix: &sg_core::TrackSettings, hz: f32) -> f32 {
+    sg_audio::response_db(mix.low_cut_hz, &tone_of(mix), hz)
 }
 
 #[cfg(test)]
