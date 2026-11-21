@@ -1094,6 +1094,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
         bpm: sequence.tempo.map_or(120.0, sg_core::Tempo::bpm),
         room_seconds: sequence.space.room_ds as f32 / 10.0,
         echo_repeat: sequence.space.echo_repeat as f32 / 100.0,
+        stop_at: None,
         click: None,
         true_peak_db: None,
     }
@@ -1109,8 +1110,13 @@ fn track_notes(sequence: &Sequence, track: &sg_core::Track) -> Vec<sg_audio::Not
     for clip in track.clips.iter().filter(|c| c.asset == sg_core::AssetId(0)) {
         let Some(list) = track.notes.get(&clip.id) else { continue };
         for note in list.iter() {
-            let start = (note.start as f64 * per_tick).round() as i64;
-            let len = ((note.len as f64 * per_tick).round() as i64).min(clip.len - start);
+            // A note clip that was cut or trimmed at its start plays its
+            // notes from that point on (`src_in`, in samples as for sound):
+            // what lies before it is left out, a note across it begins there.
+            let from = (note.start as f64 * per_tick).round() as i64 - clip.src_in;
+            let until = from + (note.len as f64 * per_tick).round() as i64;
+            let start = from.max(0);
+            let len = until.min(clip.len) - start;
             if start < clip.len && len > 0 {
                 notes.push(sg_audio::NoteSpan {
                     start: clip.start + start,
@@ -1200,6 +1206,49 @@ mod tests {
     use sg_core::{AssetId, Clip, ClipId, Key, Op, Param, Project, ProjectId, SequenceId, TrackId, apply};
 
     use super::*;
+
+    #[test]
+    fn a_note_clip_cut_at_its_start_plays_its_notes_from_there() {
+        let (seq, a1) = (SequenceId(1), TrackId(2));
+        // At 120 a minute a tick is 25 samples. The clip begins one beat (24 000 samples) into its notes.
+        let clip = Clip { id: ClipId(1), asset: AssetId(0), start: 100_000, len: 48_000, src_in: 24_000 };
+        let note = |start: i64, len: i64, pitch: u8| sg_core::Note { start, len, pitch, velocity: 100 };
+        let ops = [
+            Op::AddSequence {
+                index: 0,
+                sequence: SequenceHeader {
+                    id: seq,
+                    name: "Main".into(),
+                    rate: Rate::FPS_60,
+                    width: 1920,
+                    height: 1080,
+                },
+            },
+            Op::AddTrack { seq, index: 0, track: TrackHeader { id: a1, kind: TrackKind::Audio, name: "A1".into() } },
+            Op::InsertClip { seq, track: a1, clip },
+            Op::SetClipNotes {
+                seq,
+                track: a1,
+                clip: clip.id,
+                // Before the cut; across it; inside; across the clip's end; after it.
+                notes: Some(vec![
+                    note(0, 480, 60),
+                    note(720, 480, 62),
+                    note(1440, 240, 64),
+                    note(2640, 960, 65),
+                    note(3000, 100, 67),
+                ]),
+            },
+        ];
+        let mut project = std::sync::Arc::new(Project::new(ProjectId(1), "p"));
+        for op in &ops {
+            project = apply(&project, op).unwrap().0;
+        }
+        let mix = audio_mix(std::path::Path::new("/nowhere"), &project.sequences[0]);
+        let played: Vec<(i64, i64, u8)> = mix.tracks[0].notes.iter().map(|n| (n.start, n.len, n.pitch)).collect();
+        // The first is left out, the second begins with the clip, the fourth ends with it, the last is left out.
+        assert_eq!(played, [(100_000, 6_000, 62), (112_000, 6_000, 64), (142_000, 6_000, 65)]);
+    }
 
     #[test]
     fn the_sound_of_a_take_follows_the_pictures_speed_ramp() {

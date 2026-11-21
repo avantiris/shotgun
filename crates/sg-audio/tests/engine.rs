@@ -1148,3 +1148,38 @@ fn tracks_of_a_group_go_through_its_fader_together() {
     let out = pull(&engine, 1_000);
     assert!(close(out[2 * 900], ramp(4_900)), "{}", out[2 * 900]);
 }
+
+#[test]
+fn clips_stop_sounding_where_the_mix_says_and_keep_their_fades_up_to_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = wav(dir.path(), "one.wav", 1, 48_000, |_, _| 0.5);
+    // A second of sound that fades out over its second half.
+    let span = ClipSpan {
+        start: 0,
+        len: 48_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 24_000,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+        warp: Vec::new(),
+    };
+    let render = |stop_at: Option<i64>| {
+        let engine = Engine::start(Backend::Manual).unwrap();
+        engine.set_mix(Mix { tracks: vec![track(vec![span.clone()])], stop_at, ..Mix::default() });
+        engine.play(0);
+        let mut out = vec![0.0f32; 48_000 * 2];
+        for block in out.chunks_mut(1000) {
+            engine.settle();
+            engine.pull(block);
+        }
+        out
+    };
+    let (whole, stopped) = (render(None), render(Some(36_000)));
+    // Up to the stop it is the same sound, the fade as far as it had come; after it, nothing.
+    assert_eq!(whole[..36_000 * 2], stopped[..36_000 * 2]);
+    assert!(close(stopped[35_999 * 2], 0.5 * 12_001.0 / 24_000.0), "{}", stopped[35_999 * 2]);
+    assert!(stopped[36_000 * 2..].iter().all(|s| *s == 0.0));
+}

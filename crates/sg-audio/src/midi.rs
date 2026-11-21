@@ -80,8 +80,11 @@ impl MidiIn {
             let mut input = seq.input();
             while !stopped.load(Ordering::Relaxed) {
                 // (Woken a few times a second to see whether to stop.)
-                if alsa::poll::poll(&mut fds, 200).is_err() {
-                    break;
+                match alsa::poll::poll(&mut fds, 200) {
+                    Ok(_) => {}
+                    // (A signal arrived during the wait: wait again.)
+                    Err(e) if e.errno() == libc::EINTR => continue,
+                    Err(_) => break,
                 }
                 while input.event_input_pending(true).is_ok_and(|waiting| waiting > 0) {
                     let Ok(event) = input.event_input() else { break };

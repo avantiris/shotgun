@@ -165,6 +165,9 @@ pub struct Mix {
     /// repeat of the shared echo is repeated again (0 to 0.9).
     pub room_seconds: f32,
     pub echo_repeat: f32,
+    /// No clip sounds from this timeline sample on (what rings goes on):
+    /// the end of the range of a song that is exported with its tail.
+    pub stop_at: Option<i64>,
     /// The metronome, while it is on. Never in an export.
     pub click: Option<space::Click>,
     /// For a master: the limiter holds the wave between the samples
@@ -183,6 +186,7 @@ impl Default for Mix {
             bpm: 120.0,
             room_seconds: space::ROOM_SECONDS,
             echo_repeat: space::ECHO_REPEAT,
+            stop_at: None,
             click: None,
             true_peak_db: None,
         }

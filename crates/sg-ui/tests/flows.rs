@@ -2084,3 +2084,61 @@ fn a_track_is_put_into_a_group_which_gets_a_level_of_its_own_beside_the_master()
     harness.run_steps(3);
     assert_eq!(group(&harness), 2);
 }
+
+#[test]
+fn a_note_clip_keeps_its_notes_when_it_is_copied_cut_in_two_or_moved_to_another_track() {
+    let mut harness = editor();
+    // (track name, clip start, source offset, notes as the file has them) of every note clip.
+    let note_clips = |harness: &Harness<'_, App>| -> Vec<(String, i64, i64, Vec<i64>)> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let mut found = Vec::new();
+        for track in project.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+            for clip in track.clips.iter().filter(|c| c.asset == AssetId(0)) {
+                let notes = track.notes.get(&clip.id).map(|n| n.iter().map(|n| n.start).collect()).unwrap_or_default();
+                found.push((track.name.clone(), clip.start, clip.src_in, notes));
+            }
+        }
+        found
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    // One note in the first bar, one in the second.
+    for (pitch, start) in [(60, 0), (64, 4800)] {
+        harness.state_mut().shell.dev(sg_ui::DevStep::Note(0, pitch, start, 480));
+    }
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    let first = note_clips(&harness);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].3, [0, 4800]);
+    // Copied and pasted at the playhead: the copy has the notes too.
+    let on_clip = on_timeline(&harness, first[0].1 as f32 / 800.0 / 0.82 + 20.0, 1);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::C);
+    playhead(&mut harness, 900);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::V);
+    harness.run_steps(3);
+    let two = note_clips(&harness);
+    assert_eq!(two.len(), 2, "{two:?}");
+    assert!(two.iter().all(|c| c.3 == [0, 4800]), "{two:?}");
+    // Cut in two in the middle of the copy (two bars at 120 a minute are 240 frames):
+    // both halves have the notes, and the second begins a bar into them.
+    let copy = two.iter().map(|c| c.1).max().unwrap();
+    playhead(&mut harness, copy / 800 + 120);
+    harness.key_press(Key::S);
+    harness.run_steps(3);
+    let three = note_clips(&harness);
+    assert_eq!(three.len(), 3, "{three:?}");
+    assert!(three.iter().all(|c| c.3 == [0, 4800]), "{three:?}");
+    assert!(three.iter().any(|c| c.1 == copy + 96_000 && c.2 == 96_000), "{three:?}");
+    // Dragged down to a second audio track, the first clip takes its notes along.
+    click(&mut harness, "+ Audio");
+    let from = on_timeline(&harness, first[0].1 as f32 / 800.0 / 0.82 + 20.0, 1);
+    let to = on_timeline(&harness, first[0].1 as f32 / 800.0 / 0.82 + 20.0, 2);
+    drag(&mut harness, from, to);
+    let moved = note_clips(&harness);
+    assert_eq!(moved.iter().filter(|c| c.0 == "A2").map(|c| c.3.clone()).collect::<Vec<_>>(), [vec![0, 4800]]);
+    assert_eq!(moved.len(), 3);
+    assert_eq!(harness.state().shell.error_shown(), None);
+}

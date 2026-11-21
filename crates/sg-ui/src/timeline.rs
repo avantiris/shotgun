@@ -136,6 +136,8 @@ struct Copied {
     offset: i64,
     /// What the clip had been given: volume, fades, placement, title.
     props: Option<Box<ClipProps>>,
+    /// The notes of a note clip.
+    notes: Option<Vec<sg_core::Note>>,
 }
 
 pub struct Timeline {
@@ -1341,6 +1343,14 @@ impl Timeline {
             let target_row = sequence.tracks.iter().position(|t| t.id == target.id).unwrap_or(row);
             self.ghosts.push((target_row, moved.start, moved.len, !blocked || over));
             removes.push(Op::RemoveClip { seq: sequence.id, track: track.id, start: clip.start });
+            // A note clip takes its notes along to another track (they are kept per track).
+            if target.id != track.id
+                && let Some(notes) = track.notes.get(&clip.id)
+            {
+                let seq = sequence.id;
+                removes.push(Op::SetClipNotes { seq, track: target.id, clip: clip.id, notes: Some(Vec::clone(notes)) });
+                removes.push(Op::SetClipNotes { seq, track: track.id, clip: clip.id, notes: None });
+            }
             inserts.push((target.id, moved));
         }
         if fits && covers {
@@ -2127,6 +2137,9 @@ impl Timeline {
                             }
                             inserts.push(Op::SetClipProps { seq, track, clip: clip.id, props: Some(props) });
                         }
+                        if let Some(notes) = &copied.notes {
+                            inserts.push(Op::SetClipNotes { seq, track, clip: clip.id, notes: Some(notes.clone()) });
+                        }
                         placed.push((track, clip));
                     }
                 }
@@ -2264,6 +2277,7 @@ impl Timeline {
                 clip,
                 offset: clip.start - Lane::of(&sequence.tracks[row], sequence).units(first),
                 props: sequence.tracks[row].props_of(clip.id).map(|p| Box::new(ClipProps::clone(p))),
+                notes: sequence.tracks[row].notes.get(&clip.id).map(|n| Vec::clone(n)),
             })
             .collect();
     }
@@ -2530,7 +2544,14 @@ fn split_ops(
     let props = match track.props_of(clip.id) {
         Some(props) => &**props,
         // Nothing to share out, unless the sound follows a ramp.
-        None if picture_ramp.is_none() => return Op::split(seq, track.id, clip, at, right_id).into_iter().collect(),
+        None if picture_ramp.is_none() => {
+            let mut ops: Vec<Op> = Op::split(seq, track.id, clip, at, right_id).into_iter().collect();
+            // Both halves of a note clip have the notes; each plays its own part of them.
+            if let Some(notes) = track.notes.get(&clip.id).filter(|_| !ops.is_empty()) {
+                ops.push(Op::SetClipNotes { seq, track: track.id, clip: right_id, notes: Some(Vec::clone(notes)) });
+            }
+            return ops;
+        }
         None => &default,
     };
     // How far into the clip the cut is, in sequence frames (the unit of keyframes).
@@ -2557,12 +2578,17 @@ fn split_ops(
     let left_clip = Clip { len: at - clip.start, ..*clip };
     let right_clip = Clip { id: right_id, start: at, len: clip.end() - at, src_in: clip.src_in + consumed, ..*clip };
     let stored = |props: ClipProps| (props != ClipProps::default()).then(|| Box::new(props));
-    vec![
+    let mut ops = vec![
         Op::SetClip { seq, track: track.id, start: clip.start, clip: left_clip },
         Op::InsertClip { seq, track: track.id, clip: right_clip },
         Op::SetClipProps { seq, track: track.id, clip: clip.id, props: stored(left) },
         Op::SetClipProps { seq, track: track.id, clip: right_id, props: stored(right) },
-    ]
+    ];
+    // Both halves of a note clip have the notes; each plays its own part of them.
+    if let Some(notes) = track.notes.get(&clip.id) {
+        ops.push(Op::SetClipNotes { seq, track: track.id, clip: right_id, notes: Some(Vec::clone(notes)) });
+    }
+    ops
 }
 
 impl Timeline {

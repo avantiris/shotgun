@@ -121,6 +121,32 @@ const PIANO_KEYS: [(egui::Key, u8); 17] = {
     ]
 };
 
+/// The notes of a clip as its piano roll shows them, and those it does
+/// not show. A clip that was cut or trimmed at its start begins `offset`
+/// ticks into its notes, and is `length` ticks long: notes are shown
+/// from the clip's start, one that lies across the start begins there,
+/// and what lies outside the clip altogether is kept but not shown.
+fn in_view(raw: &[Note], offset: i64, length: i64) -> (Vec<Note>, Vec<Note>) {
+    let (mut shown, mut hidden) = (Vec::new(), Vec::new());
+    for note in raw {
+        let (start, end) = (note.start - offset, note.start - offset + note.len);
+        if end <= 0 || start >= length {
+            hidden.push(*note);
+        } else {
+            shown.push(Note { start: start.max(0), len: end - start.max(0), ..*note });
+        }
+    }
+    (shown, hidden)
+}
+
+/// How many ticks into its notes a clip begins, and how many ticks long it is.
+fn span_of(sequence: &Sequence, clip: &sg_core::Clip) -> (i64, i64) {
+    let bpm = sequence.tempo.map_or(120.0, sg_core::Tempo::bpm);
+    let samples_per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * TICKS_PER_BEAT as f64);
+    let length = ((clip.len as f64 / samples_per_tick).round() as i64).max(TICKS_PER_BEAT);
+    ((clip.src_in as f64 / samples_per_tick).round() as i64, length)
+}
+
 fn name_of(pitch: u8) -> String {
     format!("{}{}", NAMES[pitch as usize % 12], pitch as i32 / 12 - 1)
 }
@@ -268,7 +294,7 @@ impl PianoRoll {
             velocity: struck,
         };
         let mut notes: Vec<Note> = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
-        notes.push(note);
+        notes.push(Note { start: note.start + span_of(sequence, &clip).0, ..note });
         // One pass of playing is one undo step.
         let group = *self.pass.get_or_insert_with(|| session.new_group());
         let op = Op::SetClipNotes { seq: sequence.id, track: track_id, clip: clip_id, notes: Some(notes) };
@@ -302,7 +328,8 @@ impl PianoRoll {
         let bpm = sequence.tempo.map_or(120.0, sg_core::Tempo::bpm);
         let samples_per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * TICKS_PER_BEAT as f64);
         let length = ((clip.len as f64 / samples_per_tick).round() as i64).max(TICKS_PER_BEAT);
-        let notes = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
+        let raw = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
+        let (notes, _) = in_view(&raw, span_of(sequence, &clip).0, length);
         Some((project, track_id, clip_id, notes, length))
     }
 
@@ -385,7 +412,16 @@ impl PianoRoll {
         notes: Vec<Note>,
         error: &mut Option<String>,
     ) {
-        let op = Op::SetClipNotes { seq: sequence.id, track, clip, notes: Some(notes) };
+        // `notes` are as the roll shows them: put back where they lie in
+        // the clip's notes, beside those the clip does not reach.
+        let found = sequence.track(track).and_then(|t| {
+            let raw = t.notes.get(&clip).map(|n| Vec::clone(n)).unwrap_or_default();
+            let (offset, length) = span_of(sequence, t.clips.iter().find(|c| c.id == clip).as_ref()?);
+            Some((offset, in_view(&raw, offset, length).1))
+        });
+        let (offset, mut all) = found.unwrap_or((0, Vec::new()));
+        all.extend(notes.into_iter().map(|n| Note { start: n.start + offset, ..n }));
+        let op = Op::SetClipNotes { seq: sequence.id, track, clip, notes: Some(all) };
         if let Err(e) = session.apply(op, None) {
             *error = Some(e.to_string());
         }
@@ -422,7 +458,8 @@ impl PianoRoll {
         let beats_per_bar = sequence.tempo.map_or(4, |t| t.beats_per_bar as i64);
         let samples_per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * TICKS_PER_BEAT as f64);
         let length = ((clip.len as f64 / samples_per_tick).round() as i64).max(TICKS_PER_BEAT);
-        let stored: Vec<Note> = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
+        let raw: Vec<Note> = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
+        let (stored, _) = in_view(&raw, span_of(sequence, &clip).0, length);
         let grid = *self.grid.get_or_insert(TICKS_PER_BEAT / 4);
 
         let area = ui.available_rect_before_wrap();
@@ -760,11 +797,13 @@ impl PianoRoll {
             Some(notes) => notes.clone(),
             None => {
                 let now = session.project().clone();
-                now.sequences
+                let raw = now
+                    .sequences
                     .first()
                     .and_then(|s| s.track(track_id))
                     .and_then(|t| t.notes.get(&clip_id).map(|n| Vec::clone(n)))
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                in_view(&raw, span_of(sequence, &clip).0, length).0
             }
         };
         let painter = ui.painter_at(body);

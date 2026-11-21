@@ -243,16 +243,9 @@ const TAIL_MAX: u64 = SAMPLE_RATE as u64 * 20;
 /// Takes away what would play after `end` (timeline samples): beyond the
 /// range of a song only what rings on is wanted, not the next clip.
 fn cut_at(mix: &mut sg_audio::Mix, end: i64) {
+    // (The clips stay as they are, fades and all: the engine lets none sound from here on.)
+    mix.stop_at = Some(end);
     for track in &mut mix.tracks {
-        track.clips.retain(|c| c.start < end);
-        for clip in &mut track.clips {
-            // (A clip cut short here keeps sounding as it did up to the cut:
-            // its fade-out belonged to the end it no longer has.)
-            if clip.len > end - clip.start {
-                clip.len = end - clip.start;
-                clip.fade_out = 0;
-            }
-        }
         track.notes.retain(|n| n.start < end);
         for note in &mut track.notes {
             note.len = note.len.min(end - note.start);

@@ -525,6 +525,14 @@ chain second version, M16 mixing and mastering.
     around the pointer, Shift + wheel moves along the clip, the wheel
     alone up and down the keys; a note's colour is the stronger the
     harder it is struck.
+  - Note clips on the timeline (2026-11-21): a note clip keeps its notes
+    when it is copied and pasted, dragged to another track or cut in two
+    (they were lost in all three: notes are kept per track and per clip).
+    Both halves of a cut clip have the notes, and a clip cut or trimmed
+    at its start plays and shows them from that point on, as a sound
+    clip plays its recording (before, trimming the start slid the notes
+    along). `PROPOSED`: what a clip no longer reaches is kept, not
+    deleted, so pulling the edge out again brings it back.
   - Several notes at once (2026-11-21): Ctrl+click adds a note to the
     selection, Ctrl+drag draws a box, Ctrl+A takes all. Selected notes
     move and stretch together, the delete key removes them, "Quantise"

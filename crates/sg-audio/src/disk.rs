@@ -211,7 +211,8 @@ impl Feed {
         let mut hung: Vec<u8> = self
             .note_offs
             .iter()
-            .filter(|(end, pitch)| *end > at && self.note_ons.iter().any(|(start, p, _)| p == pitch && *start < at))
+            // (An end exactly here has not been sent yet: ends go out with the block that begins at them.)
+            .filter(|(end, pitch)| *end >= at && self.note_ons.iter().any(|(start, p, _)| p == pitch && *start < at))
             .map(|(_, pitch)| *pitch)
             .collect();
         hung.sort_unstable();
@@ -296,6 +297,7 @@ fn same_structure(a: &Mix, b: &Mix, notes_too: bool) -> bool {
         && a.echo_samples == b.echo_samples
         && a.bpm == b.bpm
         && a.true_peak_db == b.true_peak_db
+        && a.stop_at == b.stop_at
         && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
             // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
             x.clips == y.clips
@@ -512,6 +514,12 @@ impl Disk {
                 render_clip(&wav, &clip, from, out, &mut raw, &mut self.segment);
             }
             i += 1;
+        }
+        // Past the point where the clips stop sounding: silence into the
+        // stages, which ring on by themselves.
+        if let Some(stop) = self.mix.stop_at.filter(|stop| *stop < end) {
+            let from = (stop - start).clamp(0, frames as i64) as usize;
+            block[from * 2..].fill(0.0);
         }
         if self.is_instrument(index) && !warm {
             self.run_instrument(index, start, block, true, wraps);
@@ -772,6 +780,7 @@ impl Disk {
                     crate::graph::Group { sum: vec![0.0; MAX_BLOCK * 2], fader: Fader::new(live.clone()), live }
                 })
             }),
+            serial: self.offered + 1,
         });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
@@ -793,7 +802,13 @@ impl Disk {
         if self.shared.adopted.load(Ordering::Acquire) < self.offered {
             return self.built_at;
         }
-        self.shared.clock_pos.load(Ordering::Relaxed) + self.shared.quantum.load(Ordering::Relaxed) as i64
+        let now = self.shared.clock_pos.load(Ordering::Relaxed);
+        let next = now + self.shared.quantum.load(Ordering::Relaxed) as i64;
+        // In a loop, the block after the last one before its end begins at its start.
+        match self.loop_now {
+            Some((from, end)) if now < end && next >= end => from + (next - end),
+            _ => next,
+        }
     }
 
     /// Hands the room's and the echo's settings to the graph that sounds.
@@ -1059,7 +1074,7 @@ pub fn run(
         // needed costs nothing but a little delay.)
         if (disk.playing || disk.idle_hand)
             && disk.feeds.iter().any(|f| f.by_hand)
-            && disk.shared.quantum.load(Ordering::Relaxed) as usize * 3 > disk.hand_built
+            && hand_frames(disk.shared.quantum.load(Ordering::Relaxed)) > disk.hand_built
             && disk.shared.adopted.load(Ordering::Acquire) >= disk.offered
         {
             let (pos, playing) = (if disk.playing { disk.resume_at() } else { disk.built_at }, disk.playing);

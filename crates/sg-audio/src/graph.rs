@@ -347,6 +347,10 @@ pub struct Graph {
     pub loop_range: Option<(i64, i64)>,
     /// The groups some track goes through (`None`: no track names that one).
     pub groups: [Option<Group>; 4],
+    /// Which graph this is, counted by the thread that builds them: the
+    /// callback says which one it has, so that the builder knows whether
+    /// its newest has been taken (one replaced before it was taken never is).
+    pub serial: u64,
 }
 
 /// Frames over which a grain comes up and goes down (5 ms): no click.
@@ -461,7 +465,7 @@ impl Rt {
             if let Some(old) = self.graph.replace(graph) {
                 self.retire(old);
             }
-            self.shared.adopted.fetch_add(1, Ordering::Release);
+            self.shared.adopted.store(self.graph.as_ref().map_or(0, |g| g.serial), Ordering::Release);
         }
         let frames = out.len() / 2;
         let grain = self.graph.as_ref().and_then(|g| g.grain);
