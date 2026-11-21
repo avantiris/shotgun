@@ -330,6 +330,10 @@ impl Op {
                     ops.extend(head_props());
                     ops.push(Op::InsertClip { seq, track, clip: Clip { id: spare, ..tail } });
                     ops.extend(tail_props(spare));
+                    // (Both parts of a note clip have its notes; each plays its own stretch of them.)
+                    if let Some(notes) = lane.notes.get(&old.id) {
+                        ops.push(Op::SetClipNotes { seq, track, clip: spare, notes: Some(Vec::clone(notes)) });
+                    }
                 }
             }
         }

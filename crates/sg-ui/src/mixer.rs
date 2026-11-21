@@ -497,6 +497,7 @@ impl Mixer {
                             let key_name = |key: u8| format!("{}{}", names[key as usize % 12], key as i32 / 12 - 1);
                             ui.label(RichText::new("Pads").size(10.5).color(theme::DIM));
                             let mut gone = None;
+                            let taken: Vec<u8> = pads.iter().map(|(key, _)| *key).collect();
                             for (place, (key, asset)) in pads.iter_mut().enumerate() {
                                 let label = name(*asset).unwrap_or_else(|| "(missing)".to_owned());
                                 ui.horizontal(|ui| {
@@ -511,7 +512,16 @@ impl Mixer {
                                         .on_hover_text(format!("The key that plays \"{label}\", as it is and to its end"))
                                         .changed()
                                     {
-                                        *key = at.clamp(0, 127) as u8;
+                                        // Onto the next free key in the direction of the drag: a key
+                                        // holds one pad, and landing on a taken one would lose a pad.
+                                        let step = if at > *key as i32 { 1 } else { -1 };
+                                        let mut wanted = at.clamp(0, 127);
+                                        while (0..=127).contains(&wanted) && taken.contains(&(wanted as u8)) {
+                                            wanted += step;
+                                        }
+                                        if (0..=127).contains(&wanted) {
+                                            *key = wanted as u8;
+                                        }
                                     }
                                     let off = ui.small_button("x");
                                     off.widget_info(|| {

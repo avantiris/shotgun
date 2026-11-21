@@ -1521,8 +1521,10 @@ impl Timeline {
                             let bpm = sequence.tempo.map_or(120.0, sg_core::Tempo::bpm);
                             let per_tick = SAMPLE_RATE as f64 * 60.0 / (bpm * sg_core::TICKS_PER_BEAT as f64);
                             for note in notes.iter().take(256) {
-                                let a = x_of((clip.start as f64 + note.start as f64 * per_tick) / per);
-                                let b = x_of((clip.start as f64 + (note.start + note.len) as f64 * per_tick) / per);
+                                // (From where the clip begins in its notes, as it plays them.)
+                                let from = (clip.start - clip.src_in) as f64;
+                                let a = x_of((from + note.start as f64 * per_tick) / per);
+                                let b = x_of((from + (note.start + note.len) as f64 * per_tick) / per);
                                 let y = y1 - 3.0 - (note.pitch - low) as f32 / span * (y1 - y0 - 8.0);
                                 let (a, b) = (a.max(x0), b.min(x1));
                                 if b > a {
@@ -2833,9 +2835,8 @@ impl Timeline {
             .filter(|t| t.kind == TrackKind::Audio)
             // (Looked for among the first clips of each track only: this is asked every frame the
             // song's settings are on screen, and a song lies near the start of its track.)
-            .filter_map(|t| {
-                t.clips.iter().take(64).find(|c| c.asset == song.asset && c.src_in <= first && first < c.src_in + c.len)
-            })
+            // (A clip trimmed past that beat still says where it would lie: bars are counted on from there.)
+            .filter_map(|t| t.clips.iter().take(64).find(|c| c.asset == song.asset))
             .map(|c| c.start + first - c.src_in)
             .min()
     }
@@ -2925,7 +2926,9 @@ impl Timeline {
                 None => [beat / 4.0, beat].into_iter().find(|u| roomy(*u)).unwrap_or(bar),
             };
             let origin = tempo.origin_frames(sequence.rate);
-            return Some(((frame - origin) / unit).round() * unit + origin);
+            let line = ((frame - origin) / unit).round() * unit + origin;
+            // (The line before the timeline's start is not one to snap to.)
+            return Some(if line < 0.0 { line + unit } else { line });
         }
         let (clip, per) = self.song_clips(sequence, frame - 1.0, frame + 1.0).into_iter().next()?;
         let at = clip.src_in + (frame * per) as i64 - clip.start;

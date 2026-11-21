@@ -417,10 +417,23 @@ impl PianoRoll {
         let found = sequence.track(track).and_then(|t| {
             let raw = t.notes.get(&clip).map(|n| Vec::clone(n)).unwrap_or_default();
             let (offset, length) = span_of(sequence, t.clips.iter().find(|c| c.id == clip).as_ref()?);
-            Some((offset, in_view(&raw, offset, length).1))
+            // Notes that begin before the clip does are shown from its start:
+            // as shown, and as they really are.
+            let across: Vec<(Note, Note)> = raw
+                .iter()
+                .filter(|n| n.start < offset && n.start + n.len > offset)
+                .map(|n| (Note { start: 0, len: n.start + n.len - offset, ..*n }, *n))
+                .collect();
+            Some((offset, in_view(&raw, offset, length).1, across))
         });
-        let (offset, mut all) = found.unwrap_or((0, Vec::new()));
-        all.extend(notes.into_iter().map(|n| Note { start: n.start + offset, ..n }));
+        let (offset, mut all, mut across) = found.unwrap_or((0, Vec::new(), Vec::new()));
+        for note in notes {
+            // (One that was not touched keeps the part of it the clip does not show.)
+            match across.iter().position(|(shown, _)| *shown == note) {
+                Some(at) => all.push(across.remove(at).1),
+                None => all.push(Note { start: note.start + offset, ..note }),
+            }
+        }
         let op = Op::SetClipNotes { seq: sequence.id, track, clip, notes: Some(all) };
         if let Err(e) = session.apply(op, None) {
             *error = Some(e.to_string());
