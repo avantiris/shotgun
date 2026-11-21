@@ -138,6 +138,14 @@ impl PianoRoll {
         };
     }
 
+    /// Where the open clip lies on the timeline: its first sample and the one after its last.
+    pub fn span(&self, session: &Session) -> Option<(i64, i64)> {
+        let (track, clip) = self.open?;
+        let project = session.project();
+        let clip = project.sequences.first()?.track(track)?.clips.iter().find(|c| c.id == clip)?;
+        Some((clip.start, clip.start + clip.len))
+    }
+
     /// The track whose instrument is played by hand: that of the open clip.
     pub fn hand(&self) -> Option<TrackId> {
         self.open.map(|(track, _)| track)

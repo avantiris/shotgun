@@ -34,6 +34,8 @@ pub enum Control {
     Loaded(crate::PluginSpec, Option<Box<sg_plug::Client>>),
     /// The input is being monitored (or no longer): the device stays awake for it.
     Monitor(bool),
+    /// Play a stretch of the timeline over and over (timeline samples), or no longer.
+    Loop(Option<(i64, i64)>),
     /// A key played by hand on the instrument of a track.
     Note {
         track: usize,
@@ -47,16 +49,20 @@ pub enum Control {
 /// Frames buffered ahead per track: half a second.
 const RING_FRAMES: usize = SAMPLE_RATE as usize / 2;
 /// Frames buffered ahead for a track played by hand: what is in the ring
-/// is how late a key is heard. Three device blocks, so that one late
-/// wake-up of this thread does not leave the callback without sound, and
-/// never less than 16 ms.
+/// is how late a key is heard. Four device blocks and never less than
+/// 21 ms: the device asks for two blocks in quick succession now and
+/// then, and this thread is not a realtime one (measured in the running
+/// program: with three blocks topped up every 5 ms the callback ran dry
+/// about once in two seconds; see docs/perf-log.md, 2026-11-21).
 fn hand_frames(quantum: u32) -> usize {
-    (quantum as usize * 3).clamp(768, MAX_BLOCK)
+    (quantum as usize * 4).clamp(1024, MAX_BLOCK)
 }
 /// Frames written before a graph is offered, so playback starts with data.
 const PREFILL_FRAMES: usize = 4096;
 /// How often the rings are topped up while playing.
 const FILL_INTERVAL: Duration = Duration::from_millis(5);
+/// The same while a track is played by hand.
+const HAND_INTERVAL: Duration = Duration::from_millis(1);
 /// Length of the piece of sound heard at the playhead while scrubbing: a
 /// tenth of a second, enough to recognise a beat or a syllable.
 pub const GRAIN_FRAMES: usize = SAMPLE_RATE as usize / 10;
@@ -161,6 +167,9 @@ struct Feed {
     plugins: Vec<u64>,
     /// The track has a plugin that is still starting.
     awaiting: bool,
+    /// How often this feed has gone round the loop: a feed that waits for
+    /// another (ducking under a voice) must not wait for one that is a round ahead.
+    laps: u32,
     /// Played by hand: a short ring, and keys that wait for the next block.
     by_hand: bool,
     pending: Vec<sg_plug::NoteEvent>,
@@ -191,6 +200,10 @@ struct Disk {
     idle_hand: bool,
     /// The input is monitored: the device stays awake for that too.
     monitoring: bool,
+    /// The stretch to play over and over, as asked for, and as the graph
+    /// in use does it (a grain does not loop).
+    looping: Option<(i64, i64)>,
+    loop_now: Option<(i64, i64)>,
     /// Where the graph in use was built for.
     built_at: i64,
     /// A grain is (or was just) sounding; when to let the device rest.
@@ -353,7 +366,11 @@ impl Disk {
     /// timeline sample `start`: those that begin or end inside it, and the
     /// keys played by hand. Through the track's instrument plugin, or the
     /// built-in instrument when it has none.
-    fn run_instrument(&mut self, index: usize, start: i64, block: &mut [f32], timeline: bool) {
+    ///
+    /// `wraps`: the block ends where the loop does. Notes that would still
+    /// be held there are let go with its last frame, since their own ends
+    /// will never be reached.
+    fn run_instrument(&mut self, index: usize, start: i64, block: &mut [f32], timeline: bool, wraps: bool) {
         let feed = &mut self.feeds[index];
         // (Without the timeline, while nothing plays, only the keys played by hand sound.)
         let end = if timeline { start + (block.len() / 2) as i64 } else { start };
@@ -367,6 +384,16 @@ impl Disk {
         let from = feed.note_ons.partition_point(|(at, ..)| *at < start);
         for &(at, pitch, velocity) in feed.note_ons[from..].iter().take_while(|(at, ..)| *at < end) {
             self.events.push(sg_plug::NoteEvent { offset: (at - start) as u32, on: true, pitch, velocity });
+        }
+        if wraps && timeline {
+            let last = (block.len() / 2).saturating_sub(1) as u32;
+            let from = feed.note_offs.partition_point(|(at, _)| *at < end);
+            for &(_, pitch) in &feed.note_offs[from..] {
+                let held = feed.note_ons.iter().take_while(|(at, ..)| *at < end).any(|(_, p, _)| *p == pitch);
+                if held && !self.events.iter().any(|e| !e.on && e.pitch == pitch && e.offset == last) {
+                    self.events.push(sg_plug::NoteEvent { offset: last, on: false, pitch, velocity: 0 });
+                }
+            }
         }
         // (A note that ends where the next of its pitch begins: the end first.)
         self.events.sort_by_key(|e| (e.offset, e.on));
@@ -416,7 +443,7 @@ impl Disk {
     /// from timeline sample `start` and runs the track's clean-up over it.
     /// An instrument plays before the clean-up, effect plugins after it;
     /// `warm` (running the clean-up in before playback) leaves plugins out.
-    fn render(&mut self, index: usize, start: i64, block: &mut Vec<f32>, frames: usize, warm: bool) {
+    fn render(&mut self, index: usize, start: i64, block: &mut Vec<f32>, frames: usize, warm: bool, wraps: bool) {
         let end = start + frames as i64;
         let mut raw = std::mem::take(&mut self.raw);
         block.clear();
@@ -437,7 +464,7 @@ impl Disk {
             i += 1;
         }
         if self.is_instrument(index) && !warm {
-            self.run_instrument(index, start, block, true);
+            self.run_instrument(index, start, block, true, wraps);
         }
         let feed = &mut self.feeds[index];
         feed.fx.process(block, feed.low_cut_hz, feed.denoise, &feed.tone);
@@ -453,19 +480,27 @@ impl Disk {
         let ducks = self.feeds[index].tone.duck_db > 0.0 && !self.feeds[index].tone.voice;
         if ducks {
             // Only as far as the voices have been laid down: their level there is needed.
-            let voices = self.feeds.iter().filter(|f| f.tone.voice);
+            // (A voice that is a round of the loop ahead has laid down all of this round.)
+            let (next, laps) = (self.feeds[index].next, self.feeds[index].laps);
+            let voices = self.feeds.iter().filter(|f| f.tone.voice && f.laps <= laps);
             if let Some(heard) = voices.map(|f| f.next).min() {
-                frames = frames.min((heard - self.feeds[index].next).max(0) as usize);
+                frames = frames.min((heard - next).max(0) as usize);
             }
-        }
-        if frames == 0 {
-            return;
         }
         // The clean-up hands sound back late; reading that much ahead puts
         // it where it belongs.
         let start = self.feeds[index].next + self.feeds[index].fx.delay() as i64;
+        // A loop: no block reads across its end, and the one that reaches it goes back to its start.
+        let mut wraps = None;
+        if let Some((from, end)) = self.loop_now.filter(|(_, end)| start < *end) {
+            frames = frames.min((end - start) as usize);
+            wraps = (start + frames as i64 == end).then_some(from);
+        }
+        if frames == 0 {
+            return;
+        }
         let mut block = std::mem::take(&mut self.block);
-        self.render(index, start, &mut block, frames, false);
+        self.render(index, start, &mut block, frames, false, wraps.is_some());
         let at = self.feeds[index].next;
         if self.feeds[index].tone.voice && !self.feeds[index].live.is_muted() {
             // What the voice sounds like here, fader included, for the tracks that duck.
@@ -507,6 +542,10 @@ impl Disk {
             b.copy_from_slice(&block[a.len()..]);
             chunk.commit_all();
             feed.next += frames as i64;
+            if let Some(from) = wraps {
+                feed.next = from - feed.fx.delay() as i64;
+                feed.laps += 1;
+            }
         }
         self.block = block;
     }
@@ -527,7 +566,7 @@ impl Disk {
             block.resize(frames * 2, 0.0);
             if self.is_instrument(index) {
                 let at = self.feeds[index].next;
-                self.run_instrument(index, at, &mut block, false);
+                self.run_instrument(index, at, &mut block, false, false);
             }
             let feed = &mut self.feeds[index];
             feed.fx.process(&mut block, feed.low_cut_hz, feed.denoise, &feed.tone);
@@ -571,6 +610,7 @@ impl Disk {
         self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
         let hand = hand_frames(self.shared.quantum.load(Ordering::Relaxed));
         self.built_at = pos;
+        self.loop_now = self.looping.filter(|_| playing && grain.is_none());
         // The recordings the samplers play: read once, kept while a track names them.
         let specs: Vec<Option<crate::SamplerSpec>> = self.mix.tracks.iter().map(|t| t.sampler.clone()).collect();
         self.samples.retain(|path, _| specs.iter().flatten().any(|s| s.wav == *path));
@@ -606,6 +646,7 @@ impl Disk {
                 ducked_db: 0.0,
                 plugins: track.plugins.iter().map(|p| p.key).filter(|key| self.plugins.contains_key(key)).collect(),
                 awaiting: track.plugins.iter().any(|p| self.loading.contains_key(&p.key)),
+                laps: 0,
                 by_hand: track.by_hand,
                 pending: Vec::new(),
                 note_ons: track.notes.iter().map(|n| (n.start, n.pitch, n.velocity)).collect(),
@@ -625,11 +666,14 @@ impl Disk {
             for index in 0..self.feeds.len() {
                 let delay = self.feeds[index].fx.delay();
                 if delay > 0 {
-                    self.render(index, pos, &mut block, delay, true);
+                    self.render(index, pos, &mut block, delay, true, false);
                 }
             }
             self.block = block;
-            self.fill_all(grain.map_or(PREFILL_FRAMES, |frames| frames.max(PREFILL_FRAMES)));
+            // (Close before the end of a loop one pass gives less than asked: a few more.)
+            for _ in 0..if self.loop_now.is_some() { 4 } else { 1 } {
+                self.fill_all(grain.map_or(PREFILL_FRAMES, |frames| frames.max(PREFILL_FRAMES)));
+            }
         }
         self.master = Live::new(self.mix.master_gain, 0.0, false);
         let mut master: Box<dyn Processor> = Box::new(Fader::new(self.master.clone()));
@@ -653,6 +697,7 @@ impl Disk {
             playing,
             grain,
             by_hand,
+            loop_range: self.loop_now,
         });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
@@ -726,6 +771,15 @@ impl Disk {
                     if let Some(activate) = &self.activate {
                         activate(self.idle_hand || self.monitoring);
                     }
+                }
+            }
+            Control::Loop(range) => {
+                // (Shorter than a tenth of a second is not a loop anyone asked for.)
+                self.looping = range.filter(|(from, end)| end - from >= SAMPLE_RATE as i64 / 10);
+                if self.playing {
+                    let pos = self.shared.clock_pos.load(Ordering::Relaxed)
+                        + self.shared.quantum.load(Ordering::Relaxed) as i64;
+                    self.rebuild(pos, true, None);
                 }
             }
             Control::Monitor(on) => {
@@ -849,6 +903,8 @@ pub fn run(
         playing: false,
         idle_hand: false,
         monitoring: false,
+        looping: None,
+        loop_now: None,
         built_at: 0,
         grain_until: None,
         block: Vec::new(),
@@ -875,7 +931,9 @@ pub fn run(
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         } else if disk.playing || disk.idle_hand {
-            match control.recv_timeout(FILL_INTERVAL) {
+            // (A track played by hand holds only a few blocks: it is looked after more often.)
+            let hand = disk.feeds.iter().any(|f| f.by_hand);
+            match control.recv_timeout(if hand { HAND_INTERVAL } else { FILL_INTERVAL }) {
                 Ok(message) => Some(message),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return,

@@ -305,6 +305,19 @@ chain second version, M16 mixing and mastering.
     With one, the ruler counts bars, the lanes show beats and bars, and
     moving and trimming snap to quarter beats, beats or bars, whichever
     is far enough apart on screen to aim at.
+  - Loop (2026-11-21): L or "Loop" above the timeline plays a stretch
+    over and over: the note clip whose piano roll is open, else the
+    selected clips, else what lies between the markers around the
+    playhead (the stretch is fixed when the loop is switched on and
+    shown as a bar along the ruler). The engine goes back to the start
+    to the sample (`Engine::set_loop`: no block is read across the end,
+    and the clock goes round with the sound); notes held across the end
+    are let go there. Playback started after the stretch plays on; a
+    recording is not looped under. Checked: an engine test (a recording
+    that says where it is: every round begins on the right sample), and
+    in the app through PipeWire into a null sink: a note at the start of
+    a two-bar clip came 192 000 samples apart five times running, with
+    0 underruns. Not checked: looping with pictures on the timeline.
   - Metronome (2026-11-20): Shift+K or "Metronome" above the timeline;
     clicks on the beats while playing (the first of a bar higher), placed
     by whole-number arithmetic so that they do not drift; never in an
@@ -482,9 +495,9 @@ chain second version, M16 mixing and mastering.
     note is heard. "Record" writes what is played while the timeline
     plays into the clip; "Quantise" puts note starts on the grid; the
     selected note's velocity is a field in the head. In the engine the
-    track is buffered three device blocks ahead instead of half a second
+    track is buffered four device blocks ahead instead of half a second
     (`TrackMix::by_hand`) and sounds while nothing plays. Checked: an
-    engine test (a key is heard within 960 frames, playing or not, and
+    engine test (a key is heard within 1200 frames, playing or not, and
     written notes still start where they belong), a headless flow, and
     in the app through PipeWire into a null sink: a key while stopped and
     one while playing were both in the recording of the sink, the second

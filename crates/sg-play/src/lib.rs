@@ -60,6 +60,8 @@ enum Command {
     Click(bool),
     /// The audio track (its id) whose instrument is played by hand, or none.
     Hand(Option<u64>),
+    /// Play the stretch between these timeline samples over and over, or (`None`) play on.
+    Loop(Option<(i64, i64)>),
     /// Open a sound input to see its level and, if asked, hear it; `None` closes it.
     Monitor(Option<(Option<String>, bool)>),
     /// Record from a sound input into this file while playing; ends when playback does.
@@ -149,6 +151,7 @@ impl Player {
             listening: None,
             click: false,
             hand: None,
+            looping: None,
             device,
             queue,
             compositor,
@@ -296,6 +299,13 @@ impl Player {
         self.send(Command::Click(on));
     }
 
+    /// Plays the stretch between two timeline samples over and over once
+    /// the playhead reaches its end; `None`: plays on as usual. Recordings
+    /// are not looped under.
+    pub fn set_loop(&self, range: Option<(i64, i64)>) {
+        self.send(Command::Loop(range));
+    }
+
     /// Names the audio track whose instrument is played by hand with
     /// [`Player::note`] (`None`: no track). That track is then heard within
     /// a few milliseconds of a key, also while nothing plays.
@@ -377,6 +387,8 @@ struct State {
     click: bool,
     /// The track played by hand (its id).
     hand: Option<u64>,
+    /// The stretch played over and over, in timeline samples.
+    looping: Option<(i64, i64)>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     compositor: Compositor,
@@ -500,6 +512,7 @@ impl State {
         self.pool.new_epoch();
         // A recording ends with the playback it was made to.
         if let Some(recording) = self.recording.take() {
+            self.audio.set_loop(self.looping);
             match recording.stop() {
                 Ok(take) => self.stats(|s| s.takes.push(take)),
                 Err(e) => self.stats(|s| s.plugin_news.push(format!("The recording was lost: {e}"))),
@@ -591,6 +604,8 @@ impl State {
                     match self.audio.record(path, source) {
                         Ok(recording) => {
                             self.recording = Some(recording);
+                            // A take is one pass along the timeline: the loop waits until it has ended.
+                            self.audio.set_loop(None);
                             // With the metronome on, a bar of clicks comes first.
                             let bar = self.project.as_ref().and_then(|o| o.sequence()).and_then(|s| {
                                 let click = self.click(s)?;
@@ -612,6 +627,11 @@ impl State {
             Command::Hand(track) => {
                 self.hand = track;
                 self.audio.set_mix(self.mix());
+            }
+            Command::Loop(range) => {
+                self.looping = range;
+                // (A recording is one pass: it is not looped under.)
+                self.audio.set_loop(range.filter(|_| self.recording.is_none()));
             }
             Command::Monitor(None) => self.listening = None,
             Command::Monitor(Some((source, hear))) => {

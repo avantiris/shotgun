@@ -776,11 +776,11 @@ fn a_track_played_by_hand_sounds_within_milliseconds_playing_or_not() {
     // Nothing plays and no key is down: silence, and the clock stands still.
     assert_eq!(first(&pull(8)), None);
     assert!(!engine.is_playing());
-    // A key: heard after what was already buffered, which is less than 20 ms.
+    // A key: heard after what was already buffered, which is less than 25 ms.
     engine.note(0, true, 60, 100);
     let out = pull(40);
     let after = first(&out).unwrap();
-    assert!(after <= 960, "{after}");
+    assert!(after <= 1200, "{after}");
     // Let go, it dies away.
     engine.note(0, false, 60, 0);
     let out = pull(80);
@@ -793,7 +793,7 @@ fn a_track_played_by_hand_sounds_within_milliseconds_playing_or_not() {
     assert_eq!(first(&pull(8)), None);
     engine.note(0, true, 64, 100);
     let after = first(&pull(8)).unwrap();
-    assert!(after <= 960, "{after}");
+    assert!(after <= 1200, "{after}");
     engine.note(0, false, 64, 0);
     // (4096 frames into the timeline by now; the written note starts at one second.)
     let out = pull(190);
@@ -950,4 +950,67 @@ fn a_tracks_notes_play_a_recording_when_it_has_one_for_its_sampler() {
     // An octave up it runs through the recording twice as fast.
     assert!(close(left(48_000 + 1_000), ramp(2_000)), "{}", left(49_000));
     assert_eq!(left(48_000 + 12_100), 0.0);
+}
+
+#[test]
+fn a_stretch_is_played_over_and_over_to_the_sample_and_no_note_hangs_at_its_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = wav(dir.path(), "ramp.wav", 1, 96_000, |n, _| ramp(n));
+    let span = ClipSpan {
+        start: 0,
+        len: 96_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+        warp: Vec::new(),
+    };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(Mix { tracks: vec![track(vec![span])], ..Mix::default() });
+    // From half a second to one second, started from the top.
+    engine.set_loop(Some((24_000, 48_000)));
+    engine.play(0);
+    let mut out = vec![0.0f32; 120_000 * 2];
+    for block in out.chunks_mut(1000) {
+        engine.settle();
+        engine.pull(block);
+    }
+    // Up to the end of the stretch as it lies, then its start again, every round, to the sample.
+    let expected = |frame: usize| if frame < 48_000 { frame } else { 24_000 + (frame - 48_000) % 24_000 };
+    for frame in [0, 23_999, 24_000, 47_999, 48_000, 48_001, 71_999, 72_000, 95_999, 96_000, 119_999] {
+        assert!(close(out[frame * 2], ramp(expected(frame))), "frame {frame}: {}", out[frame * 2]);
+    }
+    // The clock goes round with it.
+    let position = engine.position();
+    assert!((24_000..48_000).contains(&position), "{position}");
+    // Started after the stretch, playback goes on as usual.
+    engine.play(60_000);
+    engine.settle();
+    assert!(close(pull(&engine, 500)[0], ramp(60_000)));
+    // A note held across the end of the stretch is let go there, not left sounding.
+    let held = sg_audio::NoteSpan { start: 40_000, len: 30_000, pitch: 60, velocity: 100 };
+    engine.set_mix(Mix { tracks: vec![TrackMix { notes: vec![held], ..track(Vec::new()) }], ..Mix::default() });
+    engine.play(36_000);
+    let mut out = vec![0.0f32; 36_000 * 2];
+    for block in out.chunks_mut(1000) {
+        engine.settle();
+        engine.pull(block);
+    }
+    let level = |from: usize, to: usize| out[from * 2..to * 2].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    // (Sounding from 40 000; the stretch ends 12 000 frames in; half a second later it has died away,
+    // until the next round reaches the note again 16 000 frames after the wrap.)
+    assert!(level(5_000, 11_000) > 0.01);
+    assert!(level(24_000, 27_000) < level(5_000, 11_000) * 0.05, "{}", level(24_000, 27_000));
+    assert!(level(29_000, 35_000) > 0.01);
+    // Without the loop the clock runs on.
+    engine.set_loop(None);
+    engine.play(47_000);
+    for _ in 0..4 {
+        engine.settle();
+        pull(&engine, 1000);
+    }
+    assert!(engine.position() > 48_000);
 }

@@ -175,6 +175,8 @@ pub struct Timeline {
     pub grid_step: GridStep,
     /// The audio track recordings go onto ("R" in its header), if one is marked.
     pub record_track: Option<TrackId>,
+    /// The stretch that is played over and over, in timeline samples.
+    pub loop_range: Option<(i64, i64)>,
     /// Where posters of assets belong at the heads of clips this frame; the
     /// editor draws them (it has the textures) clipped to `lanes`.
     pub thumbs: Vec<(AssetId, Rect)>,
@@ -245,6 +247,7 @@ impl Default for Timeline {
             beat_request: None,
             grid_step: GridStep::Auto,
             record_track: None,
+            loop_range: None,
             wave_requests: Vec::new(),
             quads: 0,
         }
@@ -1736,6 +1739,17 @@ impl Timeline {
             );
         }
         self.paint_ruler(&painter, rect, lanes, sequence, x_of);
+        // The stretch that loops: a bar along the bottom of the ruler.
+        if let Some((from, to)) = self.loop_range {
+            let frame = |samples: i64| {
+                samples as f64 * sequence.rate.num() as f64 / (sequence.rate.den() as f64 * SAMPLE_RATE as f64)
+            };
+            let (a, b) = (x_of(frame(from)).max(lanes.left()), x_of(frame(to)).min(lanes.right()));
+            if b > a {
+                let bar = Rect::from_min_max(pos2(a, rect.top() + RULER_H - 4.0), pos2(b, rect.top() + RULER_H));
+                painter.rect_filled(bar, 1.0, theme::ACCENT);
+            }
+        }
         // The beat grid of the song: every beat a faint line, every fourth a clearer one.
         let rows_bottom = (rect.top() + RULER_H + sequence.tracks.len() as f32 * row_h).min(rect.bottom());
         for (frame, index) in self.grid_lines(sequence, visible.0, visible.1, 6.0) {

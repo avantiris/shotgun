@@ -1998,3 +1998,34 @@ fn the_notes_of_a_track_are_given_a_recording_to_play() {
     assert_eq!(sampler(&harness), None);
     assert_eq!(harness.state().shell.error_shown(), None);
 }
+
+#[test]
+fn a_stretch_is_looped_the_open_note_clip_the_selected_clips_or_between_two_markers() {
+    let mut harness = editor();
+    let looped = |harness: &Harness<'_, App>| {
+        let all = harness.state().commands.iter();
+        all.filter_map(|c| if let Command::Loop(range) = c { Some(*range) } else { None }).next_back()
+    };
+    // Nothing to loop yet: the program says what would be.
+    harness.key_press(Key::L);
+    harness.run_steps(3);
+    assert!(harness.state().shell.error_shown().is_some_and(|e| e.contains("marker")));
+    assert_eq!(looped(&harness), None);
+    // A selected clip: its stretch, in samples (ten seconds at 60 frames a second).
+    place(&mut harness, "first take");
+    let on_clip = on_timeline(&harness, 30.0, 0);
+    pointer(&mut harness, on_clip, egui::PointerButton::Primary);
+    click(&mut harness, "Loop");
+    assert_eq!(looped(&harness), Some(Some((0, 480_000))));
+    // The button says it is on, and switches it off again.
+    click(&mut harness, "Loop on");
+    assert_eq!(looped(&harness), Some(None));
+    // With a piano roll open: its note clip, whatever is selected.
+    let on_audio = on_timeline(&harness, 1000.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    let clip = clips(&harness, 1).into_iter().find(|c| c.1 == 4 * 48_000).unwrap();
+    harness.key_press(Key::L);
+    harness.run_steps(3);
+    assert_eq!(looped(&harness), Some(Some((clip.0, clip.0 + clip.1))));
+}

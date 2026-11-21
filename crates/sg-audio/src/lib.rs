@@ -416,6 +416,12 @@ impl Engine {
         self.send(disk::Control::Note { track, on, pitch, velocity });
     }
 
+    /// Plays the stretch between these timeline samples over and over
+    /// once the playhead reaches its end (`None`: plays on as usual).
+    pub fn set_loop(&self, range: Option<(i64, i64)>) {
+        self.send(disk::Control::Loop(range));
+    }
+
     /// Stops at the position being heard and returns it.
     pub fn pause(&self) -> i64 {
         let pos = self.position();

@@ -99,11 +99,13 @@ sample-accurate transport.
   as it was held; a pass is one undo step. "Quantise" moves every note's
   start to the nearest grid line.
 - How a played key reaches the ear: the track of the open piano roll is
-  buffered three device blocks ahead (16 ms at the usual block of 256)
-  instead of half a second, and is heard while nothing plays. Its
-  instrument still runs outside the realtime callback (a plugin is a
-  process of its own), so this is the price of that isolation: about
-  16 ms plus the device's own delay from key to sound. `PROPOSED`.
+  buffered four device blocks ahead (21 ms at the usual block of 256)
+  instead of half a second, topped up every millisecond, and is heard
+  while nothing plays. Its instrument still runs outside the realtime
+  callback (a plugin is a process of its own), so this is the price of
+  that isolation: about 21 ms plus the device's own delay from key to
+  sound. (Three blocks topped up every 5 ms ran dry about once in two
+  seconds in the running program.) `PROPOSED`.
 
 ### Sound
 

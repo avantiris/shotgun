@@ -131,6 +131,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "record" => Step::Dev(DevStep::Act(Action::LiveRecord)),
         "recordsound" => Step::Dev(DevStep::Act(Action::RecordSound)),
         "metronome" => Step::Dev(DevStep::Act(Action::Metronome)),
+        "loop" => Step::Dev(DevStep::Act(Action::Loop)),
         "vtrack" => Step::Dev(DevStep::AddTrack(sg_core::TrackKind::Video)),
         "atrack" => Step::Dev(DevStep::AddTrack(sg_core::TrackKind::Audio)),
         "prop" => {

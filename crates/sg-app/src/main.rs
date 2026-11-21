@@ -542,6 +542,11 @@ impl App {
                         player.monitor(input.map(|(source, hear)| (named.or(source), hear)));
                     }
                 }
+                Command::Loop(range) => {
+                    if let Some(player) = &self.player {
+                        player.set_loop(range);
+                    }
+                }
                 Command::Hand(track) => {
                     if let Some(player) = &self.player {
                         player.set_hand(track.map(|t| t.0));

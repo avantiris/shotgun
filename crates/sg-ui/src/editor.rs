@@ -344,6 +344,7 @@ impl Editor {
                     (selected, Action::LiveRecord, "Record movement"),
                     (true, Action::RecordSound, if self.recording_sound { "Stop recording" } else { "Record sound" }),
                     (true, Action::Metronome, if self.metronome { "Metronome on" } else { "Metronome" }),
+                    (true, Action::Loop, if self.timeline.loop_range.is_some() { "Loop on" } else { "Loop" }),
                     (true, Action::Transition, "Whip-pan"),
                     (true, Action::Blackout, "Black cut"),
                     (true, Action::AddTitle, "Title"),

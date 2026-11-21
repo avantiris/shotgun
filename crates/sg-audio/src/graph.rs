@@ -334,6 +334,8 @@ pub struct Graph {
     pub grain: Option<usize>,
     /// Some track is played by hand.
     pub by_hand: bool,
+    /// A stretch played over and over: at its end the position goes back to its start.
+    pub loop_range: Option<(i64, i64)>,
 }
 
 /// Frames over which a grain comes up and goes down (5 ms): no click.
@@ -558,7 +560,15 @@ impl Rt {
                 self.shared.underruns.fetch_add(1, Ordering::Relaxed);
             }
             if playing {
+                let before = self.position;
                 self.position += frames as i64;
+                // The rings already hold the start of the loop after its end.
+                if let Some((from, end)) = graph.loop_range
+                    && before < end
+                    && self.position >= end
+                {
+                    self.position = from + (self.position - end);
+                }
             }
         }
         self.monitor_input(out);

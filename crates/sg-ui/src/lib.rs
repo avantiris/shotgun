@@ -181,6 +181,9 @@ pub enum Command {
     /// Open the sound input (`None` inside: the system's default) to show
     /// its level and, with the flag, to hear it; `None`: close it.
     Monitor(Option<(Option<String>, bool)>),
+    /// Play the stretch between these timeline samples over and over, or
+    /// (`None`) play on as usual.
+    Loop(Option<(i64, i64)>),
     /// The audio track whose instrument is played by hand from now on, or none.
     Hand(Option<sg_core::TrackId>),
     /// A key going down or up on that instrument. If the timeline plays,
@@ -343,6 +346,8 @@ pub struct Shell {
     spent_takes: Vec<PathBuf>,
     /// What the application was last told about monitoring the input.
     monitor: Option<(Option<String>, bool)>,
+    /// The loop the application was last told of.
+    looping: Option<(i64, i64)>,
     /// The track the application was last told is played by hand.
     hand: Option<sg_core::TrackId>,
     /// The key reference is showing.
@@ -793,6 +798,19 @@ impl Shell {
                     commands.push(Command::Metronome(self.editor.metronome));
                 } else {
                     self.error = Some("The metronome needs a tempo: set one under Sequence, on the right.".to_owned());
+                }
+            }
+            Action::Loop => {
+                // (The application is told by `hand_commands`, with what else follows the open project.)
+                if self.editor.timeline.loop_range.take().is_some() {
+                } else if let Some(range) = self.loop_range() {
+                    self.editor.timeline.loop_range = Some(range);
+                } else if self.session.is_some() {
+                    self.error = Some(
+                        "Nothing to loop yet: open a note clip, select clips, or set a marker before and one after the \
+                         playhead."
+                            .to_owned(),
+                    );
                 }
             }
             Action::RecordSound => {
@@ -1640,6 +1658,21 @@ impl Shell {
 }
 
 impl Shell {
+    /// What "Loop" plays over and over, in timeline samples: the note clip
+    /// whose piano roll is open, else the selected clips, else the stretch
+    /// between the markers around the playhead.
+    fn loop_range(&self) -> Option<(i64, i64)> {
+        let session = self.session.as_ref()?;
+        let project = session.project();
+        let sequence = project.sequences.first()?;
+        if let Some(span) = self.editor.piano.span(session) {
+            return Some(span);
+        }
+        let (from, to) = self.gif_range()?;
+        let samples = |frame: i64| sequence.rate.frames_to_samples(frame, 48_000);
+        Some((samples(from), samples(to)))
+    }
+
     /// What a GIF export covers: the selected clips, else the stretch
     /// between the markers around the playhead, else the whole sequence.
     fn gif_range(&self) -> Option<(i64, i64)> {
@@ -1736,6 +1769,14 @@ impl Shell {
     /// (that of the open note clip) and passes on the keys played since
     /// the last call.
     fn hand_commands(&mut self, commands: &mut Vec<Command>) {
+        // The loop belongs to the open project: it ends with it.
+        if self.session.is_none() {
+            self.editor.timeline.loop_range = None;
+        }
+        if self.editor.timeline.loop_range != self.looping {
+            self.looping = self.editor.timeline.loop_range;
+            commands.push(Command::Loop(self.looping));
+        }
         let hand = self.editor.piano.hand().filter(|_| self.session.is_some());
         if hand != self.hand {
             self.hand = hand;

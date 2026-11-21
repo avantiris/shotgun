@@ -77,6 +77,9 @@ pub enum Action {
     RecordSound,
     /// The metronome on or off.
     Metronome,
+    /// Play a stretch over and over: the open note clip, the selected
+    /// clips, or what lies between the markers around the playhead.
+    Loop,
     /// Put the selected asset on the timeline.
     InsertAsset,
     /// Import what the clipboard holds.
@@ -172,6 +175,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::R, Action::LiveRecord),
     bind(Scope::Editor, false, true, Key::R, Action::RecordSound),
     bind(Scope::Editor, false, true, Key::K, Action::Metronome),
+    bind(Scope::Editor, false, false, Key::L, Action::Loop),
     bind(Scope::Editor, false, false, Key::H, Action::FitTimeline),
     bind(Scope::Editor, false, false, Key::ArrowLeft, Action::Nudge(-1)),
     bind(Scope::Editor, false, false, Key::ArrowRight, Action::Nudge(1)),
@@ -410,6 +414,10 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::Metronome => {
             ("Making", "metronome: clicks on the beats while playing, and a bar of them before a recording")
         }
+        Action::Loop => (
+            "Playing",
+            "loop: play the open note clip, the selected clips or the stretch between two markers over and over",
+        ),
         Action::RecordSound => ("Making", "record sound (a microphone) while playing; again, or pause, ends the take"),
         Action::Angle(1) => ("Making", "cut to camera angle 1 (2 to 9 likewise)"),
         Action::Angle(_) => return None,
