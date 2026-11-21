@@ -821,6 +821,17 @@ impl PianoRoll {
             painter.rect_filled(line.with_min_x(lanes.left()), 0.0, if black { theme::BG } else { theme::PANEL });
             let key = Rect::from_min_size(pos2(body.left(), y), vec2(KEYS_W - 2.0, ROW_H - 1.0));
             painter.rect_filled(key, 1.0, if black { Color32::from_gray(24) } else { Color32::from_gray(200) });
+            // A key with a recording of its own says which (a drum kit reads by name, not by pitch).
+            if let Some((_, asset)) = track.pads.iter().find(|(key, _)| *key as i32 == pitch) {
+                let name = project.assets.get(asset).map_or("?", |a| a.label.as_str());
+                painter.text(
+                    pos2(lanes.left() + 4.0, y + ROW_H / 2.0),
+                    Align2::LEFT_CENTER,
+                    name,
+                    FontId::proportional(9.0),
+                    theme::DIM,
+                );
+            }
             if pitch % 12 == 0 {
                 painter.text(
                     key.right_center() - vec2(3.0, 0.0),

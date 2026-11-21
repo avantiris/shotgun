@@ -101,6 +101,9 @@ pub struct TrackMix {
     /// What the built-in instrument plays the notes with when the track
     /// has no instrument plugin: a recording, or (`None`) its own tone.
     pub sampler: Option<SamplerSpec>,
+    /// Keys with a recording of their own (a drum kit): (key, conformed
+    /// WAV file). Such a key plays its recording as it is, to its end.
+    pub pads: Vec<(u8, PathBuf)>,
     /// Worked out as always (a voice still ducks the others) but not
     /// heard: how one track is exported alone, sounding as it does in the mix.
     pub unheard: bool,
@@ -585,6 +588,7 @@ impl TrackMix {
             tone: Tone::default(),
             plugins: Vec::new(),
             sampler: None,
+            pads: Vec::new(),
             notes: Vec::new(),
             unheard: false,
             reverb: 0.0,

@@ -226,6 +226,9 @@ fn write_sequence(seq: &Sequence) -> String {
         for plugin in track.plugins.iter() {
             let _ = writeln!(out, "plugin {}", serde_json::to_string(plugin).unwrap_or_default());
         }
+        for (key, asset) in track.pads.iter() {
+            let _ = writeln!(out, "pad {key} {asset}");
+        }
         if let Some(sampler) = track.sampler {
             let hit = if sampler.one_shot { " hit" } else { "" };
             let _ = writeln!(out, "sampler {} {}{hit}", sampler.asset, sampler.root);
@@ -296,6 +299,13 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                     serde_json::from_str(rest).map_err(|e| err(n, &format!("bad plugin: {e}")))?;
                 // (One line each, in the order the sound runs through them.)
                 Arc::make_mut(&mut track.plugins).push(plugin);
+            }
+            "pad" => {
+                let (track, _) = current.as_mut().ok_or_else(|| err(n, "pad before any track"))?;
+                let parsed = rest
+                    .split_once(' ')
+                    .and_then(|(key, asset)| Some((key.parse::<u8>().ok()?.min(127), asset.parse().ok()?)));
+                Arc::make_mut(&mut track.pads).push(parsed.ok_or_else(|| err(n, "bad pad"))?);
             }
             "sampler" => {
                 let (track, _) = current.as_mut().ok_or_else(|| err(n, "sampler before any track"))?;
@@ -557,6 +567,8 @@ mod tests {
         let (p, _) = apply(&p, &Op::SetTrackPlugins { seq: SEQ, track: A1, plugins: vec![surge, wide] }).unwrap();
         let hit = crate::model::Sampler { asset: crate::ids::AssetId(0xABC), root: 36, one_shot: true };
         let (p, _) = apply(&p, &Op::SetTrackSampler { seq: SEQ, track: A1, sampler: Some(hit) }).unwrap();
+        let kit = vec![(36, crate::ids::AssetId(0xABC)), (42, crate::ids::AssetId(0xDEF))];
+        let (p, _) = apply(&p, &Op::SetTrackPads { seq: SEQ, track: A1, pads: kit }).unwrap();
         let notes = vec![
             crate::model::Note { start: 0, len: 480, pitch: 60, velocity: 100 },
             crate::model::Note { start: 960, len: 240, pitch: 67, velocity: 64 },

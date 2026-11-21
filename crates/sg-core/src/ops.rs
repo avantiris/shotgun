@@ -115,6 +115,12 @@ pub enum Op {
         track: TrackId,
         sampler: Option<crate::model::Sampler>,
     },
+    /// Sets the keys of a track that have a recording of their own, as a whole.
+    SetTrackPads {
+        seq: SequenceId,
+        track: TrackId,
+        pads: Vec<(u8, crate::ids::AssetId)>,
+    },
     /// Sets the notes of a note clip as a whole (`None`: none recorded).
     SetClipNotes {
         seq: SequenceId,
@@ -225,7 +231,7 @@ impl Op {
             Op::SetSpace { .. } => "set room and echo",
             Op::SetGroup { .. } => "set group",
             Op::SetTrackPlugin { .. } | Op::SetTrackPlugins { .. } => "change plugins",
-            Op::SetTrackSampler { .. } => "change instrument",
+            Op::SetTrackSampler { .. } | Op::SetTrackPads { .. } => "change instrument",
             Op::SetClipNotes { .. } => "edit notes",
             Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
@@ -423,6 +429,9 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             if track.sampler.is_some() {
                 restore.push(Op::SetTrackSampler { seq: *seq, track: track.id, sampler: track.sampler });
             }
+            if !track.pads.is_empty() {
+                restore.push(Op::SetTrackPads { seq: *seq, track: track.id, pads: Vec::clone(&track.pads) });
+            }
             Ok(if restore.len() == 1 { restore.remove(0) } else { Op::Batch(restore) })
         }),
         Op::InsertClip { seq, track, clip } => with_clips(p, *seq, *track, |clips| {
@@ -509,6 +518,22 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             let plugins = Arc::new(plugin.iter().cloned().collect());
             s.tracks[index] = Arc::new(Track { plugins, ..Track::clone(old) });
             Ok(Op::SetTrackPlugins { seq: *seq, track: *track, plugins: before })
+        }),
+        Op::SetTrackPads { seq, track, pads } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let before = Vec::clone(&old.pads);
+            // By key, one recording a key (the later one wins), at most 64.
+            let mut kept: Vec<(u8, crate::ids::AssetId)> = Vec::new();
+            for &(key, asset) in pads.iter().rev() {
+                if !kept.iter().any(|(k, _)| *k == key.min(127)) {
+                    kept.push((key.min(127), asset));
+                }
+            }
+            kept.sort_by_key(|(key, _)| *key);
+            kept.truncate(64);
+            s.tracks[index] = Arc::new(Track { pads: Arc::new(kept), ..Track::clone(old) });
+            Ok(Op::SetTrackPads { seq: *seq, track: *track, pads: before })
         }),
         Op::SetTrackSampler { seq, track, sampler } => with_sequence(p, *seq, |s| {
             let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
@@ -663,6 +688,7 @@ fn with_clips(
             mix: old.mix,
             plugins: old.plugins.clone(),
             sampler: old.sampler,
+            pads: old.pads.clone(),
             notes: old.notes.clone(),
         });
         Ok(inverse)
@@ -1135,6 +1161,11 @@ mod mix_tests {
             apply(&chained, &Op::SetTrackSampler { seq: SEQ, track: A1, sampler: Some(bass) }).unwrap();
         assert_eq!(a1(&sampled).sampler, Some(bass));
         assert_eq!(apply(&sampled, &unsample).unwrap().0, chained);
+        // Keys with recordings of their own: kept by key, one a key.
+        let kit = vec![(38, AssetId(6)), (36, AssetId(5)), (38, AssetId(7))];
+        let (kitted, unkit) = apply(&sampled, &Op::SetTrackPads { seq: SEQ, track: A1, pads: kit }).unwrap();
+        assert_eq!(*a1(&kitted).pads, [(36, AssetId(5)), (38, AssetId(7))]);
+        assert_eq!(apply(&kitted, &unkit).unwrap().0, sampled);
         // Each has a file of its own for its settings; the one from before keeps its old name.
         assert_eq!(surge.state_file(A1), format!("{A1}.state"));
         assert_eq!(named("Wide", 9).state_file(A1), format!("{A1}-0000000000000009.state"));

@@ -115,7 +115,8 @@ sample-accurate transport.
   trait the effects already use, now with its event port.
   As built (2026-11-21): the synthesiser first, then the sampler with one
   recording per track (any sound asset of the project, not SoundFont
-  files); the drum kit with a sample per pad is not built.
+  files), and the drum kit as keys of that track with recordings of
+  their own.
 - The realtime graph of M3 gets instrument nodes, note events with sample
   offsets, and per-track insert chains the user can edit (the equaliser,
   compressor and noise reduction of the mixer become movable inserts).

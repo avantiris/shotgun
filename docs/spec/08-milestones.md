@@ -565,9 +565,15 @@ chain second version, M16 mixing and mastering.
     Checked: unit and engine tests on a recording that says where it is
     (as recorded at the root key, twice as fast an octave up), a flow,
     and in the app a 110 Hz note exported at 110 Hz from the root key
-    and at 220 Hz from the key an octave above. Not built: several
-    recordings on one track (a drum kit with a pad per key), loop
+    and at 220 Hz from the key an octave above. Not built: loop
     points, and pitching without changing the length.
+  - Drum kit (2026-11-21): under "Instrument", "Pads": keys that have a
+    recording of their own, played as it is and to its end ("Add pad"
+    puts the first on C1 and each next one on the key above; the key
+    can be changed). The other keys still play the track's instrument.
+    The piano roll writes a pad's name on its row. `Track::pads`,
+    `Op::SetTrackPads`, `pad` lines in the `.sg` file. Checked by an
+    engine test and a flow.
   - MIDI keyboards (2026-11-21): every MIDI source of the machine is
     listened to through the ALSA sequencer (`sg_audio::midi`; one
     plugged in later is taken up too) and plays what the computer

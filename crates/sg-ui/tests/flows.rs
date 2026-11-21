@@ -2189,3 +2189,31 @@ fn the_first_bar_can_begin_at_the_playhead_and_the_grid_moves_with_it() {
     harness.run_steps(3);
     assert_eq!(tempo(&harness).map(|t| t.origin), Some(0));
 }
+
+#[test]
+fn keys_of_a_track_get_recordings_of_their_own_as_a_drum_kit() {
+    let mut harness = editor();
+    let pads = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        Vec::clone(&track.pads)
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    click(&mut harness, "Mixer");
+    // The first pad goes on C1, the next on the key above.
+    for name in ["first take", "second take"] {
+        click(&mut harness, "Add pad");
+        harness.get_all_by_label(name).last().unwrap().click();
+        harness.run_steps(3);
+    }
+    assert_eq!(pads(&harness), [(36, AssetId(1)), (37, AssetId(2))]);
+    click(&mut harness, "Remove pad first take");
+    assert_eq!(pads(&harness), [(37, AssetId(2))]);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(pads(&harness).len(), 2);
+}

@@ -420,7 +420,7 @@ impl Mixer {
                             ops.push(Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins });
                         }
                         // What plays the notes when no instrument plugin does: on tracks with notes only.
-                        if !track.notes.is_empty() || track.sampler.is_some() {
+                        if !track.notes.is_empty() || track.sampler.is_some() || !track.pads.is_empty() {
                             let mut sampler = track.sampler;
                             let project = session.project().clone();
                             let name = |id: sg_core::AssetId| project.assets.get(&id).map(|a| a.label.clone());
@@ -490,6 +490,66 @@ impl Mixer {
                             }
                             if sampler != track.sampler {
                                 ops.push(Op::SetTrackSampler { seq: sequence.id, track: track.id, sampler });
+                            }
+                            // A drum kit: keys that have a recording of their own.
+                            let mut pads = Vec::clone(&track.pads);
+                            let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                            let key_name = |key: u8| format!("{}{}", names[key as usize % 12], key as i32 / 12 - 1);
+                            ui.label(RichText::new("Pads").size(10.5).color(theme::DIM));
+                            let mut gone = None;
+                            for (place, (key, asset)) in pads.iter_mut().enumerate() {
+                                let label = name(*asset).unwrap_or_else(|| "(missing)".to_owned());
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    let mut at = *key as i32;
+                                    let field = egui::DragValue::new(&mut at)
+                                        .range(0..=127)
+                                        .speed(0.1)
+                                        .custom_formatter(|n, _| key_name(n as u8));
+                                    if ui
+                                        .add_sized([34.0, 18.0], field)
+                                        .on_hover_text(format!("The key that plays \"{label}\", as it is and to its end"))
+                                        .changed()
+                                    {
+                                        *key = at.clamp(0, 127) as u8;
+                                    }
+                                    let off = ui.small_button("x");
+                                    off.widget_info(|| {
+                                        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Remove pad {label}"))
+                                    });
+                                    if off.on_hover_text("Takes this pad away").clicked() {
+                                        gone = Some(place);
+                                    }
+                                    ui.add(egui::Label::new(RichText::new(&label).size(10.0)).truncate());
+                                });
+                            }
+                            if let Some(place) = gone {
+                                pads.remove(place);
+                            }
+                            ui.scope(|ui| {
+                                ui.spacing_mut().button_padding = vec2(5.0, 3.0);
+                                let text = RichText::new("Add pad").size(10.5);
+                                let button = egui::Button::new(text).min_size(vec2(STRIP_W - 8.0, 20.0));
+                                let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                                    ui.label(RichText::new("A recording for a key of its own:").color(theme::DIM));
+                                    for asset in project.assets.values().filter(|a| a.audio.is_some()).take(200) {
+                                        if ui.button(&asset.label).clicked() {
+                                            // The next key that is free, from C1 up (where drum kits begin).
+                                            let key = (36..=127).find(|k| !pads.iter().any(|(used, _)| used == k)).unwrap_or(36);
+                                            pads.push((key, asset.id));
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add pad"));
+                                response.on_hover_text(
+                                    "A drum kit: a key that plays a recording of its own (a kick, a snare, a hat), as it \
+                                     is and to its end. The first goes on C1, the next on the key above; the other keys \
+                                     still play the instrument above.",
+                                );
+                            });
+                            if pads != *track.pads {
+                                ops.push(Op::SetTrackPads { seq: sequence.id, track: track.id, pads });
                             }
                         }
                         if let Some(db) = fader(ui, self.levels[index], mix.gain_db) {

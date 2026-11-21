@@ -1083,6 +1083,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 })
                 .collect(),
             notes: track_notes(sequence, track),
+            pads: track.pads.iter().map(|(key, asset)| (*key, cache::audio(root, *asset))).collect(),
             sampler: track.sampler.map(|sampler| sg_audio::SamplerSpec {
                 wav: cache::audio(root, sampler.asset),
                 root: sampler.root,

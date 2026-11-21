@@ -190,6 +190,8 @@ struct Feed {
     /// the sampler if the track has a recording for it, else the synthesiser.
     synth: crate::synth::Synth,
     sampler: Option<crate::sampler::Sampler>,
+    /// Keys with a recording of their own, each a sampler that plays it as it is.
+    pads: Vec<(u8, crate::sampler::Sampler)>,
 }
 
 impl Feed {
@@ -308,6 +310,7 @@ fn same_structure(a: &Mix, b: &Mix, notes_too: bool) -> bool {
                 && x.by_hand == y.by_hand
                 && x.group == y.group
                 && x.sampler == y.sampler
+                && x.pads == y.pads
                 // (The reverb and echo exist only while some track sends to them.)
                 && (x.reverb > 0.0 || x.echo > 0.0) == (y.reverb > 0.0 || y.echo > 0.0)
                 && (x.denoise > 0.0) == (y.denoise > 0.0)
@@ -479,9 +482,21 @@ impl Disk {
             }
             let events: Vec<(u32, bool, u8, u8)> =
                 self.events.iter().map(|e| (e.offset, e.on, e.pitch, e.velocity)).collect();
+            // A key with a recording of its own plays that; the rest the track's instrument.
+            if !feed.pads.is_empty() {
+                for (key, pad) in &mut feed.pads {
+                    let own: Vec<(u32, bool, u8, u8)> = events.iter().copied().filter(|e| e.2 == *key).collect();
+                    pad.process(block, &own);
+                }
+            }
+            let rest: Vec<(u32, bool, u8, u8)> = if feed.pads.is_empty() {
+                events
+            } else {
+                events.into_iter().filter(|e| !feed.pads.iter().any(|(key, _)| *key == e.2)).collect()
+            };
             match &mut feed.sampler {
-                Some(sampler) => sampler.process(block, &events),
-                None => feed.synth.process(block, &events),
+                Some(sampler) => sampler.process(block, &rest),
+                None => feed.synth.process(block, &rest),
             }
             return;
         };
@@ -708,7 +723,21 @@ impl Disk {
         self.loop_now = self.looping.filter(|_| playing && grain.is_none());
         // The recordings the samplers play: read once, kept while a track names them.
         let specs: Vec<Option<crate::SamplerSpec>> = self.mix.tracks.iter().map(|t| t.sampler.clone()).collect();
-        self.samples.retain(|path, _| specs.iter().flatten().any(|s| s.wav == *path));
+        let kits: Vec<Vec<(u8, PathBuf)>> = self.mix.tracks.iter().map(|t| t.pads.clone()).collect();
+        self.samples.retain(|path, _| {
+            specs.iter().flatten().any(|s| s.wav == *path) || kits.iter().flatten().any(|(_, wav)| wav == path)
+        });
+        let mut kits: Vec<Vec<(u8, crate::sampler::Sampler)>> = kits
+            .iter()
+            .map(|kit| {
+                let pad = |(key, wav): &(u8, PathBuf)| {
+                    // (Its own key is where it plays as recorded, and it plays to its end.)
+                    Some((*key, crate::sampler::Sampler::new(self.sample(wav)?, *key, true)))
+                };
+                kit.iter().filter_map(pad).collect()
+            })
+            .collect();
+        kits.reverse();
         let samplers: Vec<Option<crate::sampler::Sampler>> = specs
             .iter()
             .map(|spec| {
@@ -729,6 +758,7 @@ impl Disk {
             fader.prepare(SAMPLE_RATE, MAX_BLOCK);
             tracks.push(Track { ring, chain: vec![fader], live: heard, by_hand: track.by_hand, group: track.group });
             let sampler = samplers.next().flatten();
+            let pads = kits.pop().unwrap_or_default();
             self.feeds.push(Feed {
                 producer,
                 clips: track.clips.clone(),
@@ -752,6 +782,7 @@ impl Disk {
                 },
                 synth: crate::synth::Synth::default(),
                 sampler,
+                pads,
             });
         }
         if playing {

@@ -1183,3 +1183,26 @@ fn clips_stop_sounding_where_the_mix_says_and_keep_their_fades_up_to_there() {
     assert!(close(stopped[35_999 * 2], 0.5 * 12_001.0 / 24_000.0), "{}", stopped[35_999 * 2]);
     assert!(stopped[36_000 * 2..].iter().all(|s| *s == 0.0));
 }
+
+#[test]
+fn a_key_with_a_recording_of_its_own_plays_it_and_the_other_keys_the_instrument() {
+    let dir = tempfile::tempdir().unwrap();
+    let hit = wav(dir.path(), "hit.wav", 1, 12_000, |n, _| ramp(n));
+    // C1 has the hit; a C4 a second later is the built-in synthesiser's.
+    let note = |start: i64, pitch: u8| sg_audio::NoteSpan { start, len: 480, pitch, velocity: 127 };
+    let kit = TrackMix { notes: vec![note(4_800, 36), note(48_000, 60)], pads: vec![(36, hit)], ..track(Vec::new()) };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(Mix { tracks: vec![kit], ..Mix::default() });
+    engine.play(0);
+    let mut out = vec![0.0f32; 60_000 * 2];
+    for block in out.chunks_mut(960) {
+        engine.settle();
+        engine.pull(block);
+    }
+    // The pad: the recording as it is, to its end, though the note was short.
+    assert!(close(out[(4_800 + 6_000) * 2], ramp(6_000)), "{}", out[(4_800 + 6_000) * 2]);
+    assert_eq!(out[(4_800 + 12_100) * 2], 0.0);
+    // The other key: not the recording (which would read 0.02 here), but a tone.
+    let tone = &out[48_100 * 2..50_000 * 2];
+    assert!(tone.iter().any(|s| *s < -0.01) && tone.iter().any(|s| *s > 0.01));
+}

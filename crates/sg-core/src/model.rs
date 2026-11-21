@@ -150,6 +150,11 @@ pub struct Track {
     /// The recording the built-in instrument plays for this track's
     /// notes; `None`: its own tone (the built-in synthesiser).
     pub sampler: Option<Sampler>,
+    /// Keys of the built-in instrument that have a recording of their
+    /// own (a drum kit): (key, recording), by key. Such a key plays its
+    /// recording as it is and to its end; the other keys play the
+    /// sampler's recording or the synthesiser.
+    pub pads: Arc<Vec<(u8, AssetId)>>,
     /// The notes of the note clips (clips without an asset on an audio
     /// track), by clip id; like `props`, an entry may outlive its clip.
     pub notes: Arc<BTreeMap<ClipId, Arc<Vec<Note>>>>,
@@ -301,6 +306,7 @@ impl From<TrackHeader> for Track {
             mix: TrackSettings::default(),
             plugins: Arc::default(),
             sampler: None,
+            pads: Arc::default(),
             notes: Arc::default(),
         }
     }
