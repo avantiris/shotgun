@@ -122,6 +122,12 @@ pub enum Op {
         clip: ClipId,
         notes: Option<Vec<crate::model::Note>>,
     },
+    /// Sets the fader of one of a sequence's groups (0 to 3 for A to D).
+    SetGroup {
+        id: SequenceId,
+        group: u8,
+        settings: crate::model::Group,
+    },
     /// Sets how the shared room and echo of a sequence sound.
     SetSpace {
         id: SequenceId,
@@ -175,6 +181,8 @@ pub enum Op {
 pub enum OpError {
     #[error("sequence {0} does not exist")]
     NoSequence(SequenceId),
+    #[error("there is no group {0}")]
+    NoGroup(u8),
     #[error("track {0} does not exist")]
     NoTrack(TrackId),
     #[error("an item with id {0} already exists")]
@@ -215,6 +223,7 @@ impl Op {
             Op::SetMasterGain { .. } => "adjust master",
             Op::SetTempo { .. } => "set tempo",
             Op::SetSpace { .. } => "set room and echo",
+            Op::SetGroup { .. } => "set group",
             Op::SetTrackPlugin { .. } | Op::SetTrackPlugins { .. } => "change plugins",
             Op::SetTrackSampler { .. } => "change instrument",
             Op::SetClipNotes { .. } => "edit notes",
@@ -371,6 +380,11 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             if seq.space != crate::model::Space::default() {
                 restore.push(Op::SetSpace { id: *id, space: seq.space });
             }
+            for (group, settings) in seq.groups.iter().enumerate() {
+                if *settings != crate::model::Group::default() {
+                    restore.push(Op::SetGroup { id: *id, group: group as u8, settings: *settings });
+                }
+            }
             if seq.song.is_some() {
                 restore.push(Op::SetSong { id: *id, song: seq.song });
             }
@@ -462,6 +476,12 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
         Op::SetTempo { id, tempo } => with_sequence(p, *id, |s| {
             let inverse = Op::SetTempo { id: *id, tempo: s.tempo };
             s.tempo = tempo.map(crate::model::Tempo::clamped);
+            Ok(inverse)
+        }),
+        Op::SetGroup { id, group, settings } => with_sequence(p, *id, |s| {
+            let slot = s.groups.get_mut(*group as usize).ok_or(OpError::NoGroup(*group))?;
+            let inverse = Op::SetGroup { id: *id, group: *group, settings: *slot };
+            *slot = settings.clamped();
             Ok(inverse)
         }),
         Op::SetSpace { id, space } => with_sequence(p, *id, |s| {
@@ -1132,6 +1152,12 @@ mod mix_tests {
         let (spaced, unspace) = apply(&p2, &Op::SetSpace { id: SEQ, space: wide }).unwrap();
         assert_eq!(spaced.sequences[0].space, crate::model::Space { room_ds: 80, ..wide });
         assert_eq!(apply(&spaced, &unspace).unwrap().0, p2);
+        // A group's fader likewise; there are four of them.
+        let quiet = crate::model::Group { gain_db: -6.0, mute: true };
+        let (grouped, ungroup) = apply(&p2, &Op::SetGroup { id: SEQ, group: 2, settings: quiet }).unwrap();
+        assert_eq!(grouped.sequences[0].groups[2], quiet);
+        assert_eq!(apply(&grouped, &ungroup).unwrap().0, p2);
+        assert!(apply(&p2, &Op::SetGroup { id: SEQ, group: 4, settings: quiet }).is_err());
         // A tempo comes and goes like any other setting.
         let waltz = crate::model::Tempo { milli_bpm: 93_500, beats_per_bar: 3 };
         let (timed, untime) = apply(&p2, &Op::SetTempo { id: SEQ, tempo: Some(waltz) }).unwrap();

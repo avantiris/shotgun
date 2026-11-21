@@ -504,6 +504,29 @@ impl Mixer {
                                 mix.solo = !mix.solo;
                             }
                         });
+                        // Through a group on its way to the master, or straight there.
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Group").size(10.5).color(theme::DIM));
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.spacing_mut().button_padding = vec2(4.0, 1.0);
+                            for (n, name) in ["-", "A", "B", "C", "D"].into_iter().enumerate() {
+                                let chosen = ui.selectable_label(mix.group as usize == n, RichText::new(name).size(10.5));
+                                chosen.widget_info(|| {
+                                    let label = if n == 0 { "No group".to_owned() } else { format!("Group {name}") };
+                                    egui::WidgetInfo::selected(egui::Role::Button, true, mix.group as usize == n, label)
+                                });
+                                if chosen
+                                    .on_hover_text(
+                                        "Tracks of one group are summed and go through the group's fader (beside the \
+                                         master) together: all the voices, all the drums.",
+                                    )
+                                    .clicked()
+                                {
+                                    mix.group = n as u8;
+                                }
+                            }
+                        });
                         let field = |ui: &mut egui::Ui, label: &str, widget: egui::DragValue<'_>, tip: &str| {
                             ui.label(RichText::new(label).size(10.5).color(theme::DIM));
                             ui.add_sized([88.0, 20.0], widget).on_hover_text(tip);
@@ -706,6 +729,26 @@ impl Mixer {
                     if to_db(self.master) > 0.0 {
                         ui.label(RichText::new("clipping").size(11.0).color(theme::ERROR));
                     }
+                    // The groups some track goes through: a level and a mute each.
+                    for (n, name) in ["A", "B", "C", "D"].into_iter().enumerate() {
+                        if !tracks.iter().any(|t| t.mix.group as usize == n + 1) {
+                            continue;
+                        }
+                        let mut group = sequence.groups[n];
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            ui.label(RichText::new(format!("Group {name}")).size(11.0).color(theme::DIM));
+                            if toggle(ui, group.mute, "M", theme::ERROR, "Mute the whole group") {
+                                group.mute = !group.mute;
+                            }
+                        });
+                        let level = egui::DragValue::new(&mut group.gain_db).range(-60.0..=12.0).speed(0.1).fixed_decimals(1).suffix(" dB");
+                        ui.add_sized([70.0, 20.0], level).on_hover_text("The level of everything that goes through this group");
+                        if group != sequence.groups[n] {
+                            ops.push(Op::SetGroup { id: sequence.id, group: n as u8, settings: group });
+                        }
+                    }
                     // The room and the echo every track sends to.
                     ui.add_space(6.0);
                     let mut space = sequence.space;
@@ -803,6 +846,7 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "drive" => mix.drive = value,
         "voice" => mix.voice = value != 0.0,
         "duck" => mix.duck_db = value,
+        "group" => mix.group = value as u8,
         "reverb" => mix.reverb = value,
         "echo" => mix.echo = value,
         "hidden" => mix.hidden = value != 0.0,

@@ -2062,3 +2062,25 @@ fn the_piano_roll_zooms_along_the_clip_around_the_pointer() {
     assert_eq!(notes(&harness).len(), 2);
     assert!(!notes(&harness).contains(&wide[0]));
 }
+
+#[test]
+fn a_track_is_put_into_a_group_which_gets_a_level_of_its_own_beside_the_master() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    click(&mut harness, "Mixer");
+    let group = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().mix.group
+    };
+    // No group has a fader until a track goes through it.
+    assert!(harness.query_by_label("Group B").is_none() || harness.query_all_by_label("Group B").count() == 1);
+    click(&mut harness, "Group B");
+    assert_eq!(group(&harness), 2);
+    // Now there are two things called so: the choice on the strip and the group's own level beside the master.
+    assert_eq!(harness.query_all_by_label("Group B").count(), 2);
+    click(&mut harness, "No group");
+    assert_eq!(group(&harness), 0);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(group(&harness), 2);
+}

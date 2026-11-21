@@ -108,6 +108,9 @@ pub struct TrackMix {
     /// and to the shared echo, as factors; 0 is none.
     pub reverb: f32,
     pub echo: f32,
+    /// The group the track goes through on its way to the master: 0 none,
+    /// 1 to 4 one of [`Mix::groups`].
+    pub group: u8,
     /// Played by hand ([`Engine::note`]): the track is buffered only a few
     /// milliseconds ahead instead of half a second, so that a note is
     /// heard when its key is pressed, and it sounds while nothing plays.
@@ -153,6 +156,8 @@ pub struct Mix {
     pub master_gain: f32,
     /// Samples between the repeats of the shared echo (a beat of the song).
     pub echo_samples: u32,
+    /// The faders of the four groups: gain as a factor, and mute.
+    pub groups: [(f32, bool); 4],
     /// The tempo of the song in beats per minute, which plugins are told
     /// (120 without one).
     pub bpm: f64,
@@ -174,6 +179,7 @@ impl Default for Mix {
             tracks: Vec::new(),
             master_gain: 1.0,
             echo_samples: SAMPLE_RATE * 3 / 8,
+            groups: [(1.0, false); 4],
             bpm: 120.0,
             room_seconds: space::ROOM_SECONDS,
             echo_repeat: space::ECHO_REPEAT,
@@ -577,6 +583,7 @@ impl TrackMix {
             unheard: false,
             reverb: 0.0,
             echo: 0.0,
+            group: 0,
             by_hand: false,
         }
     }

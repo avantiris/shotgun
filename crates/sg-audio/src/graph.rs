@@ -317,6 +317,15 @@ pub struct Track {
     pub live: Arc<Live>,
     /// Played by hand: heard also while nothing plays.
     pub by_hand: bool,
+    /// 0: straight to the master. 1 to 4: through that group.
+    pub group: u8,
+}
+
+/// A group of tracks on its way to the master: where they are summed, and its fader.
+pub struct Group {
+    pub sum: Vec<f32>,
+    pub fader: Fader,
+    pub live: Arc<Live>,
 }
 
 pub struct Graph {
@@ -336,6 +345,8 @@ pub struct Graph {
     pub by_hand: bool,
     /// A stretch played over and over: at its end the position goes back to its start.
     pub loop_range: Option<(i64, i64)>,
+    /// The groups some track goes through (`None`: no track names that one).
+    pub groups: [Option<Group>; 4],
 }
 
 /// Frames over which a grain comes up and goes down (5 ms): no click.
@@ -479,6 +490,9 @@ impl Rt {
                     space.to_reverb[..block.len()].fill(0.0);
                     space.to_echo[..block.len()].fill(0.0);
                 }
+                for group in graph.groups.iter_mut().flatten() {
+                    group.sum[..block.len()].fill(0.0);
+                }
                 for (index, track) in graph.tracks.iter_mut().enumerate() {
                     if !playing && !track.by_hand {
                         continue;
@@ -497,8 +511,16 @@ impl Rt {
                     for processor in &mut track.chain {
                         processor.process(scratch, transport);
                     }
+                    // To its group if it has one, else straight to the master.
+                    let group = track.group.checked_sub(1).and_then(|g| graph.groups.get_mut(g as usize)?.as_mut());
+                    // (What a grouped track sends to room and echo follows its group's fader.)
+                    let through = group.as_ref().map_or(1.0, |g| if g.live.is_muted() { 0.0 } else { g.live.gain() });
+                    let into: &mut [f32] = match group {
+                        Some(group) => &mut group.sum[..block.len()],
+                        None => &mut block[..],
+                    };
                     let mut peak = 0.0f32;
-                    for (o, s) in block.iter_mut().zip(scratch.iter()) {
+                    for (o, s) in into.iter_mut().zip(scratch.iter()) {
                         *o += *s;
                         peak = peak.max(s.abs());
                     }
@@ -509,13 +531,22 @@ impl Rt {
                     // After the fader: a track that is turned down or muted sends less or nothing.
                     if let Some(space) = &mut graph.space {
                         let [reverb, echo] = track.live.sends();
-                        for (bus, share) in [(&mut space.to_reverb, reverb), (&mut space.to_echo, echo)] {
+                        for (bus, share) in
+                            [(&mut space.to_reverb, reverb * through), (&mut space.to_echo, echo * through)]
+                        {
                             if share > 0.0 {
                                 for (b, s) in bus.iter_mut().zip(scratch.iter()) {
                                     *b += *s * share;
                                 }
                             }
                         }
+                    }
+                }
+                for group in graph.groups.iter_mut().flatten() {
+                    let sum = &mut group.sum[..block.len()];
+                    group.fader.process(sum, transport);
+                    for (o, s) in block.iter_mut().zip(sum.iter()) {
+                        *o += *s;
                     }
                 }
                 if let Some(space) = &mut graph.space {

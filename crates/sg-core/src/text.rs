@@ -201,6 +201,11 @@ fn write_sequence(seq: &Sequence) -> String {
     if let Some(tempo) = seq.tempo {
         let _ = writeln!(out, "tempo {} {}", tempo.milli_bpm, tempo.beats_per_bar);
     }
+    for (n, group) in seq.groups.iter().enumerate() {
+        if *group != crate::model::Group::default() {
+            let _ = writeln!(out, "group {n} {} {}", group.gain_db, group.mute as u8);
+        }
+    }
     if seq.space != crate::model::Space::default() {
         let space = seq.space;
         let _ = writeln!(out, "space {} {} {}", space.room_ds, space.echo_note.label(), space.echo_repeat);
@@ -259,6 +264,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
     let mut master_db = 0.0f32;
     let mut tempo = None;
     let mut space = crate::model::Space::default();
+    let mut groups = [crate::model::Group::default(); crate::model::GROUPS];
     let mut song = None;
     let mut markers: Vec<Marker> = Vec::new();
     // The track being read: its header and clips so far.
@@ -367,6 +373,16 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                 });
                 tempo = Some(parsed.ok_or_else(|| err(n, "bad tempo"))?.clamped());
             }
+            "group" => {
+                let mut words = rest.split(' ');
+                let parsed = (|| {
+                    let slot = groups.get_mut(words.next()?.parse::<usize>().ok()?)?;
+                    let gain_db = words.next()?.parse::<f32>().ok()?;
+                    *slot = crate::model::Group { gain_db, mute: words.next()? == "1" }.clamped();
+                    Some(())
+                })();
+                parsed.ok_or_else(|| err(n, "bad group"))?;
+            }
             "space" => {
                 let mut words = rest.split(' ');
                 let parsed = (|| {
@@ -417,6 +433,7 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
         song,
         markers: Arc::new(markers),
         space,
+        groups,
     })
 }
 
@@ -522,6 +539,8 @@ mod tests {
         let space =
             crate::model::Space { room_ds: 32, echo_note: crate::model::EchoNote::DottedEighth, echo_repeat: 55 };
         let (p, _) = apply(&p, &Op::SetSpace { id: SEQ, space }).unwrap();
+        let quiet = crate::model::Group { gain_db: -4.5, mute: true };
+        let (p, _) = apply(&p, &Op::SetGroup { id: SEQ, group: 3, settings: quiet }).unwrap();
         let surge =
             crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge \"XT\".vst3".into(), id: 0 };
         let wide = crate::model::PluginRef { name: "Wide".into(), path: "/lib/clap/Wide.clap".into(), id: 0xBEEF };

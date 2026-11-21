@@ -644,7 +644,16 @@ chain second version, M16 mixing and mastering.
     Checked with ffmpeg's meter on a reference vocal (-20.4 LUFS, peaks at
     full scale): to -14 it comes out at -14.1 LUFS, to -9 at -9.4 LUFS,
     both with a true peak of -1.2 dB (before: -10.4 LUFS and -0.9 dB).
-  - Still to do: group buses; the strip's own stages in another order
+  - Groups (2026-11-21): a strip can send its track through one of four
+    groups (A to D) instead of straight to the master; a group that has
+    tracks gets a level and a mute beside the master, and what its
+    tracks send to room and echo follows it. `TrackSettings::group`,
+    `Sequence::groups` with `Op::SetGroup`, a `group` line in the `.sg`
+    file; summed and faded in the realtime graph, changed while playing
+    without a new graph. Checked by an engine test and a flow. A group
+    has no equaliser, compressor or meter of its own (`PROPOSED`: level
+    and mute first).
+  - Still to do: the strip's own stages in another order
     (plugins on a track can be reordered, M14); a
     loudness target far above the mix is reached only as far as the
     limiter allows (the result shows what was reached).

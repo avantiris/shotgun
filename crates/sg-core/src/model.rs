@@ -46,6 +46,25 @@ pub struct Sequence {
     pub markers: Arc<Vec<Marker>>,
     /// The room and the echo the tracks of this sequence send to.
     pub space: Space,
+    /// The groups A to D: tracks that name one are summed and go through
+    /// its fader together before the master.
+    pub groups: [Group; GROUPS],
+}
+
+/// How many groups a sequence has.
+pub const GROUPS: usize = 4;
+
+/// The fader of a group of tracks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Group {
+    pub gain_db: f32,
+    pub mute: bool,
+}
+
+impl Group {
+    pub fn clamped(self) -> Group {
+        Group { gain_db: if self.gain_db.is_finite() { self.gain_db.clamp(-60.0, 12.0) } else { 0.0 }, ..self }
+    }
 }
 
 /// How the shared reverb and echo of a sequence sound (09-daw.md, M15).
@@ -260,6 +279,7 @@ impl From<SequenceHeader> for Sequence {
             song: None,
             markers: Arc::default(),
             space: Space::default(),
+            groups: [Group::default(); GROUPS],
         }
     }
 }
@@ -352,6 +372,9 @@ pub struct TrackSettings {
     /// echo (repeats in time with the tempo), 0 (none) to 1.
     pub reverb: f32,
     pub echo: f32,
+    /// The group this track's sound goes through on its way to the
+    /// master: 0 none, 1 to 4 the groups A to D of the sequence.
+    pub group: u8,
 }
 
 impl Default for TrackSettings {
@@ -381,6 +404,7 @@ impl Default for TrackSettings {
             duck_db: 0.0,
             reverb: 0.0,
             echo: 0.0,
+            group: 0,
         }
     }
 }
@@ -414,6 +438,7 @@ impl TrackSettings {
             duck_db: finite(self.duck_db, 0.0, 24.0),
             reverb: finite(self.reverb, 0.0, 1.0),
             echo: finite(self.echo, 0.0, 1.0),
+            group: self.group.min(GROUPS as u8),
             ..self
         }
     }

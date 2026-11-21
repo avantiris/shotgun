@@ -1105,3 +1105,46 @@ fn notes_written_or_taken_away_while_playing_need_no_new_graph_and_leave_nothing
     assert!(pull_for(4_000) < 1e-3);
     assert!(pull_for(4_000) > 0.01);
 }
+
+#[test]
+fn tracks_of_a_group_go_through_its_fader_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = wav(dir.path(), "ramp.wav", 1, 96_000, |n, _| ramp(n));
+    let span = ClipSpan {
+        start: 0,
+        len: 96_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+        warp: Vec::new(),
+    };
+    // Two tracks in group B, one straight to the master.
+    let grouped = TrackMix { group: 2, ..track(vec![span.clone()]) };
+    let with = |gain: f32, mute: bool| Mix {
+        tracks: vec![grouped.clone(), grouped.clone(), track(vec![span.clone()])],
+        groups: [(1.0, false), (gain, mute), (1.0, false), (1.0, false)],
+        ..Mix::default()
+    };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(with(0.5, false));
+    engine.play(0);
+    engine.settle();
+    // Each grouped track at half, the third as it is: twice the recording.
+    let out = pull(&engine, 1_000);
+    assert!(close(out[2 * 900], 2.0 * ramp(900)), "{}", out[2 * 900]);
+    // The group's fader moves while it plays (no new graph: the clock runs on), then it is muted.
+    engine.set_mix(with(1.0, false));
+    engine.settle();
+    pull(&engine, 1_000);
+    let out = pull(&engine, 1_000);
+    assert!(close(out[2 * 900], 3.0 * ramp(2_900)), "{}", out[2 * 900]);
+    engine.set_mix(with(1.0, true));
+    engine.settle();
+    pull(&engine, 1_000);
+    let out = pull(&engine, 1_000);
+    assert!(close(out[2 * 900], ramp(4_900)), "{}", out[2 * 900]);
+}

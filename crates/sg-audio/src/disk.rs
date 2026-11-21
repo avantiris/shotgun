@@ -233,6 +233,8 @@ struct Disk {
     mix: Mix,
     feeds: Vec<Feed>,
     master: Arc<Live>,
+    /// The faders of the four groups.
+    groups: [Arc<Live>; 4],
     /// The room's seconds and the echo's repeat, read by the graph each block.
     space: Arc<[std::sync::atomic::AtomicU32; 2]>,
     files: HashMap<PathBuf, Option<Arc<Wav>>>,
@@ -301,6 +303,7 @@ fn same_structure(a: &Mix, b: &Mix, notes_too: bool) -> bool {
                 && (notes_too || x.notes == y.notes)
                 && x.unheard == y.unheard
                 && x.by_hand == y.by_hand
+                && x.group == y.group
                 && x.sampler == y.sampler
                 // (The reverb and echo exist only while some track sends to them.)
                 && (x.reverb > 0.0 || x.echo > 0.0) == (y.reverb > 0.0 || y.echo > 0.0)
@@ -695,7 +698,7 @@ impl Disk {
             let heard = if track.unheard { Live::new(0.0, 0.0, true) } else { live.clone() };
             let mut fader: Box<dyn Processor> = Box::new(Fader::new(heard.clone()));
             fader.prepare(SAMPLE_RATE, MAX_BLOCK);
-            tracks.push(Track { ring, chain: vec![fader], live: heard, by_hand: track.by_hand });
+            tracks.push(Track { ring, chain: vec![fader], live: heard, by_hand: track.by_hand, group: track.group });
             let sampler = samplers.next().flatten();
             self.feeds.push(Feed {
                 producer,
@@ -748,6 +751,7 @@ impl Disk {
         limiter.prepare(SAMPLE_RATE, MAX_BLOCK);
         let sends = self.mix.tracks.iter().any(|t| t.reverb > 0.0 || t.echo > 0.0);
         self.set_space();
+        self.groups = std::array::from_fn(|g| Live::new(self.mix.groups[g].0, 0.0, self.mix.groups[g].1));
         let space = sends.then(|| crate::space::Space::new(self.mix.echo_samples as usize, self.space.clone()));
         let click = self.mix.click;
         let by_hand = self.mix.tracks.iter().any(|t| t.by_hand);
@@ -761,6 +765,13 @@ impl Disk {
             grain,
             by_hand,
             loop_range: self.loop_now,
+            groups: std::array::from_fn(|g| {
+                // (Only the groups some track goes through cost anything.)
+                self.mix.tracks.iter().any(|t| t.group as usize == g + 1).then(|| {
+                    let live = self.groups[g].clone();
+                    crate::graph::Group { sum: vec![0.0; MAX_BLOCK * 2], fader: Fader::new(live.clone()), live }
+                })
+            }),
         });
         // A graph offered earlier and never adopted is freed here.
         drop(self.slot.offer(graph));
@@ -835,6 +846,9 @@ impl Disk {
                         feed.take_notes(&track.notes);
                     }
                     self.master.set(self.mix.master_gain, 0.0, false);
+                    for (live, (gain, mute)) in self.groups.iter().zip(self.mix.groups) {
+                        live.set(gain, 0.0, mute);
+                    }
                     self.set_space();
                 } else if self.playing {
                     let pos = self.resume_at();
@@ -974,6 +988,7 @@ pub fn run(
         mix: Mix::default(),
         feeds: Vec::new(),
         master: Live::new(1.0, 0.0, false),
+        groups: std::array::from_fn(|_| Live::new(1.0, 0.0, false)),
         space: Arc::default(),
         files: HashMap::new(),
         samples: HashMap::new(),
