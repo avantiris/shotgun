@@ -346,18 +346,37 @@ impl Session {
     }
 
     /// Puts a recorded take on the timeline so that its first frame lies at
-    /// timeline sample `start`, to the sample (a drop only knows frames):
-    /// on the lowest audio track that is free there, or on a new one. What
-    /// was recorded before the start of the timeline is left out. Returns
-    /// the track and the clip.
-    pub fn place_take(&mut self, asset: &Asset, start: i64) -> Result<Option<(sg_core::TrackId, Clip)>, OpError> {
+    /// timeline sample `start`, to the sample (a drop only knows frames).
+    /// What was recorded before the start of the timeline is left out.
+    ///
+    /// Without a track to record onto: on the lowest audio track that is
+    /// free there, or on a new one. `onto` names the track that takes
+    /// recordings and the timeline sample the recording was asked for at:
+    /// the take then goes there, over what was in its place, and begins
+    /// where it was asked for (what was recorded while counting in stays
+    /// in the file, in front of the clip's start). Returns the track and the clip.
+    pub fn place_take(
+        &mut self,
+        asset: &Asset,
+        start: i64,
+        onto: Option<(sg_core::TrackId, i64)>,
+    ) -> Result<Option<(sg_core::TrackId, Clip)>, OpError> {
         let project = self.project().clone();
         let (Some(sequence), Some(info)) = (project.sequences.first(), &asset.audio) else { return Ok(None) };
         let samples = (info.samples as i128 * SAMPLE_RATE as i128 / info.sample_rate.max(1) as i128) as i64;
-        let before = (-start).max(0);
-        let (start, len) = (start.max(0), samples - before);
+        let onto = onto.filter(|(id, _)| sequence.track(*id).is_some_and(|t| t.kind == TrackKind::Audio));
+        // Left out in front: what lies before the timeline, or before the place it was asked for.
+        let from = onto.map_or(0, |(_, asked)| asked.max(0));
+        let before = (from - start).max(0);
+        let (start, len) = (start.max(from), samples - before);
         if len <= 0 {
             return Ok(None);
+        }
+        if let Some((track, _)) = onto {
+            let clip = Clip { id: self.ids.clip(), asset: asset.id, start, len, src_in: before };
+            let Some(op) = Op::overwrite(sequence, track, clip, self.ids.clip()) else { return Ok(None) };
+            self.apply(op, None)?;
+            return Ok(Some((track, clip)));
         }
         let free =
             sequence.tracks.iter().rev().find(|t| {

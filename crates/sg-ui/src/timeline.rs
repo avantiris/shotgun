@@ -173,6 +173,8 @@ pub struct Timeline {
     pub beat_request: Option<AssetId>,
     /// What the grid of a sequence with a tempo is made of.
     pub grid_step: GridStep,
+    /// The audio track recordings go onto ("R" in its header), if one is marked.
+    pub record_track: Option<TrackId>,
     /// Where posters of assets belong at the heads of clips this frame; the
     /// editor draws them (it has the textures) clipped to `lanes`.
     pub thumbs: Vec<(AssetId, Rect)>,
@@ -242,6 +244,7 @@ impl Default for Timeline {
             grid_for: None,
             beat_request: None,
             grid_step: GridStep::Auto,
+            record_track: None,
             wave_requests: Vec::new(),
             quads: 0,
         }
@@ -699,6 +702,19 @@ impl Timeline {
                         }
                     }
                     TrackKind::Audio => {
+                        let takes = self.record_track == Some(track.id);
+                        if small(
+                            ui,
+                            75.0,
+                            21.0,
+                            "R",
+                            takes,
+                            theme::ERROR,
+                            "Recordings go onto this track, over what is there, from the playhead on. Without a \
+                             track marked so, a take gets a free track.",
+                        ) {
+                            self.record_track = (!takes).then_some(track.id);
+                        }
                         if small(ui, 50.0, 21.0, "M", mix.mute, theme::ERROR, "Mute") {
                             mix.mute = !mix.mute;
                         }

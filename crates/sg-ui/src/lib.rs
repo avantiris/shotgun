@@ -335,6 +335,8 @@ pub struct Shell {
     dropped_at: Option<(i64, Option<usize>, usize)>,
     /// Recorded takes being imported: the file and the timeline sample it starts at.
     takes: Vec<(PathBuf, i64)>,
+    /// The track that takes the recording in progress, and the timeline sample it was asked for at.
+    record_onto: Option<(sg_core::TrackId, i64)>,
     spent_takes: Vec<PathBuf>,
     /// What the application was last told about monitoring the input.
     monitor: Option<(Option<String>, bool)>,
@@ -778,6 +780,12 @@ impl Shell {
                         commands.push(Command::StopRecording);
                     } else {
                         self.editor.recording_sound = true;
+                        // A track marked "R" takes the recording, from where the playhead is now.
+                        let sequence = session.project().sequences.first().cloned();
+                        self.record_onto = self.editor.timeline.record_track.zip(sequence).and_then(|(track, s)| {
+                            s.track(track)?;
+                            Some((track, s.rate.frames_to_samples(self.playhead.max(0), 48_000)))
+                        });
                         commands
                             .push(Command::Record { root: session.root.clone(), source: self.editor.input.clone() });
                     }
@@ -1693,7 +1701,7 @@ impl Shell {
         let (path, start) = self.takes.remove(index);
         // (The file in the project is a copy; the one it was recorded into has done its work.)
         self.spent_takes.push(path);
-        match session.place_take(&asset, start) {
+        match session.place_take(&asset, start, self.record_onto.take()) {
             Ok(Some((track, clip))) => {
                 self.editor.timeline.select_only(track, &clip);
                 session.notice = Some(format!("Recorded {:.1} s.", clip.len as f64 / 48_000.0));

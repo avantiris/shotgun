@@ -1761,3 +1761,37 @@ fn the_room_and_the_echo_are_set_on_the_master_strip() {
     harness.run_steps(3);
     assert_eq!(space(&harness), sg_core::Space::default());
 }
+
+#[test]
+fn a_take_goes_onto_the_track_marked_for_recording_over_what_is_there() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    // A1 holds ten seconds of sound. "R" in its header: recordings go there.
+    click(&mut harness, "R");
+    playhead(&mut harness, 120);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::R);
+    harness.run_steps(3);
+    // The take began a second before the playhead (a bar counted in) and is three seconds long.
+    let root = harness.state().root.clone();
+    let file = root.join(".shotgun/takes/take-7.wav");
+    harness.state_mut().shell.take_recorded(file, 96_000 - 48_000, 144_000, 0);
+    let mut asset = take(9, "take-7");
+    asset.kind = AssetKind::Audio;
+    asset.video = None;
+    asset.audio = Some(AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 2, samples: 144_000 });
+    harness.state_mut().shell.import_event(ImportEvent::Usable { job: 9, root, asset: Box::new(asset) });
+    harness.run_steps(3);
+    let on_a1 = |harness: &Harness<'_, App>| -> Vec<(u128, i64, i64, i64)> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        track.clips.iter().map(|c| (c.asset.0, c.start, c.len, c.src_in)).collect()
+    };
+    // It lies on A1 from the playhead on (what was counted in stays in front of the clip's
+    // start, in the file), and what was there makes room: before it and after it.
+    assert_eq!(on_a1(&harness), [(1, 0, 96_000, 0), (9, 96_000, 96_000, 48_000), (1, 192_000, 288_000, 192_000)]);
+    assert_eq!(tracks(&harness).len(), 2);
+    // One undo: the track is as it was.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(on_a1(&harness), [(1, 0, 480_000, 0)]);
+}

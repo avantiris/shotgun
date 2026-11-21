@@ -412,8 +412,19 @@ chain second version, M16 mixing and mastering.
     at the burst's level, 0 xruns; and in the app the same way. Not
     checked: a real interface, whose converters add their own delay.
     Not built: the input through the track's own chain (it is heard dry).
-  - Still to do: takes stacked on one track (a new take goes to a
-    free track instead), punch in and out.
+  - Recording onto a track (2026-11-21): "R" in an audio track's header
+    marks it as the one that takes recordings. A take then goes there,
+    over what is in its place (clips it covers go, clips it reaches into
+    are shortened, one it lies inside is cut in two), and begins at the
+    playhead the recording was asked for at; what was recorded while
+    counting in stays in the file in front of the clip's start, so it
+    can be pulled out again. That is punching in: playhead before the
+    bad line, record, stop after it; the track keeps its strip settings.
+    Without a marked track a take still gets a free track. Which track
+    is marked is a setting of the view, not of the project (`PROPOSED`).
+  - Still to do: several takes of the same stretch kept on one track to
+    choose between (now the newer one replaces the older, which only
+    undo brings back); a punch-out point set beforehand.
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
   - Built 2026-11-20:
     - `sg-plug`: every plugin runs in a process of its own
