@@ -69,6 +69,8 @@ enum Command {
     Record {
         path: PathBuf,
         source: Option<String>,
+        /// Start a bar before the playhead even without the metronome.
+        lead_in: bool,
     },
     Quit,
 }
@@ -344,8 +346,12 @@ impl Player {
     /// Starts playing and recording from `source` (`None`: the default
     /// input) into the file at `path`. The recording ends when playback
     /// is stopped; the take is then found with [`Player::take_recordings`].
-    pub fn record(&self, path: PathBuf, source: Option<String>) {
-        self.send(Command::Record { path, source });
+    ///
+    /// `lead_in`: playback starts a bar before the playhead (two seconds
+    /// without a tempo) also when the metronome is off: for a take that
+    /// is punched into what is already there, the singer hears the way in.
+    pub fn record(&self, path: PathBuf, source: Option<String>, lead_in: bool) {
+        self.send(Command::Record { path, source, lead_in });
     }
 
     /// The recordings that have ended since the last call.
@@ -600,7 +606,7 @@ impl State {
                 self.compositor.clear_luts();
                 self.rendered = None;
             }
-            Command::Record { path, source } => {
+            Command::Record { path, source, lead_in } => {
                 if self.recording.is_none() && self.project.is_some() {
                     // The input first, so that nothing of the performance is missed; the take begins with the playback.
                     match self.audio.record(path, source) {
@@ -609,11 +615,19 @@ impl State {
                             // A take is one pass along the timeline: the loop waits until it has ended.
                             self.audio.set_loop(None);
                             // With the metronome on, a bar of clicks comes first.
-                            let bar = self.project.as_ref().and_then(|o| o.sequence()).and_then(|s| {
+                            let sequence = self.project.as_ref().and_then(|o| o.sequence());
+                            let bar = sequence.and_then(|s| {
                                 let click = self.click(s)?;
                                 Some((click.beat.0 * click.beats_per_bar as u64 / click.beat.1) as i64)
                             });
-                            self.start_playing_after(bar.unwrap_or(0));
+                            // Without the metronome, a lead-in if asked for: a bar of the tempo, or two seconds.
+                            let way_in = lead_in.then(|| {
+                                sequence.and_then(|s| s.tempo).map_or(2 * SAMPLE_RATE as i64, |t| {
+                                    SAMPLE_RATE as i64 * 60_000 * t.beats_per_bar.max(1) as i64
+                                        / t.milli_bpm.max(1) as i64
+                                })
+                            });
+                            self.start_playing_after(bar.or(way_in).unwrap_or(0));
                         }
                         Err(e) => {
                             self.stats(|s| s.plugin_news.push(format!("Cannot record: {e}")));

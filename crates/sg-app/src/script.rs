@@ -102,6 +102,8 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             Step::Dev(DevStep::Hand(pitch.parse()?, state == "on"))
         }
         "recordnotes" => Step::Dev(DevStep::RecordNotes),
+        // arm:<audio track> marks the track recordings go onto.
+        "arm" => Step::Dev(DevStep::Arm(need()?.parse()?)),
         // sampler:<audio track>:<root key> gives the track's notes the selected asset's sound to play.
         "sampler" => {
             let (track, root) = arg.split_once(':').ok_or_else(|| anyhow!("sampler needs <track>:<root key>"))?;

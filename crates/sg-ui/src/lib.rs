@@ -177,6 +177,9 @@ pub enum Command {
         root: PathBuf,
         /// The PipeWire node to record from; `None`: the system's default input.
         source: Option<String>,
+        /// Start playing a bar before the playhead even without the
+        /// metronome: the take goes onto a track that already has sound.
+        lead_in: bool,
     },
     /// Open the sound input (`None` inside: the system's default) to show
     /// its level and, with the flag, to hear it; `None`: close it.
@@ -284,6 +287,8 @@ pub enum DevStep {
     Hand(u8, bool),
     /// Switch the piano roll's "Record" (what is played is written into the clip).
     RecordNotes,
+    /// Mark the n-th audio track as the one recordings go onto ("R" in its header).
+    Arm(usize),
     /// Switch "Level" (the input is opened and measured) or, with true, "Hear".
     Monitor(bool),
     /// Put the plugin at this path on the n-th audio track (empty path:
@@ -832,8 +837,11 @@ impl Shell {
                             s.track(track)?;
                             Some((track, s.rate.frames_to_samples(self.playhead.max(0), 48_000)))
                         });
-                        commands
-                            .push(Command::Record { root: session.root.clone(), source: self.editor.input.clone() });
+                        commands.push(Command::Record {
+                            root: session.root.clone(),
+                            source: self.editor.input.clone(),
+                            lead_in: self.record_onto.is_some(),
+                        });
                     }
                 }
             }
@@ -1074,6 +1082,14 @@ impl Shell {
             }
             DevStep::Hand(pitch, on) => self.editor.piano.play(pitch, on),
             DevStep::RecordNotes => self.editor.piano.toggle_record(),
+            DevStep::Arm(n) => {
+                let track = self.session.as_ref().and_then(|s| {
+                    let project = s.project();
+                    let tracks = &project.sequences.first()?.tracks;
+                    tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n).map(|t| t.id)
+                });
+                self.editor.timeline.record_track = track;
+            }
             DevStep::Sampler(n, root) => {
                 if let Some(session) = &mut self.session {
                     let project = session.project().clone();

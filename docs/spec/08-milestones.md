@@ -463,6 +463,10 @@ chain second version, M16 mixing and mastering.
     bad line, record, stop after it; the track keeps its strip settings.
     Without a marked track a take still gets a free track. Which track
     is marked is a setting of the view, not of the project (`PROPOSED`).
+    Recording onto a marked track starts playing a bar before the
+    playhead (two seconds without a tempo) also when the metronome is
+    off: the way into the line is heard, and recorded, but the clip
+    begins at the playhead. Checked in the app on a null-sink loop.
   - Still to do: several takes of the same stretch kept on one track to
     choose between (now the newer one replaces the older, which only
     undo brings back); a punch-out point set beforehand.

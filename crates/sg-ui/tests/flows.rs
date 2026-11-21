@@ -1483,7 +1483,11 @@ fn sound_is_recorded_while_playing_and_the_take_laid_where_it_was_played() {
     harness.run_steps(3);
     let root = harness.state().root.clone();
     assert!(
-        harness.state().commands.iter().any(|c| matches!(c, Command::Record { root: r, source: None } if *r == root))
+        harness
+            .state()
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Record { root: r, source: None, lead_in: false } if *r == root))
     );
     // While it runs the button ends it.
     click(&mut harness, "Stop recording");
@@ -1771,7 +1775,9 @@ fn a_take_goes_onto_the_track_marked_for_recording_over_what_is_there() {
     playhead(&mut harness, 120);
     harness.key_press_modifiers(Modifiers::SHIFT, Key::R);
     harness.run_steps(3);
-    // The take began a second before the playhead (a bar counted in) and is three seconds long.
+    // (Onto a track that has sound already: the application is asked for a way in before the playhead.)
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Record { lead_in: true, .. })));
+    // The take began a second before the playhead (the way in) and is three seconds long.
     let root = harness.state().root.clone();
     let file = root.join(".shotgun/takes/take-7.wav");
     harness.state_mut().shell.take_recorded(file, 96_000 - 48_000, 144_000, 0);

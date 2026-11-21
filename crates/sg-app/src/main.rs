@@ -577,7 +577,7 @@ impl App {
                         }
                     });
                 }
-                Command::Record { root, source } => match &self.player {
+                Command::Record { root, source, lead_in } => match &self.player {
                     Some(player) => {
                         // Recorded beside the project's caches, then imported like any file.
                         let stamp = std::time::SystemTime::now()
@@ -585,7 +585,7 @@ impl App {
                             .map_or(0, |d| d.as_secs());
                         let path = root.join(".shotgun/takes").join(format!("take-{stamp}.wav"));
                         // The environment names an input for automated runs (a null sink's monitor).
-                        player.record(path, std::env::var("SHOTGUN_AUDIO_IN").ok().or(source));
+                        player.record(path, std::env::var("SHOTGUN_AUDIO_IN").ok().or(source), lead_in);
                     }
                     None => self.shell.recording_failed("There is no sound engine to record with.".to_owned()),
                 },
