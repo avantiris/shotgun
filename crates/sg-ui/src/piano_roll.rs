@@ -78,8 +78,8 @@ pub struct PianoRoll {
     mouse: Option<(u8, Option<f64>)>,
     /// Notes to start or stop on the instrument; taken by the shell.
     pub played: Vec<Played>,
-    /// Notes being recorded: pitch, and the timeline sample its key went down at.
-    sounding: Vec<(u8, i64)>,
+    /// Notes being recorded: pitch, the timeline sample its key went down at, and how hard.
+    sounding: Vec<(u8, i64, u8)>,
     /// Undo group of the recording pass in progress.
     pass: Option<u64>,
 }
@@ -224,17 +224,25 @@ impl PianoRoll {
     /// (`at`, in timeline samples; only while something plays). With
     /// "Record" on, the note is written into the open clip when its key is
     /// let go: where it was played, as long as it was held.
-    pub fn heard(&mut self, session: &mut Session, on: bool, pitch: u8, at: i64, error: &mut Option<String>) {
+    pub fn heard(
+        &mut self,
+        session: &mut Session,
+        on: bool,
+        pitch: u8,
+        velocity: u8,
+        at: i64,
+        error: &mut Option<String>,
+    ) {
         if !self.record {
             return;
         }
         if on {
-            self.sounding.retain(|(p, _)| *p != pitch);
-            self.sounding.push((pitch, at));
+            self.sounding.retain(|(p, ..)| *p != pitch);
+            self.sounding.push((pitch, at, velocity.clamp(1, 127)));
             return;
         }
-        let Some(index) = self.sounding.iter().position(|(p, _)| *p == pitch) else { return };
-        let (_, began) = self.sounding.remove(index);
+        let Some(index) = self.sounding.iter().position(|(p, ..)| *p == pitch) else { return };
+        let (_, began, struck) = self.sounding.remove(index);
         let Some((track_id, clip_id)) = self.open else { return };
         let project = session.project().clone();
         let Some(sequence) = project.sequences.first() else { return };
@@ -249,7 +257,12 @@ impl PianoRoll {
         if start < 0 || start >= length || end <= start {
             return;
         }
-        let note = Note { start, len: (end - start).clamp(TICKS_PER_BEAT / 16, length - start), pitch, velocity: 100 };
+        let note = Note {
+            start,
+            len: (end - start).max(TICKS_PER_BEAT / 16).min(length - start).max(1),
+            pitch,
+            velocity: struck,
+        };
         let mut notes: Vec<Note> = track.notes.get(&clip_id).map(|n| Vec::clone(n)).unwrap_or_default();
         notes.push(note);
         // One pass of playing is one undo step.
@@ -614,7 +627,8 @@ impl PianoRoll {
                     let by = end - (was.start + was.len);
                     for &(i, before) in group.iter() {
                         if let Some(note) = notes.get_mut(i) {
-                            note.len = (before.len + by).clamp(grid.min(length), (length - before.start).max(1));
+                            // (Not `clamp`: near the clip's end the room left is less than a grid step.)
+                            note.len = (before.len + by).max(grid.min(length)).min(length - before.start).max(1);
                         }
                     }
                 }

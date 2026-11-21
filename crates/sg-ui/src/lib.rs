@@ -1791,9 +1791,9 @@ impl Shell {
 
     /// A key played by hand was heard at this timeline sample (the
     /// timeline was playing): the piano roll writes it down if it records.
-    pub fn note_heard(&mut self, on: bool, pitch: u8, at: i64) {
+    pub fn note_heard(&mut self, on: bool, pitch: u8, velocity: u8, at: i64) {
         if let Some(session) = &mut self.session {
-            self.editor.piano.heard(session, on, pitch, at, &mut self.error);
+            self.editor.piano.heard(session, on, pitch, velocity, at, &mut self.error);
         }
     }
 

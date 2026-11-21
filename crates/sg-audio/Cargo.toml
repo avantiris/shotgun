@@ -12,6 +12,8 @@ log.workspace = true
 pipewire = { version = "0.10.1", features = ["v1_2_0"] }
 nnnoiseless = { version = "0.5", default-features = false }
 rtrb = "0.4.1"
+# The ALSA sequencer, for MIDI keyboards.
+alsa = "0.11"
 sg-plug = { path = "../sg-plug" }
 thiserror.workspace = true
 

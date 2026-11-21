@@ -1686,11 +1686,11 @@ fn the_instrument_is_played_with_the_keyboard_and_what_is_played_is_recorded() {
     harness.run_steps(2);
     let start = clips(&harness, 1)[0].0;
     // (At 120 a minute a tick is 25 samples.) Half a beat in, a little late, held for a quarter of a beat.
-    harness.state_mut().shell.note_heard(true, 62, start + 12_000 + 100);
-    harness.state_mut().shell.note_heard(false, 62, start + 18_000 + 100);
+    harness.state_mut().shell.note_heard(true, 62, 100, start + 12_000 + 100);
+    harness.state_mut().shell.note_heard(false, 62, 0, start + 18_000 + 100);
     // One played before the clip begins is not part of it.
-    harness.state_mut().shell.note_heard(true, 64, start - 5_000);
-    harness.state_mut().shell.note_heard(false, 64, start - 1_000);
+    harness.state_mut().shell.note_heard(true, 64, 100, start - 5_000);
+    harness.state_mut().shell.note_heard(false, 64, 0, start - 1_000);
     harness.run_steps(2);
     assert_eq!(notes(&harness), [sg_core::Note { start: 484, len: 240, pitch: 62, velocity: 100 }]);
     // "Quantise" puts it on the grid (sixteenths).

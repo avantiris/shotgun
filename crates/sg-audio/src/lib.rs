@@ -18,6 +18,7 @@ mod disk;
 mod fx;
 pub mod graph;
 pub mod loudness;
+pub mod midi;
 mod null;
 mod pw;
 pub mod record;
@@ -47,6 +48,8 @@ pub enum AudioError {
     Thread(#[from] std::io::Error),
     #[error("PipeWire: {0}")]
     PipeWire(String),
+    #[error("MIDI: {0}")]
+    Midi(String),
 }
 
 /// A stretch of one conformed WAV file on a track.

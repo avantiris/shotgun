@@ -55,7 +55,7 @@ const RING_FRAMES: usize = SAMPLE_RATE as usize / 2;
 /// program: with three blocks topped up every 5 ms the callback ran dry
 /// about once in two seconds; see docs/perf-log.md, 2026-11-21).
 fn hand_frames(quantum: u32) -> usize {
-    (quantum as usize * 4).clamp(1024, MAX_BLOCK)
+    (quantum as usize * 4).clamp(1024, MAX_BLOCK * 2)
 }
 /// Frames written before a graph is offered, so playback starts with data.
 const PREFILL_FRAMES: usize = 4096;
@@ -192,6 +192,40 @@ struct Feed {
     sampler: Option<crate::sampler::Sampler>,
 }
 
+impl Feed {
+    /// Takes over the notes of the track while it plays. A note that is
+    /// sounding where this feed has got to and is no longer among them (or
+    /// ends elsewhere now) is let go at once: its end would never come.
+    fn take_notes(&mut self, notes: &[crate::NoteSpan]) {
+        let ons: Vec<(i64, u8, u8)> = notes.iter().map(|n| (n.start, n.pitch, n.velocity)).collect();
+        if ons == self.note_ons && notes.len() == self.note_offs.len() {
+            let mut ends: Vec<(i64, u8)> = notes.iter().map(|n| (n.start + n.len, n.pitch)).collect();
+            ends.sort_unstable();
+            if ends == self.note_offs {
+                return;
+            }
+        }
+        let at = self.next + self.fx.delay() as i64;
+        let sounding = |start: i64, end: i64| start < at && end > at;
+        // (The old ends are only known by pitch: every pitch that sounds now and should not.)
+        let mut hung: Vec<u8> = self
+            .note_offs
+            .iter()
+            .filter(|(end, pitch)| *end > at && self.note_ons.iter().any(|(start, p, _)| p == pitch && *start < at))
+            .map(|(_, pitch)| *pitch)
+            .collect();
+        hung.sort_unstable();
+        hung.dedup();
+        hung.retain(|pitch| !notes.iter().any(|n| n.pitch == *pitch && sounding(n.start, n.start + n.len)));
+        for pitch in hung {
+            self.pending.push(sg_plug::NoteEvent { offset: 0, on: false, pitch, velocity: 0 });
+        }
+        self.note_ons = ons;
+        self.note_offs = notes.iter().map(|n| (n.start + n.len, n.pitch)).collect();
+        self.note_offs.sort_unstable();
+    }
+}
+
 struct Disk {
     slot: Arc<Slot>,
     shared: Arc<Shared>,
@@ -216,6 +250,8 @@ struct Disk {
     loop_now: Option<(i64, i64)>,
     /// Where the graph in use was built for.
     built_at: i64,
+    /// How many frames the rings of hand-played tracks were given.
+    hand_built: usize,
     /// A grain is (or was just) sounding; when to let the device rest.
     grain_until: Option<Instant>,
     block: Vec<f32>,
@@ -250,8 +286,9 @@ const DUCK_SLOTS: usize = 8192;
 
 /// True if going from `a` to `b` needs no new graph: the same clips on the
 /// same tracks, and noise reduction (which changes how far a feed reads
-/// ahead) on the same tracks. Faders and amounts may differ.
-fn same_structure(a: &Mix, b: &Mix) -> bool {
+/// ahead) on the same tracks. Faders and amounts may differ, and with
+/// `notes_too` so may the notes (the feeds then take the new ones as they are).
+fn same_structure(a: &Mix, b: &Mix, notes_too: bool) -> bool {
     a.tracks.len() == b.tracks.len()
         && a.click == b.click
         && a.echo_samples == b.echo_samples
@@ -261,7 +298,7 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
             // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
             x.clips == y.clips
                 && x.plugins == y.plugins
-                && x.notes == y.notes
+                && (notes_too || x.notes == y.notes)
                 && x.unheard == y.unheard
                 && x.by_hand == y.by_hand
                 && x.sampler == y.sampler
@@ -504,7 +541,19 @@ impl Disk {
         // it where it belongs.
         let start = self.feeds[index].next + self.feeds[index].fx.delay() as i64;
         // A loop: no block reads across its end, and the one that reaches it goes back to its start.
+        // (A feed whose clean-up delay puts its reading past the end while
+        // the playhead is still before it has that round's end behind it
+        // already: it goes round from the start with the others.)
         let mut wraps = None;
+        if let Some((from, end)) = self.loop_now
+            && self.feeds[index].laps == 0
+            && self.feeds[index].next < end
+            && start >= end
+        {
+            self.feeds[index].next = from - (end - self.feeds[index].next);
+            self.feeds[index].laps = 1;
+        }
+        let start = self.feeds[index].next + self.feeds[index].fx.delay() as i64;
         if let Some((from, end)) = self.loop_now.filter(|(_, end)| start < *end) {
             frames = frames.min((end - start) as usize);
             wraps = (start + frames as i64 == end).then_some(from);
@@ -622,6 +671,7 @@ impl Disk {
         // (Positions start anew: what was heard of the voices before does not apply.)
         self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
         let hand = hand_frames(self.shared.quantum.load(Ordering::Relaxed));
+        self.hand_built = hand;
         self.built_at = pos;
         self.loop_now = self.looping.filter(|_| playing && grain.is_none());
         // The recordings the samplers play: read once, kept while a track names them.
@@ -723,6 +773,18 @@ impl Disk {
         }
     }
 
+    /// Where a graph that replaces the playing one goes on from: what the
+    /// callback will render next. Until the callback has taken the graph
+    /// that is waiting, its clock still tells of the one before (or of
+    /// nothing at all: an export that has not pulled a block yet), and
+    /// the place that graph was built for is the answer.
+    fn resume_at(&self) -> i64 {
+        if self.shared.adopted.load(Ordering::Acquire) < self.offered {
+            return self.built_at;
+        }
+        self.shared.clock_pos.load(Ordering::Relaxed) + self.shared.quantum.load(Ordering::Relaxed) as i64
+    }
+
     /// Hands the room's and the echo's settings to the graph that sounds.
     fn set_space(&self) {
         self.space[0].store(self.mix.room_seconds.to_bits(), Ordering::Relaxed);
@@ -758,23 +820,24 @@ impl Disk {
                 let _ = reply.send(());
             }
             Control::Mix(mix) => {
-                let live_only = self.playing && same_structure(&self.mix, &mix);
+                let live_only = self.playing && same_structure(&self.mix, &mix, true);
                 self.mix = mix;
                 self.sync_plugins();
                 if live_only {
-                    // A fader moved: no new graph, so nothing is refilled
-                    // and nothing can click.
+                    // A fader moved, or a note was written, moved or taken
+                    // away: no new graph, so nothing is refilled, nothing
+                    // can click, and no instrument is cut off. A changed
+                    // note is heard as far ahead as its track is buffered.
                     for (feed, track) in self.feeds.iter_mut().zip(&self.mix.tracks) {
                         feed.live.set(track.gain, track.pan, track.mute);
                         feed.live.set_sends(track.reverb, track.echo);
                         (feed.low_cut_hz, feed.denoise, feed.tone) = (track.low_cut_hz, track.denoise, track.tone);
+                        feed.take_notes(&track.notes);
                     }
                     self.master.set(self.mix.master_gain, 0.0, false);
                     self.set_space();
                 } else if self.playing {
-                    // Continue from what the callback will render next.
-                    let pos = self.shared.clock_pos.load(Ordering::Relaxed)
-                        + self.shared.quantum.load(Ordering::Relaxed) as i64;
+                    let pos = self.resume_at();
                     self.rebuild(pos, true, None);
                 } else if self.idle_hand || self.mix.tracks.iter().any(|t| t.by_hand) {
                     // Nothing plays, but a track is (or was) played by hand:
@@ -790,8 +853,7 @@ impl Disk {
                 // (Shorter than a tenth of a second is not a loop anyone asked for.)
                 self.looping = range.filter(|(from, end)| end - from >= SAMPLE_RATE as i64 / 10);
                 if self.playing {
-                    let pos = self.shared.clock_pos.load(Ordering::Relaxed)
-                        + self.shared.quantum.load(Ordering::Relaxed) as i64;
+                    let pos = self.resume_at();
                     self.rebuild(pos, true, None);
                 }
             }
@@ -858,9 +920,11 @@ impl Disk {
                     }
                     if self.playing {
                         // It joins from what the callback will render next.
-                        let pos = self.shared.clock_pos.load(Ordering::Relaxed)
-                            + self.shared.quantum.load(Ordering::Relaxed) as i64;
+                        let pos = self.resume_at();
                         self.rebuild(pos, true, None);
+                    } else if self.idle_hand {
+                        // Nothing plays, but its track may be the one played by hand.
+                        self.rebuild(self.built_at, false, None);
                     }
                 }
                 if self.loading.is_empty() {
@@ -915,6 +979,7 @@ pub fn run(
         samples: HashMap::new(),
         playing: false,
         idle_hand: false,
+        hand_built: 0,
         monitoring: false,
         looping: None,
         loop_now: None,
@@ -934,7 +999,7 @@ pub fn run(
     };
     loop {
         // Idle costs nothing: without playback the thread sleeps until told otherwise.
-        let message = if let Some(until) = disk.grain_until.filter(|_| !disk.playing) {
+        let message = if let Some(until) = disk.grain_until.filter(|_| !disk.playing && !disk.idle_hand) {
             match control.recv_deadline(until) {
                 Ok(message) => Some(message),
                 Err(RecvTimeoutError::Timeout) => {
@@ -962,10 +1027,24 @@ pub fn run(
         {
             return;
         }
+        // The device's block was not known when the graph was built (or has
+        // changed): a hand-played track gets the ring that goes with it.
+        if (disk.playing || disk.idle_hand)
+            && disk.feeds.iter().any(|f| f.by_hand)
+            && hand_frames(disk.shared.quantum.load(Ordering::Relaxed)) != disk.hand_built
+            && disk.shared.adopted.load(Ordering::Acquire) >= disk.offered
+        {
+            let (pos, playing) = (if disk.playing { disk.resume_at() } else { disk.built_at }, disk.playing);
+            disk.rebuild(pos, playing, None);
+        }
         if disk.playing {
             disk.fill_all(usize::MAX);
         } else if disk.idle_hand {
             disk.fill_idle();
+            // (A grain's time is watched here too, since this branch does not sleep until it is over.)
+            if disk.grain_until.is_some_and(|until| Instant::now() >= until) {
+                disk.end_grain();
+            }
         }
         // Free graphs the callback has finished with.
         drop(disk.slot.collect());

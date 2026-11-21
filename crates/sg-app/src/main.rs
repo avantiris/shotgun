@@ -76,6 +76,8 @@ fn parse_args() -> anyhow::Result<Args> {
 enum UserEvent {
     /// The inputs sound can be recorded from, (name, label).
     Inputs(Vec<(String, String)>),
+    /// A key of a MIDI keyboard went down (true) or up: pitch and velocity.
+    Midi(bool, u8, u8),
     /// The settings of this machine, read at start.
     Settings(sg_project::settings::Settings),
     /// News from a plugin job.
@@ -184,6 +186,8 @@ struct App {
     importer: Option<Importer>,
     /// Stops the step of the Native Instruments set-up that is running.
     plugin_step: Option<sg_media::Cancel>,
+    /// The MIDI keyboards, while they are listened to.
+    midi: Option<sg_play::MidiIn>,
     /// Running imports and when each was requested.
     imports: HashMap<u64, Instant>,
     wl: Option<WlData>,
@@ -554,7 +558,7 @@ impl App {
                 }
                 Command::Note { on, pitch, velocity } => {
                     if let Some(at) = self.player.as_ref().and_then(|p| p.note(on, pitch, velocity)) {
-                        self.shell.note_heard(on, pitch, at);
+                        self.shell.note_heard(on, pitch, velocity, at);
                     }
                 }
                 Command::ListInputs => {
@@ -1042,7 +1046,20 @@ impl ApplicationHandler<UserEvent> for App {
                     Player::start(device, queue, Backend::Null, wake)
                 });
                 match player {
-                    Ok(player) => self.player = Some(player),
+                    Ok(player) => {
+                        self.player = Some(player);
+                        // MIDI keyboards, if the machine has a sequencer: their notes come in as events.
+                        let proxy = self.proxy.clone();
+                        // (An automated run is its own client: stand-in keyboards address it by name.)
+                        let name = std::env::var("SHOTGUN_APP_ID").unwrap_or_else(|_| "Shotgun".to_owned());
+                        let listening = sg_play::MidiIn::start(&name, move |on, pitch, velocity| {
+                            let _ = proxy.send_event(UserEvent::Midi(on, pitch, velocity));
+                        });
+                        match listening {
+                            Ok(midi) => self.midi = Some(midi),
+                            Err(e) => log::info!("MIDI keyboards are not listened to: {e}"),
+                        }
+                    }
                     Err(e) => log::error!("the preview engine did not start: {e}"),
                 }
                 gfx.window.request_redraw();
@@ -1163,6 +1180,13 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ClipsOffered(offered) => self.shell.clips_offered(offered),
             UserEvent::Plugins(update) => self.shell.plugins_update(update),
             UserEvent::Inputs(inputs) => self.shell.inputs_listed(inputs),
+            // A MIDI keyboard plays what the computer keyboard plays: the
+            // instrument of the open piano roll.
+            UserEvent::Midi(on, pitch, velocity) => {
+                if let Some(at) = self.player.as_ref().and_then(|p| p.note(on, pitch, velocity)) {
+                    self.shell.note_heard(on, pitch, velocity, at);
+                }
+            }
             UserEvent::Settings(settings) => self.shell.set_input(settings.audio_input),
             UserEvent::Global(result, news) => {
                 self.shell.global_listed(result, news);
@@ -1365,6 +1389,7 @@ fn main() -> anyhow::Result<()> {
         importer: Some(importer),
         imports: HashMap::new(),
         plugin_step: None,
+        midi: None,
         wl: None,
         player: None,
         viewer_texture: None,

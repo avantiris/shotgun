@@ -267,6 +267,20 @@ fn main() -> anyhow::Result<()> {
         }
         Some("open") => bench_open(Path::new(arg(1).context("open <project-dir>")?), number(2, 10)?),
         // sg-bench export <project-dir> master|vertical|gif|share:<MB> [from frame] [to frame]
+        // sg-bench midi <client> <pitch> <velocity> <ms held>...: stands in for a MIDI keyboard and
+        // plays these notes to the program whose sequencer client has that name ("Shotgun", or the
+        // window class of an automated run), one after the other.
+        Some("midi") => {
+            let client = arg(1).context("midi <client> <pitch> <velocity> <ms held>...")?;
+            let numbers: Vec<u64> = args[2..]
+                .iter()
+                .map(|s| s.parse().with_context(|| format!("bad number {s:?}")))
+                .collect::<Result<_, _>>()?;
+            let notes: Vec<(u8, u8, u64)> =
+                numbers.chunks_exact(3).map(|n| (n[0].min(127) as u8, n[1].min(127) as u8, n[2])).collect();
+            sg_audio::midi::play(client, &notes, std::time::Duration::from_millis(100))
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        }
         // sg-bench voice <48 kHz wav>...: what listening to a voice measures, and what it would set.
         Some("voice") => {
             for path in std::env::args().skip(2) {

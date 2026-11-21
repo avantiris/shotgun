@@ -631,6 +631,19 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     assert!((24_000..24_600).contains(&first), "{first}");
     // After the note has ended it dies away.
     assert!(level(90_000, 96_000) < level(26_000, 46_000) - 20.0);
+    // Started in the middle before the plugin has loaded (an export of a marked stretch):
+    // it joins where playback is, not at the top of the timeline.
+    let late = Engine::start(Backend::Manual).unwrap();
+    late.set_mix(mix.clone());
+    late.play(12_000);
+    let mut later = vec![0.0f32; 24_000 * 2];
+    for block in later.chunks_mut(512) {
+        late.settle();
+        late.pull(block);
+    }
+    let first = later.iter().step_by(2).position(|s| s.abs() > 1e-4).unwrap();
+    assert!((12_000..12_600).contains(&first), "{first}");
+    drop(late);
     // Pausing writes the plugin's state where the project keeps it.
     engine.pause();
     engine.settle();
@@ -1013,4 +1026,82 @@ fn a_stretch_is_played_over_and_over_to_the_sample_and_no_note_hangs_at_its_end(
         pull(&engine, 1000);
     }
     assert!(engine.position() > 48_000);
+}
+
+/// Through the ALSA sequencer of this machine (no sound device, no sound):
+/// a second client stands in for a keyboard and sends to the listening port.
+#[test]
+fn notes_from_a_midi_keyboard_arrive_as_keys() {
+    use alsa::seq::{Addr, EvNote, Event, EventType, PortCap, PortType, Seq};
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = heard.clone();
+    let listening = match sg_audio::midi::MidiIn::start("Shotgun test", move |down, pitch, velocity| {
+        sink.lock().unwrap().push((down, pitch, velocity));
+    }) {
+        Ok(listening) => listening,
+        Err(e) => {
+            eprintln!("no MIDI sequencer on this machine ({e}): nothing to test");
+            return;
+        }
+    };
+    let keyboard = Seq::open(None, Some(alsa::Direction::Playback), false).unwrap();
+    let name = std::ffi::CString::new("Shotgun test keyboard").unwrap();
+    keyboard.set_client_name(&name).unwrap();
+    let port = keyboard
+        .create_simple_port(&name, PortCap::READ | PortCap::SUBS_READ, PortType::MIDI_GENERIC | PortType::APPLICATION)
+        .unwrap();
+    let to = Addr { client: listening.address.0, port: listening.address.1 };
+    let send = |kind: EventType, note: u8, velocity: u8| {
+        let data = EvNote { channel: 0, note, velocity, off_velocity: 0, duration: 0 };
+        let mut event = Event::new(kind, &data);
+        event.set_source(port);
+        event.set_dest(to);
+        event.set_direct();
+        keyboard.event_output(&mut event).unwrap();
+        keyboard.drain_output().unwrap();
+    };
+    send(EventType::Noteon, 64, 90);
+    send(EventType::Noteoff, 64, 0);
+    // (Keyboards also end a note with a key-down at velocity 0.)
+    send(EventType::Noteon, 67, 1);
+    send(EventType::Noteon, 67, 0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while heard.lock().unwrap().len() < 4 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(*heard.lock().unwrap(), [(true, 64, 90), (false, 64, 0), (true, 67, 1), (false, 67, 0)]);
+}
+
+#[test]
+fn notes_written_or_taken_away_while_playing_need_no_new_graph_and_leave_nothing_hanging() {
+    let note = |start: i64, len: i64, pitch: u8| sg_audio::NoteSpan { start, len, pitch, velocity: 100 };
+    // Played by hand, so that what changes is heard within milliseconds; a long note from the start.
+    let with = |notes: Vec<sg_audio::NoteSpan>| Mix {
+        tracks: vec![TrackMix { notes, by_hand: true, ..track(Vec::new()) }],
+        ..Mix::default()
+    };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(with(vec![note(0, 480_000, 60)]));
+    engine.play(0);
+    let pull_for = |frames: usize| {
+        let mut out = vec![0.0f32; frames * 2];
+        for block in out.chunks_mut(512) {
+            engine.settle();
+            engine.pull(block);
+        }
+        out.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    };
+    assert!(pull_for(9_600) > 0.01);
+    // The note is taken away while it sounds: it is let go, and the clock runs on undisturbed.
+    let before = engine.position();
+    engine.set_mix(with(Vec::new()));
+    pull_for(14_400);
+    assert!(pull_for(4_800) < 1e-3);
+    let after = engine.position();
+    // (The position is reckoned on from the last block by the clock on the wall: about, not to the sample.)
+    assert!((after - before - 19_200).abs() < 1_000, "{}", after - before);
+    // A note written ahead of the playhead sounds when the playhead gets there.
+    engine.set_mix(with(vec![note(after + 4_800, 4_800, 67)]));
+    assert!(pull_for(4_000) < 1e-3);
+    assert!(pull_for(4_000) > 0.01);
 }

@@ -246,7 +246,12 @@ fn cut_at(mix: &mut sg_audio::Mix, end: i64) {
     for track in &mut mix.tracks {
         track.clips.retain(|c| c.start < end);
         for clip in &mut track.clips {
-            clip.len = clip.len.min(end - clip.start);
+            // (A clip cut short here keeps sounding as it did up to the cut:
+            // its fade-out belonged to the end it no longer has.)
+            if clip.len > end - clip.start {
+                clip.len = end - clip.start;
+                clip.fade_out = 0;
+            }
         }
         track.notes.retain(|n| n.start < end);
         for note in &mut track.notes {

@@ -541,9 +541,27 @@ chain second version, M16 mixing and mastering.
     and at 220 Hz from the key an octave above. Not built: several
     recordings on one track (a drum kit with a pad per key), loop
     points, and pitching without changing the length.
+  - MIDI keyboards (2026-11-21): every MIDI source of the machine is
+    listened to through the ALSA sequencer (`sg_audio::midi`; one
+    plugged in later is taken up too) and plays what the computer
+    keyboard plays, the instrument of the open piano roll, with the
+    velocity of each key; "Record" writes it down with that velocity.
+    Checked without hardware: `sg-bench midi <client> ...` stands in for
+    a keyboard; in the app its two notes sounded and were written into
+    the clip with their velocities and lengths. Not checked: a real
+    keyboard. Not built: pedals, pitch bend, a choice of which keyboard.
+  - Notes change while it plays without a new graph (2026-11-21): a
+    note written, moved or removed (by hand or by "Record") no longer
+    rebuilds the engine's graph, which cut every instrument off and left
+    a gap; the tracks take the new notes as they are, and a note that
+    was sounding and is gone is let go.
+  - Known limit: the track played by hand is fed by an ordinary thread,
+    four blocks ahead. In 10 to 20 s runs it mostly never ran dry, but
+    in runs during which other programs were started it did two or three
+    times (a click each). The remedy is realtime priority for that
+    thread (through RTKit, as PipeWire gets it); not built.
   - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
-    as VST3 or CLAP too); a MIDI keyboard as input; plugin parameters
-    as keyframes.
+    as VST3 or CLAP too); plugin parameters as keyframes.
   - Slow and hung plugins (2026-11-21): a plugin starts on a thread of
     its own and joins the sound when it is ready (a sample library takes
     its time; the other tracks play meanwhile, and an export waits for
