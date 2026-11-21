@@ -2268,3 +2268,32 @@ fn play_it_in_the_plugins_panel_sets_an_instrument_up_ready_to_play() {
     assert!(harness.query_by_label("PLUGINS").is_none());
     assert_eq!(harness.state().shell.error_shown(), None);
 }
+
+#[test]
+fn a_new_track_is_made_from_the_bar_above_the_timeline() {
+    let mut harness = editor();
+    assert_eq!(tracks(&harness).len(), 2);
+    // An empty track for sound, at the bottom.
+    click(&mut harness, "+ Track");
+    click(&mut harness, "Audio track");
+    let names: Vec<String> = tracks(&harness).into_iter().map(|t| t.1).collect();
+    assert_eq!(names, ["V1", "A1", "A2"]);
+    // A track for notes: with a clip on it, its piano roll open, and the keyboard a piano.
+    click(&mut harness, "+ Track");
+    click(&mut harness, "Instrument track");
+    harness.run_steps(3);
+    let all = tracks(&harness);
+    assert_eq!((all.len(), all[3].1.as_str(), all[3].2), (4, "A3", 1));
+    assert!(harness.query_by_label("Piano roll").is_some());
+    harness.key_down(Key::A);
+    harness.run_steps(2);
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Note { on: true, pitch: 60, .. })));
+    harness.key_up(Key::A);
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    // A track for pictures goes on top.
+    click(&mut harness, "+ Track");
+    click(&mut harness, "Video track");
+    assert_eq!(tracks(&harness)[0].1, "V2");
+    assert_eq!(harness.state().shell.error_shown(), None);
+}

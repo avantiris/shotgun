@@ -537,6 +537,7 @@ impl Shell {
                             self.editor.set_size(session, width, height, &mut self.error);
                         }
                     }
+                    Some(EditorRequest::InstrumentTrack(plugin)) => self.instrument_track(plugin, &mut commands),
                     Some(EditorRequest::AddTrack(kind)) => {
                         if let Some(session) = &mut self.session {
                             self.editor.add_track(session, kind, &mut self.error);
@@ -614,7 +615,7 @@ impl Shell {
         self.monitor_commands(&mut commands);
         let gif_range = self.gif_range();
         match self.plugins.ui(&ctx) {
-            Some(PluginRequest::Play(name, path)) => self.play_plugin(name, path, &mut commands),
+            Some(PluginRequest::Play(name, path)) => self.instrument_track(Some((name, path)), &mut commands),
             Some(request) => {
                 if let PluginRequest::Run(step) = request {
                     self.plugins.started(step);
@@ -1796,7 +1797,10 @@ impl Shell {
     /// on it, a note clip at the playhead with its piano roll open and the
     /// computer keyboard as a piano, and the plugin's own window asked
     /// for. Everything a first note needs, in one step.
-    fn play_plugin(&mut self, name: String, path: String, commands: &mut Vec<Command>) {
+    ///
+    /// Without a plugin ("Instrument track" under "+ Track"): the same
+    /// with the built-in instrument, and no window to ask for.
+    fn instrument_track(&mut self, plugin: Option<(String, String)>, commands: &mut Vec<Command>) {
         let Some(session) = &mut self.session else {
             self.error = Some("Open a project first: an instrument needs a track to play on.".to_owned());
             return;
@@ -1808,23 +1812,32 @@ impl Shell {
         let project = session.project().clone();
         let Some(sequence) = project.sequences.first() else { return };
         let Some(track) = sequence.tracks.iter().rev().find(|t| t.kind == sg_core::TrackKind::Audio) else { return };
-        let plugin = sg_core::PluginRef { name: name.clone(), path, id: session.new_plugin_id() };
-        let key = plugin.key(track.id);
-        let op = Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins: vec![plugin] };
-        if let Err(e) = session.apply(op, None) {
-            self.error = Some(e.to_string());
-            return;
+        let mut window = None;
+        if let Some((name, path)) = &plugin {
+            let plugin = sg_core::PluginRef { name: name.clone(), path: path.clone(), id: session.new_plugin_id() };
+            window = Some(plugin.key(track.id));
+            let op = Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins: vec![plugin] };
+            if let Err(e) = session.apply(op, None) {
+                self.error = Some(e.to_string());
+                return;
+            }
         }
         // (The note clip opens its piano roll with the next frame.)
         self.editor.timeline.add_note_clip(session, sequence, track, self.playhead.max(0) as f64, &mut self.error);
         self.editor.piano.set_keyboard(true);
-        commands.push(Command::PluginEditor { track: track.id, key });
+        commands.extend(window.map(|key| Command::PluginEditor { track: track.id, key }));
         self.plugins.cancel();
-        session.notice = Some(format!(
-            "{name} is on a new track ({}). Its window opens when it has started: load a sound there, then play with \
-             the keys A S D F G H J (W E T Z U are the black ones), or draw notes.",
-            track.name
-        ));
+        let keys = "play with the keys A S D F G H J (W E T Z U are the black ones), or draw notes";
+        session.notice = Some(match &plugin {
+            Some((name, _)) => format!(
+                "{name} is on a new track ({}). Its window opens when it has started: load a sound there, then {keys}.",
+                track.name
+            ),
+            None => format!(
+                "{} is a new track for notes with the built-in instrument: {keys}. Another instrument: Mixer, on its strip.",
+                track.name
+            ),
+        });
     }
 
     /// Tells the application which track's instrument is played by hand

@@ -22,6 +22,9 @@ pub enum EditorRequest {
     Plugins,
     RemoveAsset(AssetId),
     AddTrack(sg_core::TrackKind),
+    /// A new track for notes, ready to play: with this plugin (name,
+    /// path) as its instrument, or with the built-in one.
+    InstrumentTrack(Option<(String, String)>),
     SetSize(u32, u32),
     CutsToBeats,
     WhipAll,
@@ -124,7 +127,9 @@ impl Editor {
         egui::Panel::bottom("timeline").resizable(true).default_size(270.0).min_size(150.0).frame(flush).show(
             ui,
             |ui| {
-                self.tools(ui, session, sequence, view, error);
+                if let Some(wanted) = self.tools(ui, session, sequence, view, error) {
+                    request = Some(wanted);
+                }
                 self.timeline.ui(ui, session, view, transport, error);
                 // A title asked for its text: the inspector shows it with the cursor in the field.
                 if std::mem::take(&mut self.timeline.edit_title) {
@@ -349,6 +354,57 @@ impl Editor {
         });
     }
 
+    /// "+ Track" above the timeline: an empty track of either kind, or one
+    /// for notes with an instrument on it and its piano roll open.
+    fn add_track_menu(&mut self, ui: &mut egui::Ui, request: &mut Option<EditorRequest>) {
+        let (response, _) = egui::containers::menu::MenuButton::new("+ Track").ui(ui, |ui| {
+            ui.set_min_width(280.0);
+            let mut choose = |ui: &mut egui::Ui, label: &str, tip: &str, wanted: EditorRequest| {
+                if ui.button(label).on_hover_text(tip).clicked() {
+                    *request = Some(wanted);
+                    ui.close();
+                }
+            };
+            choose(
+                ui,
+                "Audio track",
+                "An empty track for sound: recordings, songs, samples. It is added at the bottom.",
+                EditorRequest::AddTrack(sg_core::TrackKind::Audio),
+            );
+            choose(
+                ui,
+                "Instrument track",
+                "A track for notes with the built-in instrument, a clip to write them into at the playhead, and \
+                 the piano roll open. Another instrument can be chosen on its mixer strip.",
+                EditorRequest::InstrumentTrack(None),
+            );
+            choose(
+                ui,
+                "Video track",
+                "An empty track for pictures, titles and video. It is added on top.",
+                EditorRequest::AddTrack(sg_core::TrackKind::Video),
+            );
+            ui.separator();
+            ui.label(RichText::new("Instrument track with a plugin").size(11.0).color(theme::DIM));
+            match &self.mixer.available {
+                None => {
+                    self.mixer.scan_request = true;
+                    ui.label(RichText::new("Looking for plugins...").color(theme::DIM));
+                }
+                Some(found) if found.is_empty() => {
+                    ui.label(RichText::new("None found: see Plugins (the plug in the top bar).").color(theme::DIM));
+                }
+                Some(found) => {
+                    for (name, path) in found.clone() {
+                        let wanted = EditorRequest::InstrumentTrack(Some((name.clone(), path.clone())));
+                        choose(ui, &name, &path, wanted);
+                    }
+                }
+            }
+        });
+        response.on_hover_text("A new track: for sound, for notes with an instrument, or for pictures");
+    }
+
     /// "Clip" in the top bar: what is done to the selected clips now and
     /// then. Each entry acts on all of them at once.
     fn clip_menu(&mut self, ui: &mut egui::Ui) {
@@ -434,12 +490,17 @@ impl Editor {
         sequence: &Sequence,
         view: &ViewerState,
         error: &mut Option<String>,
-    ) {
+    ) -> Option<EditorRequest> {
         let selected = self.timeline.has_selection();
+        let mut wanted = None;
+        let request = &mut wanted;
         egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().button_padding = vec2(8.0, 3.0);
                 ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
+                // First of all, as in every such program: a new track (feedback F15.7).
+                self.add_track_menu(ui, request);
+                ui.separator();
                 // What is done all the time while making something (feedback
                 // F15.4), as icons with their name and key on hover (F15.5).
                 let (recording, clicking, looping) =
@@ -490,6 +551,7 @@ impl Editor {
                 }
             });
         });
+        wanted
     }
 
     /// Beside the input: "Level" opens it and shows how loud it arrives
