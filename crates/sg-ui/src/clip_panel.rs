@@ -536,9 +536,11 @@ fn keyframe_list(
         ui.push_id(("keyframe", frame), |ui| {
             let here = frame == at;
             let fill = if here { theme::RAISED } else { egui::Color32::TRANSPARENT };
-            egui::Frame::new().fill(fill).corner_radius(4.0).inner_margin(egui::Margin::symmetric(4, 3)).show(
-                ui,
-                |ui| {
+            egui::Frame::new()
+                .fill(fill)
+                .corner_radius(theme::RADIUS)
+                .inner_margin(egui::Margin::symmetric(4, 3))
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let time = crate::stage::timecode(start + frame, rate);
                         let text =
@@ -584,8 +586,7 @@ fn keyframe_list(
                             ui.add_space(4.0);
                         }
                     });
-                },
-            );
+                });
         });
     }
     if frames.len() > SHOWN {

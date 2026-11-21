@@ -455,7 +455,7 @@ impl AssetsPanel {
                     }
                     let painter = ui.painter().with_clip_rect(rect);
                     let poster = Rect::from_min_size(rect.min, vec2(rect.width(), rect.width() * 9.0 / 16.0));
-                    painter.rect_filled(poster, 4.0, Color32::BLACK);
+                    painter.rect_filled(poster, theme::RADIUS, Color32::BLACK);
                     match self.global_posters.get(&entry.path) {
                         Some(Poster::Ready(texture)) => {
                             let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
@@ -490,7 +490,7 @@ impl AssetsPanel {
                         theme::DIM,
                     );
                     if response.hovered() {
-                        painter.rect_stroke(poster, 4.0, Stroke::new(1.0, theme::DIM), StrokeKind::Inside);
+                        painter.rect_stroke(poster, theme::RADIUS, Stroke::new(1.0, theme::DIM), StrokeKind::Inside);
                     }
                 }
             });
@@ -509,15 +509,15 @@ impl AssetsPanel {
         let painter = ui.ctx().layer_painter(layer);
         let galley = painter.layout_no_wrap(asset.label.clone(), FontId::proportional(12.0), theme::TEXT);
         let tag = Rect::from_min_size(pos + vec2(12.0, 12.0), galley.size() + vec2(12.0, 8.0));
-        painter.rect_filled(tag, 4.0, theme::RAISED);
-        painter.rect_stroke(tag, 4.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
+        painter.rect_filled(tag, theme::RADIUS, theme::RAISED);
+        painter.rect_stroke(tag, theme::RADIUS, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
         painter.galley(tag.min + vec2(6.0, 4.0), galley, theme::TEXT);
     }
 
     fn paint_tile(&self, ui: &egui::Ui, rect: Rect, asset: &Asset, hovered: bool) {
         let painter = ui.painter().with_clip_rect(rect);
         let poster = Rect::from_min_size(rect.min, vec2(rect.width(), rect.width() * 9.0 / 16.0));
-        painter.rect_filled(poster, 4.0, Color32::BLACK);
+        painter.rect_filled(poster, theme::RADIUS, Color32::BLACK);
         let missing = self.missing.contains(&asset.id);
         match self.posters.get(&asset.id) {
             Some(Poster::Ready(texture)) if !missing => {
@@ -556,7 +556,7 @@ impl AssetsPanel {
         // A copy of it is in the Global tab.
         if self.is_global(asset) {
             let tag = Rect::from_min_size(poster.right_top() + vec2(-46.0, 4.0), vec2(42.0, 16.0));
-            painter.rect_filled(tag, 3.0, theme::BG.gamma_multiply(0.85));
+            painter.rect_filled(tag, theme::RADIUS, theme::BG.gamma_multiply(0.85));
             painter.text(tag.center(), Align2::CENTER_CENTER, "global", FontId::proportional(10.0), theme::TEXT);
         }
         let stroke = if self.selected == Some(asset.id) {
@@ -567,7 +567,7 @@ impl AssetsPanel {
             None
         };
         if let Some(stroke) = stroke {
-            painter.rect_stroke(poster, 4.0, stroke, StrokeKind::Inside);
+            painter.rect_stroke(poster, theme::RADIUS, stroke, StrokeKind::Inside);
         }
     }
 
@@ -584,7 +584,7 @@ impl AssetsPanel {
                 egui::Frame::new()
                     .fill(theme::RAISED)
                     .stroke(Stroke::new(1.0, theme::LINE))
-                    .corner_radius(6.0)
+                    .corner_radius(theme::RADIUS)
                     .inner_margin(14.0)
                     .show(ui, |ui| {
                         ui.set_width(460.0);
@@ -634,7 +634,7 @@ impl AssetsPanel {
         let rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop-overlay")));
         painter.rect_filled(rect, 0.0, theme::BG.gamma_multiply(0.75));
-        painter.rect_stroke(rect.shrink(12.0), 8.0, Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
+        painter.rect_stroke(rect.shrink(12.0), theme::RADIUS, Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
         painter.text(rect.center(), Align2::CENTER_CENTER, "Drop to import", FontId::proportional(28.0), theme::TEXT);
     }
 }

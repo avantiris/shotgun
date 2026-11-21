@@ -2372,7 +2372,7 @@ impl Shell {
 fn help_panel(ctx: &egui::Context) {
     use egui::{Align2, RichText, Stroke, vec2};
     egui::Area::new(egui::Id::unique("help")).fade_in(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        egui::Frame::new().fill(theme::RAISED).stroke(Stroke::new(1.0, theme::LINE)).corner_radius(6.0).inner_margin(16.0).show(ui, |ui| {
+        egui::Frame::new().fill(theme::RAISED).stroke(Stroke::new(1.0, theme::LINE)).corner_radius(theme::RADIUS).inner_margin(16.0).show(ui, |ui| {
             ui.label(RichText::new("KEYS").size(11.0).strong().color(theme::DIM));
             ui.label(RichText::new("As printed on a Swiss German keyboard. Esc or F1 closes this.").color(theme::DIM));
             ui.add_space(6.0);

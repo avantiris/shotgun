@@ -609,7 +609,7 @@ impl Timeline {
             let painter = ui.painter_at(rect);
             let galley = painter.layout_no_wrap(text, FontId::proportional(11.0), theme::TEXT);
             let plate = Rect::from_min_size(at + egui::vec2(12.0, -22.0), galley.size() + egui::vec2(10.0, 6.0));
-            painter.rect_filled(plate, 3.0, theme::BG);
+            painter.rect_filled(plate, theme::RADIUS, theme::BG);
             painter.galley(plate.min + egui::vec2(5.0, 3.0), galley, theme::TEXT);
         }
     }
@@ -1874,8 +1874,8 @@ impl Timeline {
             let lanes_painter = painter.with_clip_rect(lanes);
             let (x0, x1) = (x_of(live.from as f64 / per), x_of(live.to as f64 / per));
             let take = Rect::from_min_max(pos2(x0, top + 3.0), pos2(x1.max(x0 + 2.0), top + row_h - 4.0));
-            lanes_painter.rect_filled(take, 3.0, theme::ERROR.gamma_multiply(0.3));
-            lanes_painter.rect_stroke(take, 3.0, Stroke::new(1.5, theme::ERROR), StrokeKind::Inside);
+            lanes_painter.rect_filled(take, theme::RADIUS, theme::ERROR.gamma_multiply(0.3));
+            lanes_painter.rect_stroke(take, theme::RADIUS, Stroke::new(1.5, theme::ERROR), StrokeKind::Inside);
             // Its level as it came in: only the columns in view are drawn.
             let (first, last) = (take.left().max(lanes.left()), take.right().min(lanes.right()));
             let mut x = first;
@@ -1912,8 +1912,8 @@ impl Timeline {
                 pos2(x_of((start + len) as f64 / per), top + row_h - 4.0),
             );
             let colour = if fits { theme::ACCENT } else { theme::ERROR };
-            painter.rect_filled(ghost, 3.0, colour.gamma_multiply(0.25));
-            painter.rect_stroke(ghost, 3.0, Stroke::new(1.5, colour), StrokeKind::Inside);
+            painter.rect_filled(ghost, theme::RADIUS, colour.gamma_multiply(0.25));
+            painter.rect_stroke(ghost, theme::RADIUS, Stroke::new(1.5, colour), StrokeKind::Inside);
         }
         if let Some(drop) = self.drop_ghost {
             let lanes_painter = painter.with_clip_rect(lanes);
@@ -1927,8 +1927,13 @@ impl Timeline {
                     Some(Slot::Row(row)) => {
                         let top = rows_top + row as f32 * row_h;
                         let ghost = Rect::from_min_max(pos2(x0, top + 3.0), pos2(x1, top + row_h - 4.0));
-                        lanes_painter.rect_filled(ghost, 3.0, colour.gamma_multiply(0.3));
-                        lanes_painter.rect_stroke(ghost, 3.0, Stroke::new(1.5, theme::ACCENT), StrokeKind::Inside);
+                        lanes_painter.rect_filled(ghost, theme::RADIUS, colour.gamma_multiply(0.3));
+                        lanes_painter.rect_stroke(
+                            ghost,
+                            theme::RADIUS,
+                            Stroke::new(1.5, theme::ACCENT),
+                            StrokeKind::Inside,
+                        );
                     }
                     // A track that the drop will make: a bar where it appears.
                     Some(Slot::New) => {

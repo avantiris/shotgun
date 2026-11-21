@@ -186,11 +186,11 @@ fn tile(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter().with_clip_rect(rect.expand(3.0));
         let poster_rect = Rect::from_min_size(rect.min, vec2(TILE.x, POSTER_H));
-        painter.rect_filled(poster_rect, 6.0, poster);
+        painter.rect_filled(poster_rect, theme::RADIUS, poster);
         match picture {
             // A frame of the project, as wide as the tile (both are 16:9 or nearly).
             Some(texture) => {
-                egui::Image::new(texture).corner_radius(6.0).paint_at(ui, poster_rect);
+                egui::Image::new(texture).corner_radius(theme::RADIUS).paint_at(ui, poster_rect);
             }
             None => {
                 painter.text(
@@ -225,7 +225,7 @@ fn tile(
             None
         };
         if let Some(stroke) = stroke {
-            painter.rect_stroke(poster_rect, 6.0, stroke, StrokeKind::Inside);
+            painter.rect_stroke(poster_rect, theme::RADIUS, stroke, StrokeKind::Inside);
         }
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)

@@ -223,7 +223,11 @@ pub fn viewer(
             let at = Rect::from_min_size(grid.min + vec2(col as f32 * cell.x, row as f32 * cell.y), cell);
             let on_air = live == Some(n);
             let tag = Rect::from_min_size(at.min + vec2(4.0, 4.0), vec2(20.0, 18.0));
-            painter.rect_filled(tag, 3.0, if on_air { theme::ACCENT } else { theme::BG.gamma_multiply(0.85) });
+            painter.rect_filled(
+                tag,
+                theme::RADIUS,
+                if on_air { theme::ACCENT } else { theme::BG.gamma_multiply(0.85) },
+            );
             let colour = if on_air { theme::BG } else { theme::TEXT };
             painter.text(tag.center(), Align2::CENTER_CENTER, format!("{}", n + 1), FontId::proportional(12.0), colour);
             let stroke = if on_air { Stroke::new(2.0, theme::ACCENT) } else { Stroke::new(1.0, theme::LINE) };

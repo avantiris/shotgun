@@ -223,7 +223,7 @@ fn wave(
     let sense = if stage == Stage::Comp { Sense::drag() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(vec2(width, WAVE_H), sense);
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 3.0, theme::BG);
+    painter.rect_filled(rect, theme::RADIUS, theme::BG);
     let (mid, half) = (rect.center().y, rect.height() / 2.0 - 2.0);
     for db in [-12.0f32, -24.0, -36.0] {
         let off = (db - FLOOR_DB) / -FLOOR_DB * half;
@@ -284,7 +284,7 @@ fn wave(
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, "Compressor threshold line"));
         response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
     }
-    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
+    painter.rect_stroke(rect, theme::RADIUS, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
 }
 
 /// By how much the stage turns the sound up or down along the same
@@ -292,7 +292,7 @@ fn wave(
 fn gain(ui: &mut egui::Ui, width: f32, view: &ViewerState, before: usize, after: usize) {
     let (rect, _) = ui.allocate_exact_size(vec2(width, GAIN_H), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 3.0, theme::BG);
+    painter.rect_filled(rect, theme::RADIUS, theme::BG);
     let y_of = |db: f32| {
         let db = db.clamp(GAIN_BOTTOM_DB, GAIN_TOP_DB);
         rect.top() + (GAIN_TOP_DB - db) / (GAIN_TOP_DB - GAIN_BOTTOM_DB) * rect.height()
@@ -331,7 +331,7 @@ fn gain(ui: &mut egui::Ui, width: f32, view: &ViewerState, before: usize, after:
     if steps > 0 {
         painter.vline(rect.left() + now as f32 * dx, rect.y_range(), Stroke::new(1.0, theme::TEXT));
     }
-    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
+    painter.rect_stroke(rect, theme::RADIUS, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
 }
 
 /// What low cut and equaliser together do to each frequency, with a
@@ -346,7 +346,7 @@ fn curve(
 ) {
     let (rect, _) = ui.allocate_exact_size(vec2(width, CURVE_H), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 3.0, theme::BG);
+    painter.rect_filled(rect, theme::RADIUS, theme::BG);
     let span = (CURVE_HZ.1 / CURVE_HZ.0).ln();
     let x_of = |hz: f32| rect.left() + (hz.clamp(CURVE_HZ.0, CURVE_HZ.1) / CURVE_HZ.0).ln() / span * rect.width();
     let hz_of = |x: f32| CURVE_HZ.0 * (((x - rect.left()) / rect.width()).clamp(0.0, 1.0) * span).exp();
@@ -459,7 +459,7 @@ fn curve(
         egui::FontId::proportional(10.0),
         theme::DIM,
     );
-    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
+    painter.rect_stroke(rect, theme::RADIUS, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
 }
 
 /// The stage's settings as numbers, under its picture.

@@ -1062,14 +1062,14 @@ impl PianoRoll {
             // The harder a note is struck, the stronger its colour.
             let strength = 0.5 + 0.5 * note.velocity as f32 / 127.0;
             let body = theme::ACCENT.gamma_multiply(if under { (strength + 0.15).min(1.0) } else { strength });
-            lanes_painter.rect_filled(rect.translate(vec2(0.0, 1.0)), 4.0, Color32::from_black_alpha(70));
-            lanes_painter.rect_filled(rect, 4.0, body);
+            lanes_painter.rect_filled(rect.translate(vec2(0.0, 1.0)), theme::RADIUS, Color32::from_black_alpha(70));
+            lanes_painter.rect_filled(rect, theme::RADIUS, body);
             // A lighter upper half: the note reads as a key cap, not as a bar of colour.
             let cap = Rect::from_min_max(rect.min + vec2(1.0, 1.0), pos2(rect.right() - 1.0, rect.center().y));
-            lanes_painter.rect_filled(cap, 3.0, Color32::from_white_alpha(26));
+            lanes_painter.rect_filled(cap, theme::RADIUS, Color32::from_white_alpha(26));
             let edge =
                 if chosen { Stroke::new(2.0, theme::TEXT) } else { Stroke::new(1.0, Color32::from_black_alpha(140)) };
-            lanes_painter.rect_stroke(rect, 4.0, edge, StrokeKind::Inside);
+            lanes_painter.rect_stroke(rect, theme::RADIUS, edge, StrokeKind::Inside);
             // The end that is pulled to make the note longer or shorter.
             if rect.width() >= 14.0 {
                 let x = rect.right() - 4.0;

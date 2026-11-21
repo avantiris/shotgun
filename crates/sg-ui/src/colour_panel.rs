@@ -175,9 +175,11 @@ impl ColourPanel {
         let mut dropped = None;
         let count = edited.look.len();
         for (index, module) in edited.look.iter_mut().enumerate() {
-            egui::Frame::new().fill(theme::RAISED.gamma_multiply(0.6)).corner_radius(5.0).inner_margin(6.0).show(
-                ui,
-                |ui| {
+            egui::Frame::new()
+                .fill(theme::RAISED.gamma_multiply(0.6))
+                .corner_radius(theme::RADIUS)
+                .inner_margin(6.0)
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut module.on, RichText::new(module.kind.name()).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -219,8 +221,7 @@ impl ColourPanel {
                         );
                         module.mix = percent / 100.0;
                     });
-                },
-            );
+                });
         }
         if let Some((index, by)) = moved {
             edited.look.swap(index, (index as isize + by) as usize);

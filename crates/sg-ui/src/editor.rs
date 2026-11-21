@@ -513,7 +513,7 @@ impl Editor {
                 egui::Frame::new()
                     .fill(theme::RAISED)
                     .stroke(egui::Stroke::new(1.0, theme::LINE))
-                    .corner_radius(6.0)
+                    .corner_radius(theme::RADIUS)
                     .inner_margin(14.0)
                     .show(ui, |ui| {
                         ui.set_width(360.0);

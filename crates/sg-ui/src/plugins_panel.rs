@@ -109,7 +109,7 @@ impl PluginsPanel {
                 egui::Frame::new()
                     .fill(theme::RAISED)
                     .stroke(Stroke::new(1.0, theme::LINE))
-                    .corner_radius(6.0)
+                    .corner_radius(theme::RADIUS)
                     .inner_margin(14.0)
                     .show(ui, |ui| {
                         ui.set_width(620.0);
@@ -175,7 +175,7 @@ impl PluginsPanel {
                         }
                         if !self.log.is_empty() {
                             ui.add_space(6.0);
-                            egui::Frame::new().fill(theme::BG).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
+                            egui::Frame::new().fill(theme::BG).corner_radius(theme::RADIUS).inner_margin(8.0).show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 for line in &self.log {
                                     ui.label(RichText::new(line).monospace().size(11.0).color(theme::DIM));

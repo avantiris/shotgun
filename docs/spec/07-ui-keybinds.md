@@ -32,6 +32,20 @@ Editor layout (single window; panels resize but do not float or re-dock):
   Tracks never have to be made first: a drop makes the ones it needs.
   Dropping on the timeline imports and places it in one step.
 
+## The look (feedback N2.3, 2026-11-22; `PROPOSED`)
+
+Flat surfaces with hard edges, one set of rules in `sg-ui/src/theme.rs`:
+
+- A control is a dark face with a one-pixel border and corners of 1.5
+  points. Nothing is a pill, nothing has a gradient.
+- Pointing at a control lights its border and whitens its label; it does
+  not grow. Pressing fills it with the accent while held. What is on (a
+  chosen tab, a toggle) has a warm dark face.
+- Popovers and windows have corners of 3 points, the same border and a
+  short shadow. Hand-painted pieces (meters, pictures of the chain, clips'
+  marks) use the controls' radius.
+- Controls answer within 70 ms.
+
 ## Mouse
 
 | Action | Result |

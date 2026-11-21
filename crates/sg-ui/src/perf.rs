@@ -70,7 +70,7 @@ impl Perf {
                 egui::Frame::new()
                     .fill(theme::BG.gamma_multiply(0.92))
                     .stroke(egui::Stroke::new(1.0, theme::LINE))
-                    .corner_radius(4.0)
+                    .corner_radius(theme::RADIUS)
                     .inner_margin(8.0)
                     .show(ui, |ui| {
                         for line in lines {
