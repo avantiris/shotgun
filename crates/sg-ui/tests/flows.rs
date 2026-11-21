@@ -1365,24 +1365,24 @@ fn the_plugins_popover_lists_plugins_and_walks_through_the_native_instruments_se
 }
 
 #[test]
-fn a_plugin_is_put_on_a_track_from_its_mixer_strip() {
+fn plugins_are_put_on_a_track_from_its_mixer_strip_in_an_order() {
     use sg_project::plugins::{Format, NiState, Plugin};
     let mut harness = editor();
     click(&mut harness, "Mixer");
-    let plugin_of = |harness: &Harness<'_, App>| {
+    let plugins_of = |harness: &Harness<'_, App>| {
         let project = harness.state().shell.session().unwrap().project().clone();
         let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
-        (track.id, track.plugin.as_ref().map(|p| p.name.clone()))
+        (track.id, track.plugins.iter().map(|p| p.name.clone()).collect::<Vec<_>>())
     };
     // The strip's menu has the folders searched the first time it is opened.
     click(&mut harness, "Add plugin");
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::Plugins(sg_ui::PluginRequest::Scan))));
-    let found = vec![Plugin {
-        name: "Surge XT Effects".to_owned(),
-        path: "/lib/vst3/Surge XT Effects.vst3".into(),
+    let plugin = |name: &str| Plugin {
+        name: name.to_owned(),
+        path: format!("/lib/vst3/{name}.vst3").into(),
         format: Format::Vst3,
         bridged: false,
-    }];
+    };
     let ni = NiState {
         tools: true,
         prefix: "/x".into(),
@@ -1391,19 +1391,37 @@ fn a_plugin_is_put_on_a_track_from_its_mixer_strip() {
         installed: vec![],
         bridged: vec![],
     };
+    let found = vec![plugin("Surge XT Effects"), plugin("Wide")];
     harness.state_mut().shell.plugins_update(sg_ui::PluginUpdate::Found { plugins: found, ni });
     harness.run_steps(3);
     click(&mut harness, "Surge XT Effects");
-    let (track, name) = plugin_of(&harness);
-    assert_eq!(name.as_deref(), Some("Surge XT Effects"));
-    // Its window is asked for by the track it is on; "Off" takes it off again; undo brings it back.
-    click(&mut harness, "Window");
-    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::PluginEditor { track: t } if *t == track)));
-    click(&mut harness, "Off");
-    assert_eq!(plugin_of(&harness).1, None);
+    assert_eq!(plugins_of(&harness).1, ["Surge XT Effects"]);
+    // A second one comes after the first: the sound runs through them in this order.
+    click(&mut harness, "Add plugin");
+    click(&mut harness, "Wide");
+    let (track, names) = plugins_of(&harness);
+    assert_eq!(names, ["Surge XT Effects", "Wide"]);
+    // "Up" moves one earlier.
+    click(&mut harness, "Move Wide up");
+    assert_eq!(plugins_of(&harness).1, ["Wide", "Surge XT Effects"]);
+    // Its name shows its window: asked for by the track and by which of its plugins it is.
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let wide = project.sequences[0].track(track).unwrap().plugins[0].clone();
+    assert!(wide.id != 0);
+    click(&mut harness, "Wide");
+    assert!(
+        harness
+            .state()
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::PluginEditor { track: t, key } if *t == track && *key == wide.id))
+    );
+    // "Off" takes one off again; undo brings it back where it was.
+    click(&mut harness, "Take Wide off");
+    assert_eq!(plugins_of(&harness).1, ["Surge XT Effects"]);
     harness.key_press(Key::Z);
     harness.run_steps(3);
-    assert_eq!(plugin_of(&harness).1.as_deref(), Some("Surge XT Effects"));
+    assert_eq!(plugins_of(&harness).1, ["Wide", "Surge XT Effects"]);
 }
 
 #[test]

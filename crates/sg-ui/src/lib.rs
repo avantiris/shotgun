@@ -198,9 +198,10 @@ pub enum Command {
     StopRecording,
     /// The metronome on or off.
     Metronome(bool),
-    /// Show the window of the plugin on this track.
+    /// Show the window of a plugin on this track: the one the engine knows by `key`.
     PluginEditor {
         track: sg_core::TrackId,
+        key: u64,
     },
     /// Look for plugins, or run or stop a step of the Native Instruments
     /// set-up; answered with [`Shell::plugins_update`].
@@ -452,8 +453,8 @@ impl Shell {
                     self.plugins.open();
                     commands.push(Command::Plugins(PluginRequest::Scan));
                 }
-                if let Some(track) = self.editor.mixer.editor_request.take() {
-                    commands.push(Command::PluginEditor { track });
+                if let Some((track, key)) = self.editor.mixer.editor_request.take() {
+                    commands.push(Command::PluginEditor { track, key });
                 }
                 if let Some((track, style)) = self.editor.mixer.voice_request.take() {
                     commands.extend(Shell::measure_voice(
@@ -1055,16 +1056,27 @@ impl Shell {
                     let project = session.project().clone();
                     let found = project.sequences.first().and_then(|s| {
                         let track = s.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n)?;
-                        Some((s.id, track.id))
+                        Some((s.id, track.clone()))
                     });
                     match found {
-                        Some((_, track)) if path == "window" => commands.push(Command::PluginEditor { track }),
+                        // `window`: of the plugin added last.
+                        Some((_, track)) if path == "window" => {
+                            if let Some(last) = track.plugins.last() {
+                                commands.push(Command::PluginEditor { track: track.id, key: last.key(track.id) });
+                            }
+                        }
+                        // A path adds that plugin after those there are; an empty one takes all off.
                         Some((seq, track)) => {
                             let name =
                                 std::path::Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned());
-                            let plugin =
-                                name.filter(|_| !path.is_empty()).map(|name| sg_core::PluginRef { name, path });
-                            if let Err(e) = session.apply(Op::SetTrackPlugin { seq, track, plugin }, None) {
+                            let mut plugins = Vec::clone(&track.plugins);
+                            match name.filter(|_| !path.is_empty()) {
+                                Some(name) => {
+                                    plugins.push(sg_core::PluginRef { name, path, id: session.new_plugin_id() });
+                                }
+                                None => plugins.clear(),
+                            }
+                            if let Err(e) = session.apply(Op::SetTrackPlugins { seq, track: track.id, plugins }, None) {
                                 self.error = Some(e.to_string());
                             }
                         }

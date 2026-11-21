@@ -94,11 +94,19 @@ pub enum Op {
         id: SequenceId,
         db: f32,
     },
-    /// Puts a plugin on a track, changes it or takes it off.
+    /// Makes this the one plugin of a track, or takes all off. From before
+    /// a track could have several; still understood in journals.
     SetTrackPlugin {
         seq: SequenceId,
         track: TrackId,
         plugin: Option<crate::model::PluginRef>,
+    },
+    /// Sets the plugins of a track as a whole: adding, removing and
+    /// reordering are all this.
+    SetTrackPlugins {
+        seq: SequenceId,
+        track: TrackId,
+        plugins: Vec<crate::model::PluginRef>,
     },
     /// Sets the notes of a note clip as a whole (`None`: none recorded).
     SetClipNotes {
@@ -200,7 +208,7 @@ impl Op {
             Op::SetMasterGain { .. } => "adjust master",
             Op::SetTempo { .. } => "set tempo",
             Op::SetSpace { .. } => "set room and echo",
-            Op::SetTrackPlugin { .. } => "change plugin",
+            Op::SetTrackPlugin { .. } | Op::SetTrackPlugins { .. } => "change plugins",
             Op::SetClipNotes { .. } => "edit notes",
             Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
@@ -387,8 +395,8 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             if !track.mix.is_default() {
                 restore.push(Op::SetTrackMix { seq: *seq, track: track.id, mix: track.mix });
             }
-            if let Some(plugin) = &track.plugin {
-                restore.push(Op::SetTrackPlugin { seq: *seq, track: track.id, plugin: Some((**plugin).clone()) });
+            if !track.plugins.is_empty() {
+                restore.push(Op::SetTrackPlugins { seq: *seq, track: track.id, plugins: Vec::clone(&track.plugins) });
             }
             Ok(if restore.len() == 1 { restore.remove(0) } else { Op::Batch(restore) })
         }),
@@ -466,9 +474,24 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
         Op::SetTrackPlugin { seq, track, plugin } => with_sequence(p, *seq, |s| {
             let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
             let old = &s.tracks[index];
-            let before = old.plugin.as_ref().map(|p| (**p).clone());
-            s.tracks[index] = Arc::new(Track { plugin: plugin.clone().map(Arc::new), ..Track::clone(old) });
-            Ok(Op::SetTrackPlugin { seq: *seq, track: *track, plugin: before })
+            let before = Vec::clone(&old.plugins);
+            let plugins = Arc::new(plugin.iter().cloned().collect());
+            s.tracks[index] = Arc::new(Track { plugins, ..Track::clone(old) });
+            Ok(Op::SetTrackPlugins { seq: *seq, track: *track, plugins: before })
+        }),
+        Op::SetTrackPlugins { seq, track, plugins } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let before = Vec::clone(&old.plugins);
+            // (At most eight, and none twice under the same id.)
+            let mut kept: Vec<crate::model::PluginRef> = Vec::new();
+            for plugin in plugins.iter().take(8) {
+                if !kept.iter().any(|k| k.id == plugin.id) {
+                    kept.push(plugin.clone());
+                }
+            }
+            s.tracks[index] = Arc::new(Track { plugins: Arc::new(kept), ..Track::clone(old) });
+            Ok(Op::SetTrackPlugins { seq: *seq, track: *track, plugins: before })
         }),
         Op::SetClipNotes { seq, track, clip, notes } => with_sequence(p, *seq, |s| {
             let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
@@ -599,7 +622,7 @@ fn with_clips(
             clips,
             props: old.props.clone(),
             mix: old.mix,
-            plugin: old.plugin.clone(),
+            plugins: old.plugins.clone(),
             notes: old.notes.clone(),
         });
         Ok(inverse)
@@ -1053,12 +1076,23 @@ mod mix_tests {
         assert_eq!(p2.sequences[0].track(A1).unwrap().mix, mix);
         assert_eq!(apply(&p2, &undo).unwrap().0, p);
         // A plugin and the notes of a clip come and go the same way.
-        let surge = crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge XT.vst3".into() };
+        let surge = crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge XT.vst3".into(), id: 0 };
         let (plugged, unplug) =
             apply(&p2, &Op::SetTrackPlugin { seq: SEQ, track: A1, plugin: Some(surge.clone()) }).unwrap();
         let a1 = |p: &Project| p.sequences[0].tracks.iter().find(|t| t.id == A1).unwrap().clone();
-        assert_eq!(a1(&plugged).plugin.as_deref(), Some(&surge));
+        assert_eq!(*a1(&plugged).plugins, std::slice::from_ref(&surge));
         assert_eq!(apply(&plugged, &unplug).unwrap().0, p2);
+        // Several on a track, in an order; the same id is not taken twice.
+        let named = |name: &str, id| crate::model::PluginRef { name: name.into(), path: format!("/{name}.vst3"), id };
+        let chain = vec![named("Synth", 7), named("Squash", 8), named("Squash again", 8), named("Wide", 9)];
+        let (chained, unchain) = apply(&plugged, &Op::SetTrackPlugins { seq: SEQ, track: A1, plugins: chain }).unwrap();
+        let names: Vec<String> = a1(&chained).plugins.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, ["Synth", "Squash", "Wide"]);
+        assert_eq!(apply(&chained, &unchain).unwrap().0, plugged);
+        // Each has a file of its own for its settings; the one from before keeps its old name.
+        assert_eq!(surge.state_file(A1), format!("{A1}.state"));
+        assert_eq!(named("Wide", 9).state_file(A1), format!("{A1}-0000000000000009.state"));
+        assert_eq!((surge.key(A1), named("Wide", 9).key(A1)), (A1.0, 9));
         let note = |start, pitch| crate::model::Note { start, len: 480, pitch, velocity: 100 };
         let played = vec![note(960, 64), note(0, 60), note(0, 55), note(-5, 60)];
         let set = Op::SetClipNotes { seq: SEQ, track: A1, clip: ClipId(77), notes: Some(played) };

@@ -35,7 +35,7 @@ pub struct Mixer {
     /// The plugins popover should open (to install some); taken by the shell.
     pub popover_request: bool,
     /// The window of this track's plugin should be shown; taken by the shell.
-    pub editor_request: Option<sg_core::TrackId>,
+    pub editor_request: Option<(sg_core::TrackId, u64)>,
 }
 
 /// Settings to start from (feedback F4.3): low cut, noise reduction,
@@ -302,65 +302,82 @@ impl Mixer {
                             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Voice"));
                             response.on_hover_text("Set this strip up for a recorded voice by listening to it");
                         });
-                        // The track's plugin: an effect after the stages of this strip, or an instrument.
-                        ui.label(RichText::new("Plugin").size(10.5).color(theme::DIM));
-                        let mut plugin: Option<Option<sg_core::PluginRef>> = None;
+                        // The track's plugins: effects after the stages of this strip, in
+                        // their order, and an instrument that plays its note clips.
+                        ui.label(RichText::new("Plugins").size(10.5).color(theme::DIM));
+                        let mut plugins: Option<Vec<sg_core::PluginRef>> = None;
                         ui.scope(|ui| {
                             ui.spacing_mut().button_padding = vec2(5.0, 3.0);
-                            match &track.plugin {
-                                Some(on) => {
-                                    ui.label(RichText::new(&on.name).size(11.0));
-                                    ui.horizontal(|ui| {
-                                        let window = ui.button(RichText::new("Window").size(10.5));
-                                        if window.on_hover_text("Shows the plugin's own window").clicked() {
-                                            self.editor_request = Some(track.id);
-                                        }
-                                        let off = ui.button(RichText::new("Off").size(10.5));
-                                        if off.on_hover_text("Takes the plugin off this track").clicked() {
-                                            plugin = Some(None);
-                                        }
-                                    });
+                            for (place, on) in track.plugins.iter().enumerate() {
+                                let name = egui::Button::new(RichText::new(&on.name).size(11.0)).truncate();
+                                let shown = ui.add_sized(vec2(STRIP_W - 8.0, 20.0), name);
+                                if shown.on_hover_text(format!("{}: shows its own window", on.name)).clicked() {
+                                    self.editor_request = Some((track.id, on.key(track.id)));
                                 }
-                                None => {
-                                    let text = RichText::new("Add plugin").size(10.5);
-                                    let button = egui::Button::new(text).min_size(vec2(STRIP_W - 8.0, 20.0));
-                                    let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                                        match &self.available {
-                                            None => {
-                                                self.scan_request = true;
-                                                ui.label(RichText::new("Looking for plugins...").color(theme::DIM));
-                                            }
-                                            Some(found) => {
-                                                for (name, path) in found {
-                                                    if ui.button(name).on_hover_text(path).clicked() {
-                                                        plugin = Some(Some(sg_core::PluginRef {
-                                                            name: name.clone(),
-                                                            path: path.clone(),
-                                                        }));
-                                                        ui.close();
-                                                    }
-                                                }
-                                                if found.is_empty() {
-                                                    ui.label(RichText::new("No plugins were found.").color(theme::DIM));
-                                                }
-                                                ui.separator();
-                                            }
-                                        }
-                                        if ui.button("Install Native Instruments, find plugins...").clicked() {
-                                            self.popover_request = true;
-                                            ui.close();
-                                        }
+                                ui.horizontal(|ui| {
+                                    let earlier = ui.add_enabled(place > 0, egui::Button::new(RichText::new("Up").size(10.0)));
+                                    earlier.widget_info(|| {
+                                        egui::WidgetInfo::labeled(egui::Role::Button, place > 0, format!("Move {} up", on.name))
                                     });
-                                    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add plugin"));
-                                    response.on_hover_text(
-                                        "An effect the track's sound runs through, or an instrument that plays the notes \
-                                         of its note clips (right click on the track in the timeline to add one).",
-                                    );
-                                }
+                                    if earlier.on_hover_text("The sound runs through this one earlier").clicked() {
+                                        let mut list = Vec::clone(&track.plugins);
+                                        list.swap(place, place - 1);
+                                        plugins = Some(list);
+                                    }
+                                    let off = ui.button(RichText::new("Off").size(10.0));
+                                    off.widget_info(|| {
+                                        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Take {} off", on.name))
+                                    });
+                                    if off.on_hover_text("Takes the plugin off this track").clicked() {
+                                        let mut list = Vec::clone(&track.plugins);
+                                        list.remove(place);
+                                        plugins = Some(list);
+                                    }
+                                });
+                            }
+                            if track.plugins.len() < 8 {
+                                let text = RichText::new("Add plugin").size(10.5);
+                                let button = egui::Button::new(text).min_size(vec2(STRIP_W - 8.0, 20.0));
+                                let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                                    match &self.available {
+                                        None => {
+                                            self.scan_request = true;
+                                            ui.label(RichText::new("Looking for plugins...").color(theme::DIM));
+                                        }
+                                        Some(found) => {
+                                            for (name, path) in found {
+                                                if ui.button(name).on_hover_text(path).clicked() {
+                                                    let mut list = Vec::clone(&track.plugins);
+                                                    list.push(sg_core::PluginRef {
+                                                        name: name.clone(),
+                                                        path: path.clone(),
+                                                        id: session.new_plugin_id(),
+                                                    });
+                                                    plugins = Some(list);
+                                                    ui.close();
+                                                }
+                                            }
+                                            if found.is_empty() {
+                                                ui.label(RichText::new("No plugins were found.").color(theme::DIM));
+                                            }
+                                            ui.separator();
+                                        }
+                                    }
+                                    if ui.button("Install Native Instruments, find plugins...").clicked() {
+                                        self.popover_request = true;
+                                        ui.close();
+                                    }
+                                });
+                                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add plugin"));
+                                response.on_hover_text(
+                                    "An effect the track's sound runs through (several run one after the other), or an \
+                                     instrument that plays the notes of its note clips (right click on the track in \
+                                     the timeline to add one).",
+                                );
                             }
                         });
-                        if let Some(plugin) = plugin {
-                            ops.push(Op::SetTrackPlugin { seq: sequence.id, track: track.id, plugin });
+                        if let Some(plugins) = plugins {
+                            ops.push(Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins });
                         }
                         if let Some(db) = fader(ui, self.levels[index], mix.gain_db) {
                             mix.gain_db = db;

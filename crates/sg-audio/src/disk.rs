@@ -157,8 +157,8 @@ struct Feed {
     live: Arc<Live>,
     /// How far this feed is ducked right now, in decibels (0 or below).
     ducked_db: f32,
-    /// The key of the track's plugin, if it runs.
-    plugin: Option<u64>,
+    /// The keys of the track's plugins that run, in the order of the track.
+    plugins: Vec<u64>,
     /// The track has a plugin that is still starting.
     awaiting: bool,
     /// Played by hand: a short ring, and keys that wait for the next block.
@@ -232,7 +232,7 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
         && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
             // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
             x.clips == y.clips
-                && x.plugin == y.plugin
+                && x.plugins == y.plugins
                 && x.notes == y.notes
                 && x.unheard == y.unheard
                 && x.by_hand == y.by_hand
@@ -263,7 +263,7 @@ impl Disk {
     /// names. Each starts on a thread of its own, gets its state from its
     /// file there and joins the sound when it is ready ([`Control::Loaded`]).
     fn sync_plugins(&mut self) {
-        let wanted: Vec<crate::PluginSpec> = self.mix.tracks.iter().filter_map(|t| t.plugin.clone()).collect();
+        let wanted: Vec<crate::PluginSpec> = self.mix.tracks.iter().flat_map(|t| t.plugins.iter().cloned()).collect();
         let still = |key: &u64, path: &PathBuf| wanted.iter().any(|w| w.key == *key && w.path == *path);
         self.plugins.retain(|key, (spec, _)| still(key, &spec.path));
         self.loading.retain(|key, path| still(key, path));
@@ -318,17 +318,22 @@ impl Disk {
         }
     }
 
-    /// Runs feed `index`'s plugin over `block`, which starts at timeline
-    /// sample `start`, with the notes that begin or end inside it. Without
-    /// a plugin the built-in instrument plays them.
-    fn run_plugin(&mut self, index: usize, start: i64, block: &mut [f32], timeline: bool) {
+    /// Says once that a plugin has stopped working.
+    fn mourn(shared: &Shared, name: &str) {
+        let mut news = shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner);
+        news.push(format!(
+            "{name} stopped working. Its track plays without it; take it off the track and put it on again to restart it."
+        ));
+    }
+
+    /// Plays the notes of feed `index` into `block`, which starts at
+    /// timeline sample `start`: those that begin or end inside it, and the
+    /// keys played by hand. Through the track's instrument plugin, or the
+    /// built-in instrument when it has none.
+    fn run_instrument(&mut self, index: usize, start: i64, block: &mut [f32], timeline: bool) {
         let feed = &mut self.feeds[index];
         // (Without the timeline, while nothing plays, only the keys played by hand sound.)
         let end = if timeline { start + (block.len() / 2) as i64 } else { start };
-        let plugin = feed.plugin.and_then(|key| self.plugins.get_mut(&key));
-        if plugin.is_none() && feed.note_ons.is_empty() && !feed.by_hand {
-            return;
-        }
         self.events.clear();
         // Keys played by hand since the last block: now.
         self.events.append(&mut feed.pending);
@@ -342,9 +347,11 @@ impl Disk {
         }
         // (A note that ends where the next of its pitch begins: the end first.)
         self.events.sort_by_key(|e| (e.offset, e.on));
-        let Some((_, client)) = plugin else {
+        let instrument =
+            feed.plugins.iter().copied().find(|key| self.plugins.get(key).is_some_and(|(_, c)| c.loaded.instrument));
+        let Some((_, client)) = instrument.and_then(|key| self.plugins.get_mut(&key)) else {
             if feed.awaiting {
-                // Its instrument is still starting: not the built-in one in its place.
+                // Its instrument may still be starting: not the built-in one in its place.
                 return;
             }
             let events: Vec<(u32, bool, u8, u8)> =
@@ -354,26 +361,34 @@ impl Disk {
         };
         let was_dead = client.is_dead();
         if !client.process(block, &self.events) && !was_dead {
-            let mut news = self.shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner);
-            news.push(format!(
-                "{} stopped working. Its track plays without it; take it off the track and put it on again to restart it.",
-                client.loaded.name
-            ));
+            Disk::mourn(&self.shared, &client.loaded.name);
+        }
+    }
+
+    /// Runs `block` through the effect plugins of feed `index`, in their order.
+    fn run_effects(&mut self, index: usize, block: &mut [f32]) {
+        for n in 0..self.feeds[index].plugins.len() {
+            let key = self.feeds[index].plugins[n];
+            let Some((_, client)) = self.plugins.get_mut(&key).filter(|(_, c)| !c.loaded.instrument) else { continue };
+            let was_dead = client.is_dead();
+            if !client.process(block, &[]) && !was_dead {
+                Disk::mourn(&self.shared, &client.loaded.name);
+            }
         }
     }
 
     /// Whether the feed's notes are played before its own stages: by an
-    /// instrument plugin, or by the built-in instrument when it has no plugin.
+    /// instrument plugin, or by the built-in instrument when it has none.
     fn is_instrument(&self, index: usize) -> bool {
-        match self.feeds[index].plugin.and_then(|key| self.plugins.get(&key)) {
-            Some((_, client)) => client.loaded.instrument,
-            None => !self.feeds[index].note_ons.is_empty() || self.feeds[index].by_hand,
-        }
+        let feed = &self.feeds[index];
+        feed.plugins.iter().any(|key| self.plugins.get(key).is_some_and(|(_, c)| c.loaded.instrument))
+            || !feed.note_ons.is_empty()
+            || feed.by_hand
     }
 
     /// Lays the clips of feed `index` into `block` (interleaved stereo)
     /// from timeline sample `start` and runs the track's clean-up over it.
-    /// An instrument plays before the clean-up, an effect plugin after it;
+    /// An instrument plays before the clean-up, effect plugins after it;
     /// `warm` (running the clean-up in before playback) leaves plugins out.
     fn render(&mut self, index: usize, start: i64, block: &mut Vec<f32>, frames: usize, warm: bool) {
         let end = start + frames as i64;
@@ -395,14 +410,13 @@ impl Disk {
             }
             i += 1;
         }
-        let instrument = self.is_instrument(index);
-        if instrument && !warm {
-            self.run_plugin(index, start, block, true);
+        if self.is_instrument(index) && !warm {
+            self.run_instrument(index, start, block, true);
         }
         let feed = &mut self.feeds[index];
         feed.fx.process(block, feed.low_cut_hz, feed.denoise, &feed.tone);
-        if !instrument && !warm {
-            self.run_plugin(index, start, block, true);
+        if !warm {
+            self.run_effects(index, block);
         }
         self.raw = raw;
     }
@@ -484,10 +498,12 @@ impl Disk {
             block.resize(frames * 2, 0.0);
             if self.is_instrument(index) {
                 let at = self.feeds[index].next;
-                self.run_plugin(index, at, &mut block, false);
+                self.run_instrument(index, at, &mut block, false);
             }
             let feed = &mut self.feeds[index];
             feed.fx.process(&mut block, feed.low_cut_hz, feed.denoise, &feed.tone);
+            self.run_effects(index, &mut block);
+            let feed = &mut self.feeds[index];
             if let Ok(mut chunk) = feed.producer.write_chunk(frames * 2) {
                 let (a, b) = chunk.as_mut_slices();
                 a.copy_from_slice(&block[..a.len()]);
@@ -544,8 +560,8 @@ impl Disk {
                 tone: track.tone,
                 live,
                 ducked_db: 0.0,
-                plugin: track.plugin.as_ref().map(|p| p.key).filter(|key| self.plugins.contains_key(key)),
-                awaiting: track.plugin.as_ref().is_some_and(|p| self.loading.contains_key(&p.key)),
+                plugins: track.plugins.iter().map(|p| p.key).filter(|key| self.plugins.contains_key(key)).collect(),
+                awaiting: track.plugins.iter().any(|p| self.loading.contains_key(&p.key)),
                 by_hand: track.by_hand,
                 pending: Vec::new(),
                 note_ons: track.notes.iter().map(|n| (n.start, n.pitch, n.velocity)).collect(),

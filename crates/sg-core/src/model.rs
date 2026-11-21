@@ -123,9 +123,11 @@ pub struct Track {
     pub props: Arc<BTreeMap<ClipId, Arc<ClipProps>>>,
     /// Mixer settings (audio tracks).
     pub mix: TrackSettings,
-    /// The plugin on this track (audio tracks): an effect its sound runs
-    /// through, or an instrument that plays the track's note clips.
-    pub plugin: Option<Arc<PluginRef>>,
+    /// The plugins on this track (audio tracks), in the order its sound
+    /// runs through them. An instrument among them plays the notes of the
+    /// track's note clips, before the strip's own stages; the others are
+    /// effects after them.
+    pub plugins: Arc<Vec<PluginRef>>,
     /// The notes of the note clips (clips without an asset on an audio
     /// track), by clip id; like `props`, an entry may outlive its clip.
     pub notes: Arc<BTreeMap<ClipId, Arc<Vec<Note>>>>,
@@ -138,6 +140,27 @@ pub struct Track {
 pub struct PluginRef {
     pub name: String,
     pub path: String,
+    /// Tells the plugins of a track apart (the same one can be on it
+    /// twice) and names the file its settings are kept in. 0: the only
+    /// plugin of a track written before a track could have several.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub id: u64,
+}
+
+fn is_zero(id: &u64) -> bool {
+    *id == 0
+}
+
+impl PluginRef {
+    /// What its running instance is known by in the engine.
+    pub fn key(&self, track: TrackId) -> u64 {
+        if self.id == 0 { track.0 } else { self.id }
+    }
+
+    /// The file in the project's `plugins` folder its settings are kept in.
+    pub fn state_file(&self, track: TrackId) -> String {
+        if self.id == 0 { format!("{track}.state") } else { format!("{track}-{:016x}.state", self.id) }
+    }
 }
 
 /// Ticks to a beat: note positions are whole numbers of these, so that
@@ -242,7 +265,7 @@ impl From<TrackHeader> for Track {
             clips: ClipStore::new(),
             props: Arc::default(),
             mix: TrackSettings::default(),
-            plugin: None,
+            plugins: Arc::default(),
             notes: Arc::default(),
         }
     }

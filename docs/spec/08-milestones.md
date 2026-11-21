@@ -463,10 +463,19 @@ chain second version, M16 mixing and mastering.
     written into the clip at tick 1910 for a key pressed one second
     after the start (1920), 0 xruns and underruns. Not checked: how the
     delay feels under the fingers, and a slow plugin on the short buffer.
+  - Several plugins on a track (2026-11-21): up to eight, in an order
+    ("Up" moves one earlier, its name shows its window, "Off" takes it
+    off). The sound runs through the effects in that order after the
+    strip's own stages; an instrument among them plays the notes,
+    wherever it stands in the list. `Op::SetTrackPlugins` sets the list
+    as a whole (the older `SetTrackPlugin` is still read from journals);
+    each plugin has an id, and its settings a file of its own
+    (`plugins/<track>-<id>.state`). Checked: a flow, and in the app a
+    note clip through Surge XT (CLAP, instrument) and Surge XT Effects
+    (VST3) on one track into an export, with both state files written.
   - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
     as VST3 or CLAP too); a MIDI keyboard as input; copy and paste of
-    notes; plugin parameters as keyframes; more than one plugin per
-    track.
+    notes; plugin parameters as keyframes.
   - Slow and hung plugins (2026-11-21): a plugin starts on a thread of
     its own and joins the sound when it is ready (a sample library takes
     its time; the other tracks play meanwhile, and an export waits for
@@ -536,6 +545,7 @@ chain second version, M16 mixing and mastering.
     Checked with ffmpeg's meter on a reference vocal (-20.4 LUFS, peaks at
     full scale): to -14 it comes out at -14.1 LUFS, to -9 at -9.4 LUFS,
     both with a true peak of -1.2 dB (before: -10.4 LUFS and -0.9 dB).
-  - Still to do: group buses; an insert chain that can be reordered; a
+  - Still to do: group buses; the strip's own stages in another order
+    (plugins on a track can be reordered, M14); a
     loudness target far above the mix is reached only as far as the
     limiter allows (the result shows what was reached).

@@ -1030,12 +1030,16 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 voice: track.mix.voice,
                 duck_db: track.mix.duck_db,
             },
-            plugin: track.plugin.as_ref().map(|plugin| sg_audio::PluginSpec {
-                key: track.id.0,
-                path: std::path::PathBuf::from(&plugin.path),
-                // In the bundle: a plugin's settings travel with the project.
-                state_file: root.join("plugins").join(format!("{}.state", track.id)),
-            }),
+            plugins: track
+                .plugins
+                .iter()
+                .map(|plugin| sg_audio::PluginSpec {
+                    key: plugin.key(track.id),
+                    path: std::path::PathBuf::from(&plugin.path),
+                    // In the bundle: a plugin's settings travel with the project.
+                    state_file: root.join("plugins").join(plugin.state_file(track.id)),
+                })
+                .collect(),
             notes: track_notes(sequence, track),
             unheard: false,
             by_hand: false,

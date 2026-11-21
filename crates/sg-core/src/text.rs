@@ -217,8 +217,8 @@ fn write_sequence(seq: &Sequence) -> String {
         if !track.mix.is_default() {
             let _ = writeln!(out, "mix {}", serde_json::to_string(&track.mix).unwrap_or_default());
         }
-        if let Some(plugin) = &track.plugin {
-            let _ = writeln!(out, "plugin {}", serde_json::to_string(&**plugin).unwrap_or_default());
+        for plugin in track.plugins.iter() {
+            let _ = writeln!(out, "plugin {}", serde_json::to_string(plugin).unwrap_or_default());
         }
         for c in track.clips.iter() {
             let _ = writeln!(out, "clip {} {} {} {} {}", c.id, c.asset, c.start, c.len, c.src_in);
@@ -283,7 +283,8 @@ fn parse_sequence(file: &str, text: &str) -> Result<Sequence, TextError> {
                 let (track, _) = current.as_mut().ok_or_else(|| err(n, "plugin before any track"))?;
                 let plugin: crate::model::PluginRef =
                     serde_json::from_str(rest).map_err(|e| err(n, &format!("bad plugin: {e}")))?;
-                track.plugin = Some(Arc::new(plugin));
+                // (One line each, in the order the sound runs through them.)
+                Arc::make_mut(&mut track.plugins).push(plugin);
             }
             "notes" => {
                 let (track, _) = current.as_mut().ok_or_else(|| err(n, "notes before any track"))?;
@@ -505,8 +506,10 @@ mod tests {
         let space =
             crate::model::Space { room_ds: 32, echo_note: crate::model::EchoNote::DottedEighth, echo_repeat: 55 };
         let (p, _) = apply(&p, &Op::SetSpace { id: SEQ, space }).unwrap();
-        let surge = crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge \"XT\".vst3".into() };
-        let (p, _) = apply(&p, &Op::SetTrackPlugin { seq: SEQ, track: A1, plugin: Some(surge) }).unwrap();
+        let surge =
+            crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge \"XT\".vst3".into(), id: 0 };
+        let wide = crate::model::PluginRef { name: "Wide".into(), path: "/lib/clap/Wide.clap".into(), id: 0xBEEF };
+        let (p, _) = apply(&p, &Op::SetTrackPlugins { seq: SEQ, track: A1, plugins: vec![surge, wide] }).unwrap();
         let notes = vec![
             crate::model::Note { start: 0, len: 480, pitch: 60, velocity: 100 },
             crate::model::Note { start: 960, len: 240, pitch: 67, velocity: 64 },

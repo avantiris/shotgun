@@ -211,6 +211,11 @@ impl Session {
 }
 
 impl Session {
+    /// An id for a plugin put on a track.
+    pub fn new_plugin_id(&mut self) -> u64 {
+        self.ids.next_u64()
+    }
+
     pub fn new_track_id(&mut self) -> sg_core::TrackId {
         self.ids.track()
     }

@@ -608,7 +608,7 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     // One note from 0.5 s to 1.0 s.
     let note = sg_audio::NoteSpan { start: 24_000, len: 24_000, pitch: 60, velocity: 100 };
     let mix = Mix {
-        tracks: vec![TrackMix { plugin: Some(spec), notes: vec![note], ..track(Vec::new()) }],
+        tracks: vec![TrackMix { plugins: vec![spec], notes: vec![note], ..track(Vec::new()) }],
         master_gain: 1.0,
         ..Mix::default()
     };
@@ -639,7 +639,7 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     // A plugin that is not there is said so, and the track is silent rather than broken.
     let missing = sg_audio::PluginSpec { key: 2, path: dir.path().join("nothing.vst3"), state_file };
     engine.set_mix(Mix {
-        tracks: vec![TrackMix { plugin: Some(missing), notes: vec![note], ..track(Vec::new()) }],
+        tracks: vec![TrackMix { plugins: vec![missing], notes: vec![note], ..track(Vec::new()) }],
         master_gain: 1.0,
         ..Mix::default()
     });

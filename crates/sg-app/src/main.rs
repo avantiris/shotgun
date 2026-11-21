@@ -277,7 +277,7 @@ impl App {
                     let Some(gfx) = &self.gfx else { continue };
                     // The export runs plugins of its own, set as the ones that are heard now.
                     let plugged =
-                        project.sequences.first().is_some_and(|s| s.tracks.iter().any(|t| t.plugin.is_some()));
+                        project.sequences.first().is_some_and(|s| s.tracks.iter().any(|t| !t.plugins.is_empty()));
                     if let (true, Some(player)) = (plugged, &self.player) {
                         player.save_plugins();
                     }
@@ -590,9 +590,9 @@ impl App {
                         player.pause();
                     }
                 }
-                Command::PluginEditor { track } => {
+                Command::PluginEditor { key, .. } => {
                     if let Some(player) = &self.player {
-                        player.open_plugin_editor(track.0);
+                        player.open_plugin_editor(key);
                     }
                 }
                 Command::Plugins(request) => {

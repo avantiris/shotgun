@@ -89,9 +89,9 @@ pub struct TrackMix {
     pub tone: Tone,
     /// Noise reduction: the share of the treated sound, 0 (off) to 1.
     pub denoise: f32,
-    /// The plugin on the track: an effect after the track's own stages,
-    /// or an instrument before them, playing `notes`.
-    pub plugin: Option<PluginSpec>,
+    /// The plugins on the track, in order: effects after the track's own
+    /// stages, and at most one instrument before them, playing `notes`.
+    pub plugins: Vec<PluginSpec>,
     /// Sorted by start.
     pub notes: Vec<NoteSpan>,
     /// Worked out as always (a voice still ducks the others) but not
@@ -110,7 +110,7 @@ pub struct TrackMix {
 /// A plugin to run for a track, in a process of its own (crate `sg-plug`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginSpec {
-    /// Which track it belongs to: the same key keeps the same running plugin.
+    /// Which plugin of which track it is: the same key keeps the same running plugin.
     pub key: u64,
     /// The plugin's bundle on this machine.
     pub path: PathBuf,
@@ -494,7 +494,7 @@ impl TrackMix {
             low_cut_hz: 0.0,
             denoise: 0.0,
             tone: Tone::default(),
-            plugin: None,
+            plugins: Vec::new(),
             notes: Vec::new(),
             unheard: false,
             reverb: 0.0,
