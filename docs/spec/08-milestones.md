@@ -484,6 +484,12 @@ chain second version, M16 mixing and mastering.
     (`plugins/<track>-<id>.state`). Checked: a flow, and in the app a
     note clip through Surge XT (CLAP, instrument) and Surge XT Effects
     (VST3) on one track into an export, with both state files written.
+  - What a plugin is told (2026-11-21): the song's tempo and where on
+    the timeline its next block starts (so that what it syncs to the
+    tempo, arpeggios, delays, loops, falls on the song's bars; four-four
+    time is assumed), and that it is playing. Of a VST3 plugin's buses
+    only the first of each kind is used; the others (a sampler's separate
+    outputs, a sidechain input) are switched off explicitly.
   - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
     as VST3 or CLAP too); a MIDI keyboard as input; copy and paste of
     notes; plugin parameters as keyframes.

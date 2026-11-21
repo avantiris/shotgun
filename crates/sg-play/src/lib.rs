@@ -1057,6 +1057,7 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
         tracks,
         master_gain: db(sequence.master_db),
         echo_samples: (beat * num as u64 / den as u64) as u32,
+        bpm: sequence.tempo.map_or(120.0, sg_core::Tempo::bpm),
         room_seconds: sequence.space.room_ds as f32 / 10.0,
         echo_repeat: sequence.space.echo_repeat as f32 / 100.0,
         click: None,

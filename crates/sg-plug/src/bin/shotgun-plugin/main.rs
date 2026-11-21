@@ -47,6 +47,9 @@ trait Hosted {
     /// Interleaved stereo in place; notes as (frame, on, pitch, velocity).
     fn process(&mut self, sound: &mut [f32], notes: &[(u32, bool, u8, u8)]) -> bool;
     fn reset(&mut self);
+    /// The tempo of the song in beats per minute, and the timeline
+    /// sample the next block starts at.
+    fn set_tempo(&mut self, bpm: f64, position: i64);
     fn state(&mut self) -> Vec<u8>;
     fn set_state(&mut self, state: &[u8]) -> bool;
     fn open_editor(&mut self) -> Result<(), String>;
@@ -337,6 +340,8 @@ struct Plugin {
     has_editor: bool,
     /// Frames processed so far, for the plugin's clock.
     clock: i64,
+    /// The tempo the plugin is told, in beats per minute.
+    bpm: f64,
     held: Vec<u8>,
     buffers: [Vec<f32>; 4],
 }
@@ -422,8 +427,11 @@ impl Plugin {
             };
             processor.setupProcessing(&mut setup);
             for (media, direction) in [(kAudio, kInput), (kAudio, kOutput), (kEvent, kInput)] {
-                if buses(media, direction) > 0 {
-                    component.activateBus(media as i32, direction as i32, 0, 1);
+                // The first bus of each kind is used; the others (the many
+                // separate outputs of a sampler, a sidechain input) are
+                // switched off, so that the plugin expects no buffers for them.
+                for bus in 0..buses(media, direction) {
+                    component.activateBus(media as i32, direction as i32, bus, (bus == 0) as u8);
                 }
             }
             component.setActive(1);
@@ -452,6 +460,7 @@ impl Plugin {
                 instrument: says_instrument.unwrap_or(takes_notes && inputs == 0),
                 has_editor,
                 clock: 0,
+                bpm: 120.0,
                 held: Vec::new(),
                 buffers: std::array::from_fn(|_| vec![0.0; MAX_FRAMES]),
             };
@@ -574,9 +583,17 @@ impl Plugin {
             outputs.numChannels = self.outputs;
             outputs.__field0.channelBuffers32 = out_channels.as_mut_ptr();
             let mut context: ProcessContext = std::mem::zeroed();
+            // What tempo-synced parts of a plugin go by: it plays, at this
+            // tempo, in four-four time, this many quarter notes in.
+            context.state = ProcessContext_::StatesAndFlags_::kPlaying
+                | ProcessContext_::StatesAndFlags_::kTempoValid
+                | ProcessContext_::StatesAndFlags_::kTimeSigValid
+                | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid;
             context.sampleRate = SAMPLE_RATE;
             context.projectTimeSamples = self.clock;
-            context.tempo = 120.0;
+            context.projectTimeMusic = self.clock as f64 / SAMPLE_RATE * self.bpm / 60.0;
+            context.tempo = self.bpm;
+            (context.timeSigNumerator, context.timeSigDenominator) = (4, 4);
             let mut data: ProcessData = std::mem::zeroed();
             data.processMode = kRealtime as i32;
             data.symbolicSampleSize = kSample32 as i32;
@@ -748,6 +765,10 @@ impl Hosted for Plugin {
         Plugin::reset(self);
     }
 
+    fn set_tempo(&mut self, bpm: f64, position: i64) {
+        (self.bpm, self.clock) = (bpm, position);
+    }
+
     fn state(&mut self) -> Vec<u8> {
         Plugin::state(self)
     }
@@ -867,6 +888,17 @@ fn main() -> std::io::Result<()> {
             tag::RESET => {
                 if let Some(plugin) = &mut plugin {
                     plugin.reset();
+                }
+                to.write_all(&[1])?;
+            }
+            tag::TEMPO => {
+                let mut raw = [0u8; 8];
+                from.read_exact(&mut raw)?;
+                let bpm = f64::from_le_bytes(raw);
+                from.read_exact(&mut raw)?;
+                let position = i64::from_le_bytes(raw);
+                if let (Some(plugin), true) = (&mut plugin, bpm.is_finite() && bpm > 0.0) {
+                    plugin.set_tempo(bpm, position);
                 }
                 to.write_all(&[1])?;
             }

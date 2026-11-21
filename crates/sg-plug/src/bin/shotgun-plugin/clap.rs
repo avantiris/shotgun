@@ -14,8 +14,10 @@ use std::time::{Duration, Instant};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, clap_event_header, clap_event_note,
-    clap_input_events, clap_output_events,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_TRANSPORT,
+    CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
+    CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_PLAYING, clap_event_header, clap_event_note,
+    clap_event_transport, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::audio_ports::{CLAP_EXT_AUDIO_PORTS, clap_audio_port_info, clap_plugin_audio_ports};
 use clap_sys::ext::gui::{
@@ -27,6 +29,7 @@ use clap_sys::ext::posix_fd_support::{
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_host_state, clap_plugin_state};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support, clap_plugin_timer_support};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
+use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
@@ -243,6 +246,8 @@ pub struct ClapPlugin {
     inputs: Ports,
     outputs: Ports,
     clock: i64,
+    /// The tempo the plugin is told, in beats per minute.
+    bpm: f64,
     held: Vec<u8>,
     events: Vec<clap_event_note>,
 }
@@ -345,6 +350,7 @@ impl ClapPlugin {
                 inputs: Ports::new(&[]),
                 outputs: Ports::new(&[]),
                 clock: 0,
+                bpm: 120.0,
                 held: Vec::new(),
                 events: Vec::new(),
             };
@@ -425,10 +431,40 @@ impl Hosted for ClapPlugin {
         let input =
             clap_input_events { ctx: (&raw mut self.events).cast(), size: Some(events_size), get: Some(events_get) };
         let output = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(events_push) };
+        // What tempo-synced parts of a plugin go by: it plays, at this
+        // tempo, in four-four time, this far in.
+        let seconds = self.clock as f64 / SAMPLE_RATE;
+        let beats = seconds * self.bpm / 60.0;
+        let transport = clap_event_transport {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_transport>() as u32,
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_TRANSPORT,
+                flags: 0,
+            },
+            flags: CLAP_TRANSPORT_HAS_TEMPO
+                | CLAP_TRANSPORT_HAS_BEATS_TIMELINE
+                | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE
+                | CLAP_TRANSPORT_HAS_TIME_SIGNATURE
+                | CLAP_TRANSPORT_IS_PLAYING,
+            song_pos_beats: (beats * CLAP_BEATTIME_FACTOR as f64) as i64,
+            song_pos_seconds: (seconds * CLAP_SECTIME_FACTOR as f64) as i64,
+            tempo: self.bpm,
+            tempo_inc: 0.0,
+            loop_start_beats: 0,
+            loop_end_beats: 0,
+            loop_start_seconds: 0,
+            loop_end_seconds: 0,
+            bar_start: ((beats / 4.0).floor() * 4.0 * CLAP_BEATTIME_FACTOR as f64) as i64,
+            bar_number: (beats / 4.0).floor() as i32,
+            tsig_num: 4,
+            tsig_denom: 4,
+        };
         let call = clap_process {
             steady_time: self.clock,
             frames_count: frames as u32,
-            transport: std::ptr::null(),
+            transport: &raw const transport,
             audio_inputs: self.inputs.buffers.as_ptr(),
             audio_outputs: self.outputs.buffers.as_mut_ptr(),
             audio_inputs_count: self.inputs.buffers.len() as u32,
@@ -454,6 +490,10 @@ impl Hosted for ClapPlugin {
             *frame = [left[n], right[n]];
         }
         true
+    }
+
+    fn set_tempo(&mut self, bpm: f64, position: i64) {
+        (self.bpm, self.clock) = (bpm, position);
     }
 
     fn reset(&mut self) {

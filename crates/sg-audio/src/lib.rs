@@ -135,6 +135,9 @@ pub struct Mix {
     pub master_gain: f32,
     /// Samples between the repeats of the shared echo (a beat of the song).
     pub echo_samples: u32,
+    /// The tempo of the song in beats per minute, which plugins are told
+    /// (120 without one).
+    pub bpm: f64,
     /// How long the shared room rings, in seconds, and how much of each
     /// repeat of the shared echo is repeated again (0 to 0.9).
     pub room_seconds: f32,
@@ -153,6 +156,7 @@ impl Default for Mix {
             tracks: Vec::new(),
             master_gain: 1.0,
             echo_samples: SAMPLE_RATE * 3 / 8,
+            bpm: 120.0,
             room_seconds: space::ROOM_SECONDS,
             echo_repeat: space::ECHO_REPEAT,
             click: None,

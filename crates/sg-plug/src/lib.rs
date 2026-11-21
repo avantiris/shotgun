@@ -25,6 +25,9 @@ pub mod tag {
     pub const SET_STATE: u8 = b'S';
     pub const EDITOR_OPEN: u8 = b'E';
     pub const EDITOR_CLOSE: u8 = b'e';
+    /// The tempo of the song, beats per minute as eight bytes of a float,
+    /// then the timeline sample the next block starts at, eight bytes.
+    pub const TEMPO: u8 = b'T';
     pub const QUIT: u8 = b'Q';
 }
 
@@ -347,6 +350,25 @@ impl Client {
             read_flag(&mut self.from)
         })();
         self.gone(result)
+    }
+
+    /// Tells the plugin the tempo of the song: what its tempo-synced
+    /// parts (arpeggios, delays, loops) go by.
+    /// `position`: the timeline sample its next block starts at, so that
+    /// what it counts in bars falls on the song's bars.
+    pub fn set_tempo(&mut self, bpm: f64, position: i64) {
+        if self.dead {
+            return;
+        }
+        self.allow(self.patience.block);
+        let result = (|| {
+            self.to.write_all(&[tag::TEMPO])?;
+            self.to.write_all(&bpm.to_le_bytes())?;
+            self.to.write_all(&position.to_le_bytes())?;
+            self.to.flush()?;
+            read_flag(&mut self.from)
+        })();
+        self.gone(result);
     }
 
     /// Silences what is sounding (a jump on the timeline).

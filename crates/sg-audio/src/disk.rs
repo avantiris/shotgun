@@ -228,6 +228,7 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
     a.tracks.len() == b.tracks.len()
         && a.click == b.click
         && a.echo_samples == b.echo_samples
+        && a.bpm == b.bpm
         && a.true_peak_db == b.true_peak_db
         && a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
             // (Noise reduction and pitch correction each delay the stream: switching one needs a new graph.)
@@ -535,6 +536,8 @@ impl Disk {
         // What the plugins were sounding belongs to the place playback left.
         for (_, client) in self.plugins.values_mut() {
             client.reset();
+            // Where the song is and how fast: what the plugin's own sense of bars goes by.
+            client.set_tempo(self.mix.bpm, pos);
         }
         // (Positions start anew: what was heard of the voices before does not apply.)
         self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
@@ -736,7 +739,8 @@ impl Disk {
                 if self.loading.get(&spec.key) == Some(&spec.path) {
                     self.loading.remove(&spec.key);
                     match client {
-                        Some(client) => {
+                        Some(mut client) => {
+                            client.set_tempo(self.mix.bpm, self.built_at);
                             self.plugins.insert(spec.key, (spec, *client));
                         }
                         None => {

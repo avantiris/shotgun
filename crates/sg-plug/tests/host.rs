@@ -52,6 +52,9 @@ fn instrument(name: &str) {
     let mut long = vec![0.0f32; 2 * 20_000];
     assert!(plugin.process(&mut long, &[]));
     assert!(level(&long[2 * 15_000..]) > -40.0);
+    // It is told the tempo and where the song is, and goes on as before.
+    plugin.set_tempo(93.5, 480_000);
+    assert!(plugin.process(&mut long, &[]) && !plugin.is_dead());
     // A jump on the timeline ends what sounds.
     plugin.reset();
     let mut tail = vec![0.0f32; 2 * 96_000];
