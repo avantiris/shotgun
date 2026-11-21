@@ -889,6 +889,11 @@ impl App {
             limiting_db: player.take_limiting(),
             loudness: player.loudness(),
             input_level: player.take_input_level(),
+            stages: {
+                let mut stages = vec![[0.0; 3]; sg_play::MAX_METERS];
+                player.stages(&mut stages);
+                stages
+            },
             meters: self.meters.clone(),
             angles,
         }

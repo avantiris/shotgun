@@ -874,3 +874,51 @@ fn a_monitored_input_is_measured_and_heard_a_few_milliseconds_late() {
     }
     result.unwrap();
 }
+
+#[test]
+fn what_the_compressor_takes_off_is_read_when_its_stretch_is_heard() {
+    let dir = tempfile::tempdir().unwrap();
+    // Quiet for a second (-40 dB), then loud (-6 dB) for a second.
+    let path =
+        wav(dir.path(), "steps.wav", 1, 96_000, |n, _| (if n < 48_000 { 0.01 } else { 0.5 }) * (n as f32 * 0.1).sin());
+    let span = ClipSpan {
+        start: 0,
+        len: 96_000,
+        src_in: 0,
+        wav: path,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+        warp: Vec::new(),
+    };
+    let squeezed = TrackMix {
+        tone: sg_audio::Tone { threshold_db: -20.0, ratio: 4.0, ..sg_audio::Tone::default() },
+        ..track(vec![span.clone()])
+    };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(Mix { tracks: vec![squeezed, track(vec![span])], ..Mix::default() });
+    engine.play(0);
+    let mut stages = [[0.0f32; 3]; 2];
+    let mut play = |frames: usize| {
+        for _ in 0..frames / 480 {
+            engine.settle();
+            pull(&engine, 480);
+        }
+        engine.meters().stages(&mut stages);
+        stages
+    };
+    // The loud second is long since worked out (the stages run half a second
+    // ahead), but while the quiet one is heard nothing is shown.
+    let quiet = play(24_000);
+    assert_eq!(quiet, [[0.0; 3]; 2]);
+    // In the loud second: 14 dB over the threshold at 4 : 1 is 10.5 dB off, on the squeezed track only.
+    let loud = play(48_000);
+    assert!((-11.5..=-9.5).contains(&loud[0][1]), "{loud:?}");
+    assert_eq!((loud[0][0], loud[0][2], loud[1]), (0.0, 0.0, [0.0; 3]));
+    // Paused, nothing is at work.
+    engine.pause();
+    engine.meters().stages(&mut stages);
+    assert_eq!(stages, [[0.0; 3]; 2]);
+}

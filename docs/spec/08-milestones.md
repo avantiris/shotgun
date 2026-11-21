@@ -370,8 +370,17 @@ chain second version, M16 mixing and mastering.
     within a hundredth and comes back; in the app a real rap vocal over a
     music clip was listened to, set up and exported. Not checked: anything
     by ear.
-  - Still to do for M12: listening again by itself when the takes change;
-    a meter that shows what each stage is doing.
+  - What the stages do (2026-11-21): under the de-esser, the compressor
+    and the ducking field of a strip, while it plays, the decibels that
+    stage takes off right now. The stages work half a second before
+    their sound is heard, so each reading is kept with its place on the
+    timeline and shown when that place is heard
+    (`sg_audio::Meters::stages`). Checked by an engine test (nothing
+    shown during a quiet second although the loud one after it is
+    already worked out; 10.5 dB shown in the loud one, as threshold and
+    ratio give). Not shown yet: noise reduction, the leveller and the
+    pitch correction.
+  - Still to do for M12: listening again by itself when the takes change.
 - [ ] M13 Recording
   - Built 2026-11-20: Shift+R or "Record sound" above the timeline plays
     from the playhead and records the default input (`SHOTGUN_AUDIO_IN`

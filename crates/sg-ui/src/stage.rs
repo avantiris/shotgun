@@ -22,6 +22,9 @@ pub struct ViewerState {
     pub loudness: f32,
     /// Peak level of the monitored input since the last frame (linear).
     pub input_level: f32,
+    /// What de-esser, compressor and ducking take off each audio track
+    /// right now, in decibels (0 or below).
+    pub stages: Vec<[f32; 3]>,
     /// The camera angles side by side, while the sequence has camera tracks.
     pub angles: Option<AnglesView>,
     /// Lines for the performance overlay.

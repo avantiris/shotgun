@@ -21,6 +21,8 @@ pub struct Mixer {
     levels: Vec<f32>,
     master: f32,
     limiting: f32,
+    /// What the stages of each track take off, held a little so that it can be read.
+    stages: Vec<[f32; 3]>,
     /// Undo group of the drag in progress: one drag of a fader is one step.
     group: Option<u64>,
     /// A track whose voice should be listened to and set up, for a style
@@ -240,6 +242,12 @@ impl Mixer {
             *shown = if view.playing { fresh.max(*shown * 0.86) } else { 0.0 };
         }
         self.master = if view.playing { view.master_meter.max(self.master * 0.86) } else { 0.0 };
+        // The strongest of the last moments, easing back: a reduction of a few milliseconds can be seen.
+        self.stages.resize(tracks.len(), [0.0; 3]);
+        for (index, shown) in self.stages.iter_mut().enumerate() {
+            let fresh = view.stages.get(index).copied().unwrap_or([0.0; 3]);
+            *shown = [0, 1, 2].map(|n| if view.playing { fresh[n].min(shown[n] * 0.9) } else { 0.0 });
+        }
         if !ui.input(|i| i.pointer.any_down()) {
             self.group = None;
         }
@@ -395,6 +403,12 @@ impl Mixer {
                             ui.label(RichText::new(label).size(10.5).color(theme::DIM));
                             ui.add_sized([88.0, 20.0], widget).on_hover_text(tip);
                         };
+                        // Under a stage's field while it plays: what the stage takes off right now.
+                        let working = |ui: &mut egui::Ui, stage: usize| {
+                            let db = self.stages.get(index).map_or(0.0, |s| s[stage]);
+                            let text = if db < -0.2 { format!("{db:.1} dB now") } else { String::new() };
+                            ui.label(RichText::new(text).monospace().size(9.5).color(theme::ACCENT));
+                        };
                         field(
                             ui,
                             "Pan",
@@ -449,6 +463,7 @@ impl Mixer {
                                  whatever the level of the recording; vowels keep their brightness.",
                             );
                             mix.deess = sharp / 100.0;
+                            working(ui, 0);
                             // Pitch correction: how much, the key, and how hard.
                             ui.add_space(4.0);
                             let mut tune = mix.tune * 100.0;
@@ -523,6 +538,7 @@ impl Mixer {
                                 "How far this track goes down while a voice track sounds, so that the voice has room. \
                                  0 is off; 2 to 4 dB is usual for the beat.",
                             );
+                            working(ui, 2);
                         }
                         ui.add_space(4.0);
                         for (name, value, tip) in [
@@ -547,6 +563,7 @@ impl Mixer {
                             egui::DragValue::new(&mut mix.comp_threshold_db).range(-60.0..=0.0).speed(0.2).fixed_decimals(1).suffix(" dB"),
                             "Parts louder than this are turned down. 0 is off; -18 dB evens out a voice.",
                         );
+                        working(ui, 1);
                         field(
                             ui,
                             "Ratio",

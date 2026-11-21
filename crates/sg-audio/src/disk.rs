@@ -473,6 +473,9 @@ impl Disk {
             self.feeds[index].ducked_db = ducked;
         }
         let feed = &mut self.feeds[index];
+        // What the stages did here, for when this stretch is heard.
+        let work = [feed.fx.work[0], feed.fx.work[1], feed.ducked_db];
+        self.shared.note_stages(index, at, frames, work);
         if let Ok(mut chunk) = feed.producer.write_chunk(frames * 2) {
             let (a, b) = chunk.as_mut_slices();
             a.copy_from_slice(&block[..a.len()]);

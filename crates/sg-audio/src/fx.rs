@@ -229,6 +229,8 @@ struct DeEsser {
     whole: f32,
     /// The reduction in force, in decibels (0 or below).
     gain_db: f32,
+    /// The strongest reduction of the last block, in decibels (0 or below).
+    most_db: f32,
     /// What turns the top down: a shelf whose depth follows `gain_db`.
     shelf: Band,
 }
@@ -237,7 +239,7 @@ impl DeEsser {
     fn new() -> DeEsser {
         let mut split = [HighPass::default(); 2];
         split.iter_mut().for_each(|f| f.set_at(SIBILANT_HZ));
-        DeEsser { split, high: 0.0, whole: 0.0, gain_db: 0.0, shelf: Band::default() }
+        DeEsser { split, high: 0.0, whole: 0.0, gain_db: 0.0, most_db: 0.0, shelf: Band::default() }
     }
 
     fn process(&mut self, block: &mut [f32], amount: f32) {
@@ -246,6 +248,7 @@ impl DeEsser {
         // the reduction comes on within two and lets go within sixty.
         let (rise, fall) = (1.0 - (-1.0 / (0.001 * rate)).exp(), 1.0 - (-1.0 / (0.03 * rate)).exp());
         let (on, off) = (1.0 - (-1.0 / (0.002 * rate)).exp(), 1.0 - (-1.0 / (0.06 * rate)).exp());
+        self.most_db = 0.0;
         for (n, frame) in block.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let top = [self.split[0].run(frame[0]), self.split[1].run(frame[1])];
             let (h, w) = ((top[0] + top[1]).abs() * 0.5, (frame[0] + frame[1]).abs() * 0.5);
@@ -257,6 +260,7 @@ impl DeEsser {
             let sharp = ((share - 0.35) / 0.3).clamp(0.0, 1.0);
             let wanted = -DEESS_MOST_DB * amount * sharp;
             self.gain_db += if wanted < self.gain_db { on } else { off } * (wanted - self.gain_db);
+            self.most_db = self.most_db.min(self.gain_db);
             // The shelf follows in steps of a third of a millisecond. It
             // runs all the time, at 0 dB between the S sounds, so that it
             // comes in without a click.
@@ -282,6 +286,9 @@ pub struct TrackFx {
     /// The leveller's view of the phrase (fast) and of the track (slow), in decibels.
     phrase_db: f32,
     average_db: f32,
+    /// What the stages did to the last block: the strongest reduction of
+    /// the de-esser and of the compressor, in decibels (0 or below).
+    pub work: [f32; 2],
 }
 
 impl TrackFx {
@@ -299,6 +306,7 @@ impl TrackFx {
             corrector: tune.then(crate::tune::PitchCorrector::new),
             phrase_db: -120.0,
             average_db: -120.0,
+            work: [0.0; 2],
         }
     }
 
@@ -344,8 +352,10 @@ impl TrackFx {
         }
         // After the equaliser (which may have added air and with it S), before
         // the compressor (which would otherwise pump on every S).
+        self.work = [0.0; 2];
         if tone.deess > 0.0 {
             self.deesser.process(block, tone.deess.clamp(0.0, 1.0));
+            self.work[0] = self.deesser.most_db;
         }
         if tone.threshold_db < 0.0 {
             // Level follower: up within about 5 ms, down within about 120 ms.
@@ -358,6 +368,7 @@ impl TrackFx {
                 self.level_db += toward * (peak_db - self.level_db);
                 // Both channels by the same amount: the stereo picture stays.
                 let over = (self.level_db - tone.threshold_db).max(0.0);
+                self.work[1] = self.work[1].min(-over * slope);
                 let gain = 10f32.powf(-over * slope / 20.0);
                 frame[0] *= gain;
                 frame[1] *= gain;

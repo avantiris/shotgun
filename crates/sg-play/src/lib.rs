@@ -319,6 +319,12 @@ impl Player {
         self.send(Command::Monitor(input));
     }
 
+    /// What the de-esser, the compressor and the ducking of each audio
+    /// track do to what is heard right now, in decibels (0 or below).
+    pub fn stages(&self, tracks: &mut [[f32; 3]]) {
+        self.meters.stages(tracks);
+    }
+
     /// Peak level of the monitored input since the last call (linear).
     pub fn take_input_level(&self) -> f32 {
         self.meters.take_input()

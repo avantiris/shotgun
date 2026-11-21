@@ -256,6 +256,55 @@ pub(crate) struct Shared {
     pub(crate) monitor_heard: AtomicBool,
     /// Peak level of the input since it was last read (f32 bits).
     pub(crate) input_meter: AtomicU32,
+    /// What the stages of each track did, along the timeline: they work
+    /// half a second before their sound is heard, so each stretch of
+    /// [`STAGE_STEP`] samples has a slot, read when its turn to be heard
+    /// comes. A slot holds which stretch it is (upper half) and the
+    /// reductions of de-esser, compressor and ducking in eighths of a
+    /// decibel, a byte each.
+    pub(crate) stages: Stages,
+}
+
+/// The slots of the stage readings: [`STAGE_SLOTS`] for each of [`MAX_METERS`] tracks.
+pub(crate) struct Stages(Box<[AtomicU64]>);
+
+impl Default for Stages {
+    fn default() -> Stages {
+        Stages((0..MAX_METERS * STAGE_SLOTS).map(|_| AtomicU64::new(0)).collect())
+    }
+}
+
+impl Stages {
+    /// The slot of `track` for the stretch `step`; `None` beyond the tracks that have meters.
+    fn slot(&self, track: usize, step: i64) -> Option<&AtomicU64> {
+        (track < MAX_METERS).then(|| &self.0[track * STAGE_SLOTS + step.rem_euclid(STAGE_SLOTS as i64) as usize])
+    }
+}
+
+/// Samples per slot of the stage readings (43 ms), and how many slots a
+/// track has (2.7 s: more than the half second the stages run ahead).
+pub(crate) const STAGE_STEP: i64 = 2048;
+pub(crate) const STAGE_SLOTS: usize = 64;
+
+impl Shared {
+    /// Notes what the stages of `track` did to the block of `frames`
+    /// frames at timeline sample `start`: decibels of reduction, 0 or below.
+    pub(crate) fn note_stages(&self, track: usize, start: i64, frames: usize, db: [f32; 3]) {
+        let byte = |db: f32| ((-db).clamp(0.0, 31.0) * 8.0) as u64;
+        let values = byte(db[0]) | byte(db[1]) << 8 | byte(db[2]) << 16;
+        let (first, last) = (start.div_euclid(STAGE_STEP), (start + frames as i64 - 1).div_euclid(STAGE_STEP));
+        for step in first..=last {
+            let Some(slot) = self.stages.slot(track, step) else { return };
+            let now = slot.load(Ordering::Relaxed);
+            // A stretch two blocks touched keeps the stronger reading of each stage.
+            let merged = if now >> 32 == step as u32 as u64 {
+                (0..3).fold(0, |all, n| all | ((now >> (8 * n)) & 255).max((values >> (8 * n)) & 255) << (8 * n))
+            } else {
+                values
+            };
+            slot.store((step as u32 as u64) << 32 | merged, Ordering::Relaxed);
+        }
+    }
 }
 
 impl Drop for Shared {
@@ -543,6 +592,19 @@ impl Meters {
             *out = f32::from_bits(meter.swap(0, Ordering::Relaxed));
         }
         f32::from_bits(self.shared.master_meter.swap(0, Ordering::Relaxed))
+    }
+
+    /// What the de-esser, the compressor and the ducking of each track
+    /// are doing to what is heard right now: decibels of reduction (0 or
+    /// below) per track into `tracks`. All zero while nothing plays.
+    pub fn stages(&self, tracks: &mut [[f32; 3]]) {
+        let playing = self.shared.running.load(Ordering::Relaxed);
+        let step = heard(&self.shared).div_euclid(STAGE_STEP);
+        for (track, out) in tracks.iter_mut().enumerate() {
+            let slot = self.shared.stages.slot(track, step).map_or(0, |slot| slot.load(Ordering::Relaxed));
+            let fresh = playing && slot >> 32 == step as u32 as u64;
+            *out = [0, 1, 2].map(|n| if fresh { -(((slot >> (8 * n)) & 255) as f32) / 8.0 } else { 0.0 });
+        }
     }
 
     /// Peak level of the monitored input since the last call (linear).
