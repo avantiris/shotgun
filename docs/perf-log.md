@@ -459,6 +459,9 @@ stand-in keyboard; ffmpeg's `ebur128=peak=true` on exported files.
 | Sampler: a 110 Hz recording from its root key and an octave above, exported | 110 Hz, 220 Hz | | pass |
 | Full-quality frame after a seek, 4K60 HEVC, 1 s GOP | p95 334 ms | 150 ms p95 | MISS (as before, unchanged) |
 | UI frame, 10 to 500 000 clips (`scripts/bench-m4.sh`, at c795d48, load average 7) | p99 0.5 to 3.9 ms | 6.9 ms p99 | pass |
+| Start to the library frame (`scripts/bench-m1.sh`, at 4642688, with MIDI and RTKit asked at start) | median 146 ms, max 161 ms | 300 ms | pass |
+| Open a 50 000-clip project to the editor frame | median 122 ms | 500 ms | pass |
+| Film exports (`scripts/bench-m6.sh`): 1080p60 master / 4K60 master | 2.27x / 0.67x realtime, files probe as before | | |
 
 Afterwards (same night): the feeding thread asks RTKit for nice -11,
 and a mistake was found that explains part of the above: since 815cd3e

@@ -420,6 +420,13 @@ impl Shell {
         self.error.as_deref()
     }
 
+    /// Something worth saying that is not an error: shown where the project's notices are.
+    pub fn notify(&mut self, text: String) {
+        if let Some(session) = &mut self.session {
+            session.notice = Some(text);
+        }
+    }
+
     pub fn report_error(&mut self, error: String) {
         self.library.pending = None;
         self.error = Some(error);

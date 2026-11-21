@@ -595,6 +595,10 @@ chain second version, M16 mixing and mastering.
     open) is ended like one that crashed: its track plays without it and
     the program says so. Checked with a stand-in host that loads and then
     never answers (`crates/sg-plug/tests/hang.rs`).
+  - A Windows plugin says that it is starting (2026-11-21): put on a
+    track, a bridged plugin starts Wine first; the bar at the bottom says
+    so at once and says when it is ready (also for any plugin that took
+    more than 1.5 s), so that the silence is not taken for a fault.
   - When the set-up goes wrong (2026-11-21): everything its steps print
     is kept in `native-instruments-setup.log` in the library (the panel
     shows the last lines and says where the file is), and "Check and

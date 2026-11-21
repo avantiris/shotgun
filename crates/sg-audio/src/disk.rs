@@ -368,12 +368,32 @@ impl Disk {
                 shared.plugin_news.lock().unwrap_or_else(PoisonError::into_inner).push(text);
             };
             let load = move || {
+                // A Windows plugin behind the bridge starts Wine first, which takes
+                // a while: said at once, so that the silence is not taken for a fault.
+                // ("Note:" marks what is news and not an error.)
+                let name = spec.path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let began = Instant::now();
+                if spec.path.components().any(|c| c.as_os_str() == "yabridge") {
+                    say(
+                        &shared,
+                        format!(
+                            "Note: {name} is starting. A Windows plugin takes a moment; its track is silent until then."
+                        ),
+                    );
+                }
                 let client = match sg_plug::Client::start(&spec.path) {
                     Ok(mut client) => {
                         if let Ok(state) = std::fs::read(&spec.state_file)
                             && !client.set_state(&state)
                         {
                             say(&shared, format!("{} did not take its saved settings.", client.loaded.name));
+                        }
+                        if began.elapsed() > Duration::from_millis(1500) {
+                            let seconds = began.elapsed().as_secs_f32();
+                            say(
+                                &shared,
+                                format!("Note: {} is ready (it took {seconds:.0} s to start).", client.loaded.name),
+                            );
                         }
                         Some(Box::new(client))
                     }

@@ -826,6 +826,8 @@ impl App {
         for news in player.take_plugin_news() {
             if news.starts_with("Cannot record") || news.starts_with("The recording") {
                 self.shell.recording_failed(news);
+            } else if let Some(note) = news.strip_prefix("Note: ") {
+                self.shell.notify(note.to_owned());
             } else {
                 self.shell.report_error(news);
             }
