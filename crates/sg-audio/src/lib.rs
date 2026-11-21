@@ -21,6 +21,7 @@ pub mod loudness;
 mod null;
 mod pw;
 pub mod record;
+mod sampler;
 pub mod space;
 mod synth;
 pub mod tune;
@@ -94,6 +95,9 @@ pub struct TrackMix {
     pub plugins: Vec<PluginSpec>,
     /// Sorted by start.
     pub notes: Vec<NoteSpan>,
+    /// What the built-in instrument plays the notes with when the track
+    /// has no instrument plugin: a recording, or (`None`) its own tone.
+    pub sampler: Option<SamplerSpec>,
     /// Worked out as always (a voice still ducks the others) but not
     /// heard: how one track is exported alone, sounding as it does in the mix.
     pub unheard: bool,
@@ -105,6 +109,17 @@ pub struct TrackMix {
     /// milliseconds ahead instead of half a second, so that a note is
     /// heard when its key is pressed, and it sounds while nothing plays.
     pub by_hand: bool,
+}
+
+/// A recording for the built-in sampler of a track.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SamplerSpec {
+    /// A conformed WAV file (48 kHz float), as clips play.
+    pub wav: PathBuf,
+    /// The key at which it plays as it is.
+    pub root: u8,
+    /// Every note plays it to its end.
+    pub one_shot: bool,
 }
 
 /// A plugin to run for a track, in a process of its own (crate `sg-plug`).
@@ -548,6 +563,7 @@ impl TrackMix {
             denoise: 0.0,
             tone: Tone::default(),
             plugins: Vec::new(),
+            sampler: None,
             notes: Vec::new(),
             unheard: false,
             reverb: 0.0,

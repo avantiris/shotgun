@@ -513,6 +513,21 @@ chain second version, M16 mixing and mastering.
     and the velocity field act on them. Ctrl+C and Ctrl+V put them
     again after themselves, by the whole beats they span (a bar repeats
     as a bar; again, and it repeats once more); Ctrl+X cuts.
+  - Built-in sampler (2026-11-21): on a track with notes the strip says
+    what plays them when no instrument plugin does, "Instrument": the
+    synthesiser, or a recording of the project, played as recorded at
+    one key (middle C unless changed) and higher or lower at the others
+    (`sg_audio::sampler`: up to 16 voices, the first half minute of the
+    recording held in memory, straight-line interpolation). "To its end"
+    makes every note play the whole recording (drums, hits; set by
+    itself for recordings under 1.5 s), otherwise the sound ends with
+    the note. `Op::SetTrackSampler`, a `sampler` line in the `.sg` file.
+    Checked: unit and engine tests on a recording that says where it is
+    (as recorded at the root key, twice as fast an octave up), a flow,
+    and in the app a 110 Hz note exported at 110 Hz from the root key
+    and at 220 Hz from the key an octave above. Not built: several
+    recordings on one track (a drum kit with a pad per key), loop
+    points, and pitching without changing the length.
   - Still to do: LV2 (not built: what exists as LV2 on Linux mostly exists
     as VST3 or CLAP too); a MIDI keyboard as input; plugin parameters
     as keyframes.

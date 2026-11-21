@@ -1967,3 +1967,34 @@ fn a_strip_set_up_by_listening_listens_again_when_another_take_is_on_its_track()
     click(&mut harness, "Listen again");
     assert_eq!(asked(&harness).len(), 3);
 }
+
+#[test]
+fn the_notes_of_a_track_are_given_a_recording_to_play() {
+    let mut harness = editor();
+    let sampler = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().sampler
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    // A track with notes says on its strip what plays them: the synthesiser until told otherwise.
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Instrument: Synthesiser");
+    // The recordings of the project are offered (the one in the menu comes after the one in the asset panel).
+    harness.get_all_by_label("second take").last().unwrap().click();
+    harness.run_steps(3);
+    // Ten seconds long: held as long as the key, at middle C as recorded.
+    assert_eq!(sampler(&harness), Some(sg_core::Sampler { asset: AssetId(2), root: 60, one_shot: false }));
+    assert!(harness.query_by_label("Instrument: second take").is_some());
+    click(&mut harness, "To its end");
+    assert_eq!(sampler(&harness).map(|s| s.one_shot), Some(true));
+    // Undo, twice: the synthesiser again.
+    harness.key_press(Key::Z);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(sampler(&harness), None);
+    assert_eq!(harness.state().shell.error_shown(), None);
+}

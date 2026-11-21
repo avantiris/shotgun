@@ -274,6 +274,9 @@ pub enum DevStep {
     NoteClip(usize, i64),
     /// A note in the newest note clip of the n-th audio track: pitch, start and length in ticks.
     Note(usize, u8, i64, i64),
+    /// The built-in instrument of the n-th audio track plays the selected
+    /// asset's sound, as recorded at this key.
+    Sampler(usize, u8),
     /// A key of the open piano roll's instrument going down (true) or up, as if played by hand.
     Hand(u8, bool),
     /// Switch the piano roll's "Record" (what is played is written into the clip).
@@ -1046,6 +1049,27 @@ impl Shell {
             }
             DevStep::Hand(pitch, on) => self.editor.piano.play(pitch, on),
             DevStep::RecordNotes => self.editor.piano.toggle_record(),
+            DevStep::Sampler(n, root) => {
+                if let Some(session) = &mut self.session {
+                    let project = session.project().clone();
+                    let track = project.sequences.first().and_then(|s| {
+                        let track = s.tracks.iter().filter(|t| t.kind == sg_core::TrackKind::Audio).nth(n)?;
+                        Some((s.id, track.id))
+                    });
+                    let asset = self.editor.assets.selected.and_then(|id| project.assets.get(&id).cloned());
+                    match (track, asset) {
+                        (Some((seq, track)), Some(asset)) => {
+                            let seconds =
+                                asset.audio.as_ref().map_or(0.0, |i| i.samples as f64 / i.sample_rate.max(1) as f64);
+                            let sampler = Some(sg_core::Sampler { asset: asset.id, root, one_shot: seconds < 1.5 });
+                            if let Err(e) = session.apply(Op::SetTrackSampler { seq, track, sampler }, None) {
+                                self.error = Some(e.to_string());
+                            }
+                        }
+                        _ => self.error = Some(format!("sampler: no audio track {n} or no asset selected")),
+                    }
+                }
+            }
             DevStep::Monitor(hear) => {
                 let flag = if hear { &mut self.editor.hear_input } else { &mut self.editor.monitor };
                 *flag = !*flag;

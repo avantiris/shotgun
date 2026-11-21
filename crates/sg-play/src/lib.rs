@@ -1047,6 +1047,11 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                 })
                 .collect(),
             notes: track_notes(sequence, track),
+            sampler: track.sampler.map(|sampler| sg_audio::SamplerSpec {
+                wav: cache::audio(root, sampler.asset),
+                root: sampler.root,
+                one_shot: sampler.one_shot,
+            }),
             unheard: false,
             by_hand: false,
             // (Squared: the lower half of the control is the useful, quiet part.)

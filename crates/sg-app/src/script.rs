@@ -102,6 +102,11 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
             Step::Dev(DevStep::Hand(pitch.parse()?, state == "on"))
         }
         "recordnotes" => Step::Dev(DevStep::RecordNotes),
+        // sampler:<audio track>:<root key> gives the track's notes the selected asset's sound to play.
+        "sampler" => {
+            let (track, root) = arg.split_once(':').ok_or_else(|| anyhow!("sampler needs <track>:<root key>"))?;
+            Step::Dev(DevStep::Sampler(track.parse()?, root.parse()?))
+        }
         // level opens (or closes) the input for its meter; hear adds it to what is heard.
         "level" => Step::Dev(DevStep::Monitor(false)),
         "hear" => Step::Dev(DevStep::Monitor(true)),

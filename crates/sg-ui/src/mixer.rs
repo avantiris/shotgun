@@ -419,6 +419,79 @@ impl Mixer {
                         if let Some(plugins) = plugins {
                             ops.push(Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins });
                         }
+                        // What plays the notes when no instrument plugin does: on tracks with notes only.
+                        if !track.notes.is_empty() || track.sampler.is_some() {
+                            let mut sampler = track.sampler;
+                            let project = session.project().clone();
+                            let name = |id: sg_core::AssetId| project.assets.get(&id).map(|a| a.label.clone());
+                            ui.label(RichText::new("Instrument").size(10.5).color(theme::DIM));
+                            ui.scope(|ui| {
+                                ui.spacing_mut().button_padding = vec2(5.0, 3.0);
+                                let current = match sampler {
+                                    None => "Synthesiser".to_owned(),
+                                    Some(s) => name(s.asset).unwrap_or_else(|| "(missing)".to_owned()),
+                                };
+                                let text = RichText::new(&current).size(10.5);
+                                let button = egui::Button::new(text).truncate().min_size(vec2(STRIP_W - 8.0, 20.0));
+                                let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                                    if ui.selectable_label(sampler.is_none(), "Synthesiser").clicked() {
+                                        sampler = None;
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    ui.label(RichText::new("Play a recording of the project:").color(theme::DIM));
+                                    let sounds = project.assets.values().filter(|a| a.audio.is_some()).take(200);
+                                    for asset in sounds {
+                                        let chosen = sampler.is_some_and(|s| s.asset == asset.id);
+                                        if ui.selectable_label(chosen, &asset.label).clicked() {
+                                            // A short one is a hit (a drum, a stab) that plays to its
+                                            // end; a long one is held as long as the key.
+                                            let seconds = asset
+                                                .audio
+                                                .as_ref()
+                                                .map_or(0.0, |i| i.samples as f64 / i.sample_rate.max(1) as f64);
+                                            sampler = Some(sg_core::Sampler {
+                                                asset: asset.id,
+                                                root: sampler.map_or(60, |s| s.root),
+                                                one_shot: seconds < 1.5,
+                                            });
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Instrument: {current}"))
+                                });
+                                response.on_hover_text(
+                                    "What plays this track's notes when no instrument plugin does: the built-in \
+                                     synthesiser, or a recording of the project played higher and lower with the key \
+                                     (a bass note, a drum hit).",
+                                );
+                            });
+                            if let Some(set) = &mut sampler {
+                                let mut root = set.root as i32;
+                                let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                                let key = egui::DragValue::new(&mut root)
+                                    .range(0..=127)
+                                    .speed(0.1)
+                                    .custom_formatter(|n, _| format!("{}{}", names[n as usize % 12], n as i32 / 12 - 1));
+                                ui.label(RichText::new("Plays as recorded at").size(10.5).color(theme::DIM));
+                                if ui
+                                    .add_sized([88.0, 20.0], key)
+                                    .on_hover_text("The key at which the recording sounds as it is; other keys play it higher or lower")
+                                    .changed()
+                                {
+                                    set.root = root.clamp(0, 127) as u8;
+                                }
+                                ui.checkbox(&mut set.one_shot, RichText::new("To its end").size(10.5)).on_hover_text(
+                                    "Every note plays the recording to its end, however short the note: for drums and hits. \
+                                     Off, the sound ends with the note.",
+                                );
+                            }
+                            if sampler != track.sampler {
+                                ops.push(Op::SetTrackSampler { seq: sequence.id, track: track.id, sampler });
+                            }
+                        }
                         if let Some(db) = fader(ui, self.levels[index], mix.gain_db) {
                             mix.gain_db = db;
                         }

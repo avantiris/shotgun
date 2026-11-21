@@ -108,6 +108,13 @@ pub enum Op {
         track: TrackId,
         plugins: Vec<crate::model::PluginRef>,
     },
+    /// Gives the built-in instrument of a track a recording to play, or
+    /// (`None`) its own tone back.
+    SetTrackSampler {
+        seq: SequenceId,
+        track: TrackId,
+        sampler: Option<crate::model::Sampler>,
+    },
     /// Sets the notes of a note clip as a whole (`None`: none recorded).
     SetClipNotes {
         seq: SequenceId,
@@ -209,6 +216,7 @@ impl Op {
             Op::SetTempo { .. } => "set tempo",
             Op::SetSpace { .. } => "set room and echo",
             Op::SetTrackPlugin { .. } | Op::SetTrackPlugins { .. } => "change plugins",
+            Op::SetTrackSampler { .. } => "change instrument",
             Op::SetClipNotes { .. } => "edit notes",
             Op::SetSequenceSize { .. } => "change frame size",
             Op::SetClipProps { .. } => "adjust clip",
@@ -398,6 +406,9 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             if !track.plugins.is_empty() {
                 restore.push(Op::SetTrackPlugins { seq: *seq, track: track.id, plugins: Vec::clone(&track.plugins) });
             }
+            if track.sampler.is_some() {
+                restore.push(Op::SetTrackSampler { seq: *seq, track: track.id, sampler: track.sampler });
+            }
             Ok(if restore.len() == 1 { restore.remove(0) } else { Op::Batch(restore) })
         }),
         Op::InsertClip { seq, track, clip } => with_clips(p, *seq, *track, |clips| {
@@ -478,6 +489,14 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             let plugins = Arc::new(plugin.iter().cloned().collect());
             s.tracks[index] = Arc::new(Track { plugins, ..Track::clone(old) });
             Ok(Op::SetTrackPlugins { seq: *seq, track: *track, plugins: before })
+        }),
+        Op::SetTrackSampler { seq, track, sampler } => with_sequence(p, *seq, |s| {
+            let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
+            let old = &s.tracks[index];
+            let before = old.sampler;
+            let sampler = sampler.map(|s| crate::model::Sampler { root: s.root.min(127), ..s });
+            s.tracks[index] = Arc::new(Track { sampler, ..Track::clone(old) });
+            Ok(Op::SetTrackSampler { seq: *seq, track: *track, sampler: before })
         }),
         Op::SetTrackPlugins { seq, track, plugins } => with_sequence(p, *seq, |s| {
             let index = s.tracks.iter().position(|t| t.id == *track).ok_or(OpError::NoTrack(*track))?;
@@ -623,6 +642,7 @@ fn with_clips(
             props: old.props.clone(),
             mix: old.mix,
             plugins: old.plugins.clone(),
+            sampler: old.sampler,
             notes: old.notes.clone(),
         });
         Ok(inverse)
@@ -1089,6 +1109,12 @@ mod mix_tests {
         let names: Vec<String> = a1(&chained).plugins.iter().map(|p| p.name.clone()).collect();
         assert_eq!(names, ["Synth", "Squash", "Wide"]);
         assert_eq!(apply(&chained, &unchain).unwrap().0, plugged);
+        // The built-in instrument is given a recording to play, and its own tone back.
+        let bass = crate::model::Sampler { asset: AssetId(5), root: 36, one_shot: true };
+        let (sampled, unsample) =
+            apply(&chained, &Op::SetTrackSampler { seq: SEQ, track: A1, sampler: Some(bass) }).unwrap();
+        assert_eq!(a1(&sampled).sampler, Some(bass));
+        assert_eq!(apply(&sampled, &unsample).unwrap().0, chained);
         // Each has a file of its own for its settings; the one from before keeps its old name.
         assert_eq!(surge.state_file(A1), format!("{A1}.state"));
         assert_eq!(named("Wide", 9).state_file(A1), format!("{A1}-0000000000000009.state"));

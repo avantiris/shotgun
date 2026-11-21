@@ -167,8 +167,10 @@ struct Feed {
     /// Note starts (sorted by time) and note ends (sorted by time): (sample, pitch, velocity).
     note_ons: Vec<(i64, u8, u8)>,
     note_offs: Vec<(i64, u8)>,
-    /// The built-in instrument, for notes on a track without a plugin.
+    /// The built-in instrument, for notes on a track without a plugin:
+    /// the sampler if the track has a recording for it, else the synthesiser.
     synth: crate::synth::Synth,
+    sampler: Option<crate::sampler::Sampler>,
 }
 
 struct Disk {
@@ -181,6 +183,8 @@ struct Disk {
     /// The room's seconds and the echo's repeat, read by the graph each block.
     space: Arc<[std::sync::atomic::AtomicU32; 2]>,
     files: HashMap<PathBuf, Option<Arc<Wav>>>,
+    /// Recordings held in memory for the samplers, as interleaved stereo.
+    samples: HashMap<PathBuf, Arc<Vec<f32>>>,
     playing: bool,
     /// Nothing plays, but a track is played by hand: its ring is kept
     /// filled and the device stays awake.
@@ -237,6 +241,7 @@ fn same_structure(a: &Mix, b: &Mix) -> bool {
                 && x.notes == y.notes
                 && x.unheard == y.unheard
                 && x.by_hand == y.by_hand
+                && x.sampler == y.sampler
                 // (The reverb and echo exist only while some track sends to them.)
                 && (x.reverb > 0.0 || x.echo > 0.0) == (y.reverb > 0.0 || y.echo > 0.0)
                 && (x.denoise > 0.0) == (y.denoise > 0.0)
@@ -258,6 +263,23 @@ impl Disk {
         };
         self.files.insert(path.to_owned(), opened.clone());
         opened
+    }
+
+    /// The recording at `path` as a sampler holds it: in memory, stereo,
+    /// its first half minute. `None` while it cannot be read (not conformed yet).
+    fn sample(&mut self, path: &Path) -> Option<Arc<Vec<f32>>> {
+        if let Some(known) = self.samples.get(path) {
+            return Some(known.clone());
+        }
+        let wav = self.wav(path)?;
+        let frames = (wav.frames.max(0) as usize).min(crate::sampler::MOST_FRAMES);
+        let mut sound = vec![0.0f32; frames * 2];
+        let mut raw = std::mem::take(&mut self.raw);
+        wav.mix_into(0, &mut sound, 1.0, &mut raw);
+        self.raw = raw;
+        let sound = Arc::new(sound);
+        self.samples.insert(path.to_owned(), sound.clone());
+        Some(sound)
     }
 
     /// Starts the plugins the mix asks for and ends those it no longer
@@ -357,7 +379,10 @@ impl Disk {
             }
             let events: Vec<(u32, bool, u8, u8)> =
                 self.events.iter().map(|e| (e.offset, e.on, e.pitch, e.velocity)).collect();
-            feed.synth.process(block, &events);
+            match &mut feed.sampler {
+                Some(sampler) => sampler.process(block, &events),
+                None => feed.synth.process(block, &events),
+            }
             return;
         };
         let was_dead = client.is_dead();
@@ -546,6 +571,18 @@ impl Disk {
         self.voice_level.iter_mut().for_each(|slot| *slot = (i64::MIN, 0.0));
         let hand = hand_frames(self.shared.quantum.load(Ordering::Relaxed));
         self.built_at = pos;
+        // The recordings the samplers play: read once, kept while a track names them.
+        let specs: Vec<Option<crate::SamplerSpec>> = self.mix.tracks.iter().map(|t| t.sampler.clone()).collect();
+        self.samples.retain(|path, _| specs.iter().flatten().any(|s| s.wav == *path));
+        let samplers: Vec<Option<crate::sampler::Sampler>> = specs
+            .iter()
+            .map(|spec| {
+                let spec = spec.as_ref()?;
+                let sound = self.sample(&spec.wav)?;
+                Some(crate::sampler::Sampler::new(sound, spec.root, spec.one_shot))
+            })
+            .collect();
+        let mut samplers = samplers.into_iter();
         for track in &self.mix.tracks {
             let (producer, ring) = rtrb::RingBuffer::new(if track.by_hand { hand } else { RING_FRAMES } * 2);
             let live = Live::new(track.gain, track.pan, track.mute);
@@ -556,6 +593,7 @@ impl Disk {
             let mut fader: Box<dyn Processor> = Box::new(Fader::new(heard.clone()));
             fader.prepare(SAMPLE_RATE, MAX_BLOCK);
             tracks.push(Track { ring, chain: vec![fader], live: heard, by_hand: track.by_hand });
+            let sampler = samplers.next().flatten();
             self.feeds.push(Feed {
                 producer,
                 clips: track.clips.clone(),
@@ -577,6 +615,7 @@ impl Disk {
                     ends
                 },
                 synth: crate::synth::Synth::default(),
+                sampler,
             });
         }
         if playing {
@@ -806,6 +845,7 @@ pub fn run(
         master: Live::new(1.0, 0.0, false),
         space: Arc::default(),
         files: HashMap::new(),
+        samples: HashMap::new(),
         playing: false,
         idle_hand: false,
         monitoring: false,

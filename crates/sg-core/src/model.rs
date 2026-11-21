@@ -128,9 +128,23 @@ pub struct Track {
     /// track's note clips, before the strip's own stages; the others are
     /// effects after them.
     pub plugins: Arc<Vec<PluginRef>>,
+    /// The recording the built-in instrument plays for this track's
+    /// notes; `None`: its own tone (the built-in synthesiser).
+    pub sampler: Option<Sampler>,
     /// The notes of the note clips (clips without an asset on an audio
     /// track), by clip id; like `props`, an entry may outlive its clip.
     pub notes: Arc<BTreeMap<ClipId, Arc<Vec<Note>>>>,
+}
+
+/// The built-in sampler of a track: its notes play a recording of the
+/// project, higher or lower with the key (09-daw.md, "Sound").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sampler {
+    pub asset: AssetId,
+    /// The key at which the recording plays as it is (60: middle C).
+    pub root: u8,
+    /// A hit (a drum, a stab): every note plays the recording to its end.
+    pub one_shot: bool,
 }
 
 /// A plugin installed on the machine. Not media: the one thing a project
@@ -266,6 +280,7 @@ impl From<TrackHeader> for Track {
             props: Arc::default(),
             mix: TrackSettings::default(),
             plugins: Arc::default(),
+            sampler: None,
             notes: Arc::default(),
         }
     }

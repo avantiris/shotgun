@@ -922,3 +922,32 @@ fn what_the_compressor_takes_off_is_read_when_its_stretch_is_heard() {
     engine.meters().stages(&mut stages);
     assert_eq!(stages, [[0.0; 3]; 2]);
 }
+
+#[test]
+fn a_tracks_notes_play_a_recording_when_it_has_one_for_its_sampler() {
+    let dir = tempfile::tempdir().unwrap();
+    // Half a second whose every frame says where in the recording it is.
+    let path = wav(dir.path(), "hit.wav", 1, 24_000, |n, _| ramp(n));
+    let sampler = sg_audio::SamplerSpec { wav: path, root: 60, one_shot: true };
+    // The root key at 0.1 s, and an octave above it at 1 s; short notes, played to the end.
+    let note = |start: i64, pitch: u8| sg_audio::NoteSpan { start, len: 480, pitch, velocity: 127 };
+    let sampled =
+        TrackMix { notes: vec![note(4_800, 60), note(48_000, 72)], sampler: Some(sampler), ..track(Vec::new()) };
+    let engine = Engine::start(Backend::Manual).unwrap();
+    engine.set_mix(Mix { tracks: vec![sampled], ..Mix::default() });
+    engine.play(0);
+    let mut out = vec![0.0f32; 72_000 * 2];
+    for block in out.chunks_mut(960) {
+        engine.settle();
+        engine.pull(block);
+    }
+    let left = |frame: usize| out[frame * 2];
+    // Nothing before the note; then the recording as it is, long after the short note has ended.
+    assert_eq!(left(4_799), 0.0);
+    assert!(close(left(4_800 + 1_000), ramp(1_000)), "{}", left(5_800));
+    assert!(close(left(4_800 + 20_000), ramp(20_000)));
+    assert_eq!(left(4_800 + 24_100), 0.0);
+    // An octave up it runs through the recording twice as fast.
+    assert!(close(left(48_000 + 1_000), ramp(2_000)), "{}", left(49_000));
+    assert_eq!(left(48_000 + 12_100), 0.0);
+}
