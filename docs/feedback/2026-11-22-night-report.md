@@ -46,6 +46,9 @@ Measured on copies of your seven takes (`sg-bench voice <file>`).
   until level, evenness and quiet pauses are right. About two seconds.
 - Tells you in the notice what no setting can repair: hum from the
   input, a voice too close to the noise, a take that clips.
+- Clipping is also said where it happens: "clipped" stays beside the
+  input level (Settings, "Level") until you click it away, and a take
+  that reached full scale says so when it lands.
 
 | Your take of 23:10 | Raw | After "Voice" (exported and measured) |
 |---|---|---|
@@ -132,6 +135,8 @@ pitch bend; freezing a track.
 - Checked from import to export on one clip (the meme clip from your
   `untitled-2`, copied): the person, hand and card are kept through heavy
   blur, over another clip in the viewer and in the exported file.
+- It shows among the import jobs with its progress and can be stopped
+  there.
 - **Slow**: about 4 frames a second at 1080p, so roughly fifteen times
   the length of a 1080p60 clip. And it needs about 77 MB of cache per
   second of 1080p60.
