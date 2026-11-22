@@ -2,9 +2,10 @@
 
 # Shotgun
 
-A fast video editor for Linux with a music workstation inside: cut video,
-record and mix a song, and export, in one program. Everything is drawn on
-the graphics card; projects are plain folders under git.
+**Shoot the video, make the track, ship it. One program.**
+
+A fast video editor for Linux with a music workstation inside. Everything
+is drawn on the graphics card; projects are plain folders under git.
 
 Linux on x86-64 with Wayland, Vulkan and PipeWire.
 
