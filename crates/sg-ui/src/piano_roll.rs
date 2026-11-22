@@ -1184,6 +1184,31 @@ impl PianoRoll {
             }
             tick += grid;
         }
+        // Behind them, faintly, the notes of the other tracks that sound
+        // over this stretch: what the bass plays is seen while the melody
+        // is written (feedback N2.4). They cannot be touched here.
+        let ghost = Color32::from_rgb(120, 126, 150).gamma_multiply(0.45);
+        // (Found through each track's index of clips, and no more than a
+        // few thousand of them: the cost stays that of what is in view.)
+        let until = clip.start + (extent as f64 * samples_per_tick) as i64;
+        let mut budget = 3000usize;
+        for other in sequence.tracks.iter().filter(|t| t.id != track_id && !t.notes.is_empty() && !t.mix.mute) {
+            for theirs in other.clips.range(clip.start, until) {
+                let Some(notes) = other.notes.get(&theirs.id) else { continue };
+                let (offset, their_length) = span_of(sequence, &theirs);
+                let shift = ((theirs.start - clip.start) as f64 / samples_per_tick).round() as i64;
+                for note in in_view(notes, offset, their_length).0.into_iter().take(budget) {
+                    budget = budget.saturating_sub(1);
+                    let rect = Rect::from_min_max(
+                        pos2(x_of(note.start + shift), y_of(note.pitch as f32) + 3.0),
+                        pos2(x_of(note.start + shift + note.len) - 1.0, y_of(note.pitch as f32) + row_h - 3.0),
+                    );
+                    if rect.intersects(lanes) {
+                        lanes_painter.rect_filled(rect, theme::RADIUS, ghost);
+                    }
+                }
+            }
+        }
         for note in shown.iter() {
             let rect = Rect::from_min_max(
                 pos2(x_of(note.start), y_of(note.pitch as f32) + 1.0),

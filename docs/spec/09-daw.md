@@ -289,6 +289,9 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
   a new asset, FLAC). For a beat in another key or at the song's tempo.
   Checked in a hidden run: a tone asked an octave up and twice as fast
   came out with twice the zero crossings and half the length.
+- **The other tracks' notes** are seen faintly behind those of the open
+  clip in the piano roll (where their clips lie over it; not of muted
+  tracks). They cannot be touched there.
 - **A velocity lane** under the piano roll: a bar per note, as high as
   the note is struck hard. A press or a pull through the lane sets the
   notes under it (of the selected ones if some of those are there); one

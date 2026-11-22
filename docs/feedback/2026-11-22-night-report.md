@@ -90,6 +90,8 @@ Each has a headless test; the ones marked * also ran in the real program.
   if it has none. "MIDI" in the piano roll writes the open clip as a file.
 - **Velocity lane** * under the piano roll: a bar per note; press or pull
   through the lane to set them.
+- **Other tracks' notes** * show faintly in the piano roll, so the bass
+  is seen while the melody is written.
 - **Arrow keys on notes**: up/down a semitone (Shift: octave), left/right
   a sixteenth (Shift: a beat).
 - **Takes are kept** *: what a new take covers goes onto a muted track
