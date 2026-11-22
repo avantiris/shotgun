@@ -123,6 +123,9 @@ pitch bend; freezing a track.
 - It makes a new asset: the same video with everything but the person
   transparent. Put it on a track above a colour, a picture or another
   clip, and that is a changed background.
+- For a clip that is already on the timeline: right-click it, "Show only
+  the person (the cut-out)". It switches in place; its sound stays. Then
+  put the new background on a track below it.
 - It runs **on your machine** (a model called Robust Video Matting, on
   the CPU). Nothing is uploaded. The model file (15 MB) is fetched once
   from its authors' page and checked before use.

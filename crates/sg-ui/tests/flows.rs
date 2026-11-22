@@ -1055,6 +1055,37 @@ fn the_person_is_cut_out_of_a_video_from_its_menu() {
 }
 
 #[test]
+fn a_clip_is_swapped_between_a_video_and_its_cut_out() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let picture = |harness: &Harness<'_, App>| -> (u128, i64, i64) {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let clip = project.sequences[0].tracks[0].clips.iter().next().unwrap();
+        (clip.asset.0, clip.start, clip.len)
+    };
+    let before = picture(&harness);
+    let on_picture = on_timeline(&harness, 100.0, 0);
+    // The cut-out arrives (as the job names it): the clip can show it instead, and go back.
+    let root = harness.state().root.clone();
+    let mut cut = take(7, "first-take cut out");
+    cut.kind = AssetKind::Image;
+    cut.audio = None;
+    harness.state_mut().shell.import_event(ImportEvent::Usable { job: 7, root, asset: Box::new(cut) });
+    harness.run_steps(2);
+    pointer(&mut harness, on_picture, egui::PointerButton::Secondary);
+    click(&mut harness, "Show only the person (the cut-out)");
+    harness.run_steps(2);
+    assert_eq!(picture(&harness), (7, before.1, before.2));
+    // (Its sound is still that of the video, where it was.)
+    assert_eq!(clips(&harness, 1), vec![(0, 480_000)]);
+    pointer(&mut harness, on_picture, egui::PointerButton::Secondary);
+    click(&mut harness, "Show the whole picture again");
+    harness.run_steps(2);
+    assert_eq!(picture(&harness), before);
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
 fn a_copy_of_an_assets_sound_at_another_pitch_or_tempo_is_asked_for_from_its_menu() {
     let mut harness = editor();
     right_click(&mut harness, "first take");

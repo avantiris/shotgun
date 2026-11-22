@@ -889,6 +889,45 @@ impl Timeline {
                     }
                 }
                 if track.kind == TrackKind::Video {
+                    // A clip of a video that has been cut out ("Cut out the person" in the
+                    // asset's menu) can show the cut-out instead, in the same place and
+                    // time: what lies on the tracks below is then its background. And back.
+                    let project = session.project().clone();
+                    let swap = project.assets.get(&clip.asset).and_then(|asset| {
+                        let cut_out = |original: &sg_core::Asset| format!("{} cut out", sg_core::text::slug(&original.label));
+                        match asset.label.strip_suffix(" cut out") {
+                            Some(_) => project
+                                .assets
+                                .values()
+                                .find(|other| cut_out(other) == asset.label)
+                                .map(|other| (other.id, "Show the whole picture again")),
+                            None => project
+                                .assets
+                                .values()
+                                .find(|other| other.label == cut_out(asset))
+                                .map(|other| (other.id, "Show only the person (the cut-out)")),
+                        }
+                    });
+                    if let Some((other, label)) = swap
+                        && ui
+                            .button(label)
+                            .on_hover_text(
+                                "Swaps this clip between the video and its cut-out, in the same place and time. \
+                                 With the cut-out, what is on the tracks below shows behind the person.",
+                            )
+                            .clicked()
+                    {
+                        let op = Op::SetClip {
+                            seq: sequence.id,
+                            track: track.id,
+                            start: clip.start,
+                            clip: Clip { asset: other, ..clip },
+                        };
+                        if let Err(e) = session.apply(op, None) {
+                            *error = Some(e.to_string());
+                        }
+                        ui.close();
+                    }
                     ui.menu_button("Scenario", |ui| {
                         use crate::session::ScenarioChoice;
                         let project = session.project().clone();
