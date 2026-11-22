@@ -39,3 +39,7 @@ Given at 00:35, to be worked on unattended until 08:00. No questions: decisions 
 - Status: a first feature built (21def6b); the rest is a plan in `docs/spec/10-ai.md`
 - Now: "Cut out the person (AI)" in a video asset's menu: a local model makes a copy of the video with a transparent background, to put over any other background. A survey of what else is possible locally and through services is in `docs/spikes/s8-ai-survey.md`, measurements in `docs/spikes/s8-matte.md`.
 - Verified: a hidden run from import to the cut-out composited over another clip in the viewer (screenshot), including the model's download and check. On one clip only. Exported once with `sg-bench export` and a frame of the file looked at: the person is over the other clip there too. Not seen by a person.
+
+## Checked later in the night
+
+- N2.2, through the program: a copy of his take of 23:10 imported in a hidden run, "Voice" on its track (the settings written were those `sg-bench voice` gives), the sound exported with `sg-bench export ... sound` and the file measured: voice at -17.0 dB (raw: -21.5), loud phrases 10.2 dB above it (raw: 10.9), between the phrases -88.6 dB (raw: -32.3, mostly hum). Not heard by anyone.

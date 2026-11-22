@@ -140,6 +140,9 @@ pub struct Tone {
     /// Leveller, 0 (off) to 1: how much phrases are pulled towards the
     /// track's own average level, loud ones down and quiet ones up.
     pub level: f32,
+    /// The average the leveller levels to, in decibels, if it is known
+    /// beforehand; 0: it is found while playing.
+    pub level_ref_db: f32,
     /// Saturation, 0 (off) to 1: the peaks are rounded off, which adds
     /// harmonics and density.
     pub drive: f32,
@@ -167,6 +170,7 @@ impl Default for Tone {
             deess: 0.0,
             tune: crate::tune::Tune { amount: 0.0, key: 0, scale: 0, speed: 0.2 },
             level: 0.0,
+            level_ref_db: 0.0,
             drive: 0.0,
             voice: false,
             duck_db: 0.0,
@@ -454,9 +458,18 @@ impl TrackFx {
                             if self.sounded > 0.0 {
                                 self.phrase_db = self.phrase_db.max(self.average_db - 25.0);
                             }
+                            // An average that is known beforehand (from listening to the
+                            // whole track) is the average: the same wherever playback
+                            // starts, and a voice that gets louder over a take is brought
+                            // back to where the take is on the whole (feedback F16.15, F16.20).
+                            let known = tone.level_ref_db < 0.0;
+                            if known {
+                                self.average_db = tone.level_ref_db;
+                                self.sounded = self.sounded.max(1.0);
+                            }
                             // Pauses are neither part of the average nor raised.
                             let sounding = self.phrase_db > self.average_db - 25.0 && self.phrase_db > -70.0;
-                            if sounding {
+                            if sounding && !known {
                                 // The plain mean of what has sounded so far until that
                                 // is as long as the average's own memory: the track is
                                 // known from its first phrase on, not after ten seconds.
@@ -551,6 +564,21 @@ pub fn process_offline(stereo: &mut [f32], low_cut_hz: f32, denoise: f32, tone: 
         fx.process(block, low_cut_hz, denoise, tone);
     }
     stereo.copy_from_slice(&all[delay..]);
+}
+
+/// What the leveller of a track with these settings finds the average of
+/// a whole recording (interleaved stereo) to be, in decibels: the level
+/// it would level to by the end. For settings that give it beforehand
+/// (`Tone::level_ref_db`). `None` if nothing in the recording sounds.
+pub fn leveller_average(stereo: &[f32], low_cut_hz: f32, denoise: f32, tone: &Tone) -> Option<f32> {
+    let mut fx = TrackFx::new(denoise > 0.0, false);
+    // (The leveller must run to listen; what it is set to does not change what it hears.)
+    let tone = Tone { level: tone.level.max(0.01), level_ref_db: 0.0, ..*tone };
+    let mut all = stereo.to_vec();
+    for block in all.chunks_mut(2 * 1024) {
+        fx.process(block, low_cut_hz, denoise, &tone);
+    }
+    (fx.sounded > 0.0).then_some(fx.average_db.clamp(-90.0, -0.1))
 }
 
 /// The equaliser's three bands as (kind, hertz, decibels).
@@ -693,6 +721,36 @@ mod tests {
         // the stretch before the tone began is silent at every tap.
         let before = scope.read(96_000 / crate::SCOPE_STEP - 1).expect("laid down by the late taps");
         assert!(before.iter().all(|level| *level < 1e-3), "{before:?}");
+    }
+
+    #[test]
+    fn a_leveller_that_knows_the_tracks_level_levels_from_the_first_sound_on() {
+        // Playback starts in a loud stretch: two seconds at 0.5.
+        let loud: Vec<f32> = (0..SAMPLE_RATE as usize * 2)
+            .flat_map(|i| {
+                let v = 0.5 * (2.0 * std::f32::consts::PI * 200.0 * i as f32 / SAMPLE_RATE as f32).sin();
+                [v, v]
+            })
+            .collect();
+        let peak_after = |tone: &Tone| {
+            let mut sound = loud.clone();
+            let mut fx = TrackFx::new(false, false);
+            for block in sound.chunks_mut(2 * 512) {
+                fx.process(block, 0.0, 0.0, tone);
+            }
+            sound[sound.len() / 2..].iter().fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        // Left to find the level itself, it takes the loud stretch for the track's level: untouched.
+        let finding = peak_after(&Tone { level: 1.0, ..Tone::default() });
+        assert!((finding - 0.5).abs() < 0.02, "{finding}");
+        // What it finds by listening to all of it: the stretch's level as its
+        // follower reads it (a little under the peaks of -6 dB).
+        let found = leveller_average(&loud, 0.0, 0.0, &Tone::default()).unwrap();
+        assert!((-8.5..-5.5).contains(&found), "{found}");
+        // Told that the track is 12 dB below that on the whole, it brings the stretch down by those 12.
+        let told = peak_after(&Tone { level: 1.0, level_ref_db: found - 12.0, ..Tone::default() });
+        assert!((20.0 * (told / 0.5).log10() + 12.0).abs() < 0.7, "{told}");
+        assert_eq!(leveller_average(&vec![0.0; 9600], 0.0, 0.0, &Tone::default()), None);
     }
 
     #[test]

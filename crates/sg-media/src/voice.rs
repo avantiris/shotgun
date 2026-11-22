@@ -145,6 +145,9 @@ pub struct Suggestion {
     pub tune_speed: f32,
     /// Leveller and saturation, 0 to 1.
     pub level: f32,
+    /// The level the leveller levels to, in decibels, once the take was
+    /// listened to through the stages before it; 0: not known.
+    pub level_ref_db: f32,
     pub drive: f32,
     /// How far the other tracks should go down under this voice, in decibels.
     pub duck_db: f32,
@@ -174,6 +177,7 @@ impl Suggestion {
             tune_scale: self.tune_scale,
             tune_speed: self.tune_speed,
             level: self.level,
+            level_ref_db: self.level_ref_db,
             drive: self.drive,
             voice: true,
             duck_db: 0.0,
@@ -476,6 +480,7 @@ pub fn suggest(stats: &VoiceStats, style: VoiceStyle) -> Suggestion {
         tune_speed: if style == VoiceStyle::Melodic { 0.0 } else { 0.15 },
         // (Choices, not measurements: how even, how dense, and how much room the beat makes.)
         level,
+        level_ref_db: 0.0,
         drive: match style {
             VoiceStyle::RapLead => 0.25,
             VoiceStyle::Doubles => 0.35,

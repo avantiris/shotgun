@@ -213,6 +213,16 @@ unchanged.
     under the voice (before: 15 and 11). About one second per take.
   - The compressor has a make-up gain (0 to 24 dB, `comp_makeup_db`),
     which the set-up uses instead of pushing the fader to its end.
+  - The leveller can be given the level it levels to (`level_ref_db`
+    in a track's settings; 0: it finds it while playing, from the first
+    phrase on). "Voice" sets it: the average the leveller itself finds
+    over the whole take behind the stages that come before it. With it
+    the track sounds the same wherever playback starts, and a voice that
+    gets louder over a take (he moved towards the microphone, feedback
+    F16.15) is brought back to the take's level; without it a loud stretch
+    that playback starts in is taken for the track's level. It is not
+    measured again when stages before the leveller are changed by hand:
+    "Voice" again does that.
   - The leveller pushes up in full only what is within 10 dB of the
     average, less down to 20 dB below it and nothing further down: breath
     and room noise came out up to 12 dB louder.

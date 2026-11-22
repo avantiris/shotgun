@@ -1250,6 +1250,7 @@ fn tone_of(mix: &sg_core::TrackSettings) -> sg_audio::Tone {
             speed: mix.tune_speed,
         },
         level: mix.level,
+        level_ref_db: mix.level_ref_db,
         drive: mix.drive,
         voice: mix.voice,
         duck_db: mix.duck_db,
@@ -1292,6 +1293,11 @@ pub fn fit_voice(
         // (The pitch correction changes no level; without it this is four times as fast.)
         let tone = sg_audio::Tone { tune: sg_audio::tune::Tune { amount: 0.0, ..tone_of(&mix).tune }, ..tone_of(&mix) };
         let mut stereo: Vec<f32> = part.iter().flat_map(|s| [*s, *s]).collect();
+        // The level the leveller is to level to: the average it finds over
+        // the whole of this, with what comes before it set as it is now.
+        let reference = sg_audio::leveller_average(&stereo, mix.low_cut_hz, mix.denoise, &tone);
+        set.level_ref_db = reference.map_or(0.0, |db| (db * 10.0).round() / 10.0);
+        let tone = sg_audio::Tone { level_ref_db: set.level_ref_db, ..tone };
         sg_audio::process_offline(&mut stereo, mix.low_cut_hz, mix.denoise, &tone);
         let heard: Vec<f32> = stereo.as_chunks::<2>().0.iter().map(|frame| frame[0]).collect();
         let Some(after) = voice::measure(&heard) else { break };

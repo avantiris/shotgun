@@ -271,6 +271,10 @@ fn chain_of(track: &sg_core::Track, sequence: &Sequence) -> Vec<(String, String,
                 )
             }
             Stage::DeEss => (percent(mix.deess), mix.deess > 0.0),
+            // (With the level it levels to, once the track was listened to.)
+            Stage::Leveller if mix.level_ref_db < 0.0 => {
+                (format!("{}, to {:.0} dB", percent(mix.level), mix.level_ref_db), mix.level > 0.0)
+            }
             Stage::Leveller => (percent(mix.level), mix.level > 0.0),
             Stage::Comp => {
                 let back =
@@ -1157,6 +1161,7 @@ pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
         "tunescale" => mix.tune_scale = value as u8,
         "tunespeed" => mix.tune_speed = value,
         "level" => mix.level = value,
+        "levelref" => mix.level_ref_db = value,
         "drive" => mix.drive = value,
         "voice" => mix.voice = value != 0.0,
         "duck" => mix.duck_db = value,

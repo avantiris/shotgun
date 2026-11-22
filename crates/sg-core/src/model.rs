@@ -388,6 +388,11 @@ pub struct TrackSettings {
     pub tune_speed: f32,
     /// Leveller, 0 to 1: phrases are pulled towards the track's average level.
     pub level: f32,
+    /// That average, in decibels below full scale, if it is known (set by
+    /// listening to the track): the leveller then levels to it from the
+    /// first sound on, wherever playback starts. 0: not known; the
+    /// leveller finds it as it goes.
+    pub level_ref_db: f32,
     /// Saturation, 0 to 1.
     pub drive: f32,
     /// A voice track: tracks with `duck_db` go down while it sounds.
@@ -429,6 +434,7 @@ impl Default for TrackSettings {
             tune_scale: 0,
             tune_speed: 0.2,
             level: 0.0,
+            level_ref_db: 0.0,
             drive: 0.0,
             voice: false,
             duck_db: 0.0,
@@ -466,6 +472,7 @@ impl TrackSettings {
             tune_scale: self.tune_scale.min(2),
             tune_speed: finite(self.tune_speed, 0.0, 1.0),
             level: finite(self.level, 0.0, 1.0),
+            level_ref_db: finite(self.level_ref_db, -90.0, 0.0),
             drive: finite(self.drive, 0.0, 1.0),
             duck_db: finite(self.duck_db, 0.0, 24.0),
             reverb: finite(self.reverb, 0.0, 1.0),
