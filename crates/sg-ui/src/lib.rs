@@ -186,6 +186,8 @@ pub enum Command {
     /// Read which models change a clip by a sentence (the file of this
     /// machine); answered with [`Shell::ai_services_loaded`].
     LoadAiServices,
+    /// Write them, as the window for it now has them; answered like a load.
+    SaveAiServices(Vec<sg_project::ai::Service>),
     /// Find the key an asset's music is in; answered with [`Shell::key_found`].
     FindKey {
         root: PathBuf,
@@ -822,6 +824,11 @@ impl Shell {
                     self.ai = None;
                     commands.extend(self.ask_for_part(track, clip, Part::Sentence { service, sentence }));
                 }
+                Some(ai_panel::AiAction::Save(services)) => {
+                    // (Shown at once; the file is written by a job, which says so if it cannot.)
+                    self.ai_services = Some(Ok(services.clone()));
+                    commands.push(Command::SaveAiServices(services));
+                }
                 Some(ai_panel::AiAction::Close) => {
                     if panel.scripted.is_some() {
                         self.error = Some("change: no such service in the file".to_owned());
@@ -1376,8 +1383,10 @@ impl Shell {
                     (Some(request), DevStep::Change(told)) => {
                         let (service, sentence) = told.split_once(':').unwrap_or((told.as_str(), ""));
                         self.open_ai(request.0, request.1, &mut commands);
-                        // (Without a service's name the window only opens, to be looked at.)
-                        if let Some(panel) = self.ai.as_mut().filter(|_| !service.is_empty()) {
+                        // (Without a service's name the window only opens, to be looked at; `+`: on its fields for a new model.)
+                        if let Some(panel) = self.ai.as_mut().filter(|_| service == "+") {
+                            panel.add();
+                        } else if let Some(panel) = self.ai.as_mut().filter(|_| !service.is_empty()) {
                             panel.scripted = Some(service.to_owned());
                             panel.sentence = sentence.to_owned();
                         }

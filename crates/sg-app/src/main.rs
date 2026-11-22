@@ -710,6 +710,21 @@ impl App {
                         let _ = proxy.send_event(UserEvent::AiServices { file, services });
                     });
                 }
+                Command::SaveAiServices(services) => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let file = sg_project::ai::file();
+                        let services = match &file {
+                            // (Read again: what is shown is what is in the file.)
+                            Some(file) => {
+                                sg_project::ai::save(file, &services).and_then(|()| sg_project::ai::services(file))
+                            }
+                            None => Err("there is no home folder to keep the file in".to_owned()),
+                        };
+                        let file = file.map(|file| file.display().to_string()).unwrap_or_default();
+                        let _ = proxy.send_event(UserEvent::AiServices { file, services });
+                    });
+                }
                 Command::Part { root, asset, how, src_in, span, rate } => {
                     self.pending_jobs += 1;
                     self.local_jobs += 1;

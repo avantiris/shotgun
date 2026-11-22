@@ -1198,6 +1198,32 @@ fn a_clip_is_changed_by_a_sentence() {
     harness.run_steps(2);
     assert!(harness.query_by_label_contains("No model is set up yet").is_some());
     assert!(harness.query_by_label_contains("/home/me/.config/shotgun/ai.toml").is_some());
+    // One is added in the window: from a known one, with a key of one's own. Nothing is edited by hand.
+    click(&mut harness, "Add a model...");
+    click(&mut harness, "Runway: Aleph");
+    harness.run_steps(2);
+    assert!(harness.query_by_label_contains("Still missing: it needs your key").is_some());
+    let key = harness.get_by_label("Key of the service");
+    key.focus();
+    key.type_text("my-key");
+    harness.run_steps(2);
+    click(&mut harness, "Save");
+    harness.run_steps(2);
+    let saved = harness.state().commands.iter().find_map(|c| match c {
+        Command::SaveAiServices(services) => Some(services.clone()),
+        _ => None,
+    });
+    let saved = saved.expect("the models were to be written");
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        (saved[0].name.as_str(), saved[0].model.as_str(), saved[0].key.as_deref()),
+        ("Runway: Aleph", "aleph2", Some("my-key"))
+    );
+    // It is there at once, and can be removed again.
+    assert!(harness.query_by_label_contains("runwayml.com (model aleph2)").is_some());
+    click(&mut harness, "Remove");
+    harness.run_steps(2);
+    assert!(harness.query_by_label_contains("No model is set up yet").is_some());
     // With two, one on this machine and one at a service.
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("ai.toml");

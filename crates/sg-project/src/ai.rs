@@ -16,12 +16,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sg_media::{Cancel, ToolError};
 
 /// How a service is spoken to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Fal,
@@ -32,51 +32,51 @@ pub enum Kind {
 }
 
 /// One entry of the file: a model at a service, or a program.
-#[derive(Clone, PartialEq, Deserialize)]
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
     /// What it is called in the program.
     pub name: String,
     pub kind: Kind,
     /// The model at the service, as the service names it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
-    #[serde(default)]
-    key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     /// The key is in this environment variable instead of in the file.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     key_env: Option<String>,
     /// What a second of video costs there, in dollars: for the estimate
     /// shown before anything is sent. Written by the user; not looked up.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_per_second: Option<f64>,
     /// The shortest and longest part the model takes.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_seconds: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seconds: Option<f64>,
     /// The names of the request's fields for the video and the sentence,
     /// where the model has other ones than the service's usual.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     video_field: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_field: Option<String>,
     /// What is sent as the sentence, with `{sentence}` where the user's
     /// goes (some models want the clip named in it).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
     /// Where in the answer the video's address is, as `a.b.0`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     result: Option<String>,
     /// Further fields of the request, as the model takes them.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
     input: Map<String, Value>,
     /// Another address than the service's own (a mirror; the tests).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
     /// `kind = "command"`: the program and its arguments, with `{in}`,
     /// `{out}` and `{prompt}` where the files' paths and the sentence go.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
 }
 
@@ -87,7 +87,7 @@ impl std::fmt::Debug for Service {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct File {
     #[serde(default)]
     service: Vec<Service>,
@@ -144,16 +144,119 @@ pub fn services(path: &Path) -> Result<Vec<Service>, String> {
     Ok(file.service)
 }
 
+/// Writes the services into `path` (what the window for it does): the
+/// whole file anew, so remarks written into it by hand are gone. Only
+/// its owner may read it: it holds keys.
+pub fn save(path: &Path, services: &[Service]) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let failed = |e: &dyn std::fmt::Display| format!("{} could not be written: {e}", path.display());
+    let text = toml::to_string(&File { service: services.to_vec() }).map_err(|e| failed(&e))?;
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(|e| failed(&e))?;
+    }
+    // Written beside and renamed: a crash never leaves half a file.
+    let beside = path.with_extension("toml.new");
+    std::fs::write(&beside, text).map_err(|e| failed(&e))?;
+    std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o600)).map_err(|e| failed(&e))?;
+    std::fs::rename(&beside, path).map_err(|e| failed(&e))
+}
+
+/// Models to begin from, as their services described them on 2026-11-22
+/// (names, limits and prices from their pages; none tried with a key).
+/// Each still needs the user's key.
+pub fn presets() -> Vec<Service> {
+    let one = |name: &str, kind: Kind, model: &str, price: f64, least: Option<f64>, most: Option<f64>| Service {
+        name: name.to_owned(),
+        kind,
+        model: model.to_owned(),
+        price_per_second: Some(price),
+        min_seconds: least,
+        max_seconds: most,
+        ..Service::blank(kind)
+    };
+    let mut wan = one("fal.ai: Wan 2.7 edit", Kind::Fal, "fal-ai/wan/v2.7/edit-video", 0.15, Some(2.0), Some(10.0));
+    wan.input.insert("resolution".into(), json!("1080p"));
+    let mut kling = one(
+        "fal.ai: Kling O3 edit",
+        Kind::Fal,
+        "fal-ai/kling-video/o3/pro/video-to-video/edit",
+        0.168,
+        Some(3.0),
+        Some(15.0),
+    );
+    // (This model wants the clip named in the sentence.)
+    kling.prompt = Some("In @Video1: {sentence}".to_owned());
+    kling.input.insert("keep_audio".into(), json!(false));
+    vec![
+        wan,
+        kling,
+        one("fal.ai: Lucy Edit", Kind::Fal, "decart/lucy-edit/pro", 0.15, None, None),
+        one("Runway: Aleph", Kind::Runway, "aleph2", 0.28, Some(2.0), Some(30.0)),
+        one("Replicate: Wan 2.7 edit", Kind::Replicate, "wan-video/wan-2.7-videoedit", 0.15, Some(2.0), Some(10.0)),
+        one("Replicate: P-Video edit", Kind::Replicate, "prunaai/p-video-edit", 0.045, None, Some(15.0)),
+    ]
+}
+
+/// A program's words as one line, and back: words with spaces in them stand in double quotes.
+pub fn command_line(command: &[String]) -> String {
+    let quoted =
+        |word: &String| if word.is_empty() || word.contains(' ') { format!("\"{word}\"") } else { word.clone() };
+    command.iter().map(quoted).collect::<Vec<_>>().join(" ")
+}
+
+pub fn command_words(line: &str) -> Vec<String> {
+    let (mut words, mut word, mut quoted, mut any) = (Vec::new(), String::new(), false, false);
+    for c in line.chars() {
+        match c {
+            '"' => (quoted, any) = (!quoted, true),
+            c if c.is_whitespace() && !quoted => {
+                if any || !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                any = false;
+            }
+            c => word.push(c),
+        }
+    }
+    if any || !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
 impl Service {
-    fn check(&self) -> Result<(), String> {
+    /// One with nothing filled in yet.
+    pub fn blank(kind: Kind) -> Service {
+        Service {
+            name: String::new(),
+            kind,
+            model: String::new(),
+            key: None,
+            key_env: None,
+            price_per_second: None,
+            min_seconds: None,
+            max_seconds: None,
+            video_field: None,
+            prompt_field: None,
+            prompt: None,
+            result: None,
+            input: Map::new(),
+            base_url: None,
+            command: Vec::new(),
+        }
+    }
+
+    /// What is still missing before it can be used, in words for its window and for the file's reader.
+    pub fn check(&self) -> Result<(), String> {
         match self.kind {
-            Kind::Command if self.command.is_empty() => Err("a command needs `command = [...]`".into()),
+            _ if self.name.trim().is_empty() => Err("it needs a name".into()),
+            Kind::Command if self.command.is_empty() => Err("it needs the program to run".into()),
             Kind::Command if !self.command.iter().any(|arg| arg.contains("{out}")) => {
-                Err("the command needs `{out}` among its arguments: where it writes the video".into())
+                Err("the program needs {out} among its words: where it writes the video".into())
             }
             Kind::Command => Ok(()),
-            _ if self.model.is_empty() => Err("it needs `model = \"...\"`".into()),
-            _ if self.key().is_none() => Err("it needs `key = \"...\"` (or `key_env`, a variable that is set)".into()),
+            _ if self.model.is_empty() => Err("it needs the model's name at the service".into()),
+            _ if self.key().is_none() => Err("it needs your key from the service".into()),
             _ => Ok(()),
         }
     }
@@ -730,11 +833,37 @@ mod tests {
         assert!(services(&dir.path().join("none.toml")).unwrap().is_empty());
         let no_key = write(dir.path(), "[[service]]\nname = \"a\"\nkind = \"fal\"\nmodel = \"m\"\n");
         assert!(services(&no_key).unwrap_err().contains("key"));
+        let no_name = write(dir.path(), "[[service]]\nname = \" \"\nkind = \"fal\"\nmodel = \"m\"\nkey = \"k\"\n");
+        assert!(services(&no_name).unwrap_err().contains("name"));
         let no_out = write(dir.path(), "[[service]]\nname = \"a\"\nkind = \"command\"\ncommand = [\"x\", \"{in}\"]\n");
         assert!(services(&no_out).unwrap_err().contains("{out}"));
         let unknown =
             write(dir.path(), "[[service]]\nname = \"a\"\nkind = \"fal\"\nmodel = \"m\"\nkey = \"k\"\nmodle = 1\n");
         assert!(services(&unknown).unwrap_err().contains("modle"));
+    }
+
+    #[test]
+    fn services_written_by_the_window_are_read_again_and_only_by_their_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deep/ai.toml");
+        let mut all = presets();
+        for service in &mut all {
+            assert!(service.check().unwrap_err().contains("key"), "{}", service.name);
+            service.key = Some("secret".to_owned());
+        }
+        let mut own = Service::blank(Kind::Command);
+        own.name = "Mine".to_owned();
+        own.command = command_words("my-model --in {in} --out {out} --say \"{prompt} now\" \"\"");
+        assert_eq!(own.command, ["my-model", "--in", "{in}", "--out", "{out}", "--say", "{prompt} now", ""]);
+        assert_eq!(command_words(&command_line(&own.command)), own.command);
+        all.push(own);
+        save(&path, &all).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(services(&path).unwrap() == all);
+        // Written over what was there, whole.
+        save(&path, &all[..1]).unwrap();
+        assert_eq!(services(&path).unwrap().len(), 1);
     }
 
     #[test]
