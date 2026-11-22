@@ -2460,8 +2460,8 @@ fn a_midi_file_becomes_tracks_of_notes_and_a_note_clip_is_written_as_one() {
     assert_eq!(clip.len, 8 * 48_000 * 60 / 90);
     assert_eq!(track.notes.get(&clip.id).map(|n| Vec::clone(n)), Some(written.to_vec()));
     assert_eq!(harness.state().shell.error_shown(), None);
-    // Its piano roll is open: "To MIDI" asks for a file with these notes and the tempo.
-    click(&mut harness, "To MIDI");
+    // Its piano roll is open: "MIDI" asks for a file with these notes and the tempo.
+    click(&mut harness, "MIDI");
     harness.run_steps(2);
     let file = harness.state().commands.iter().find_map(|c| match c {
         Command::WriteExport { stem, extension, bytes, .. } if extension == "mid" => {
@@ -2519,6 +2519,36 @@ fn the_arrow_keys_move_the_selected_notes_up_down_and_along() {
     }
     assert_eq!(notes(&harness).iter().map(|n| n.start).min(), Some(first % 960), "stops at the clip's start");
     assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
+fn the_lane_under_the_piano_roll_sets_how_hard_notes_are_struck() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> Vec<sg_core::Note> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        let clip = track.clips.iter().next().unwrap();
+        track.notes.get(&clip.id).map(|n| Vec::clone(n)).unwrap_or_default()
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    let roll = harness.get_by_label("Piano roll").rect();
+    let (first, second) = (roll.left() + 46.0 + 140.0, roll.left() + 46.0 + 260.0);
+    for x in [first, second] {
+        pointer(&mut harness, egui::pos2(x, roll.top() + 90.0), egui::PointerButton::Primary);
+    }
+    assert!(notes(&harness).iter().all(|n| n.velocity == 100));
+    // A pull through the lane from the first note's bar to the second's, low down:
+    // both are struck softly now, and one undo takes the whole pull back.
+    let lane = harness.get_by_label("Velocities").rect();
+    let low = lane.bottom() - 2.0 - (lane.height() - 5.0) * 0.25;
+    drag(&mut harness, egui::pos2(first, low), egui::pos2(second, low));
+    let soft: Vec<u8> = notes(&harness).iter().map(|n| n.velocity).collect();
+    assert!(soft.iter().all(|v| (25..=40).contains(v)), "{soft:?} in {lane:?}");
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert!(notes(&harness).iter().all(|n| n.velocity == 100));
 }
 
 #[test]

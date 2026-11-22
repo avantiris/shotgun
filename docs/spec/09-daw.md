@@ -264,7 +264,7 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
 - **MIDI files.** A `.mid` file dropped on the window or chosen under
   "Add" becomes one new track per track of the file that has notes, each
   with a note clip from the bar the playhead is in. A sequence without a
-  tempo takes the file's. "To MIDI" in the piano roll writes the open
+  tempo takes the file's. "MIDI" in the piano roll writes the open
   clip into the project's exports folder. Channels, controllers and
   program changes are not read.
 - **Notes by the arrow keys.** In the piano roll: up and down a
@@ -280,10 +280,14 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
 - **A clip at full level.** "Loudest moment to -1 dB" in a sound clip's
   volume menu (normalising: the clip's volume, not its sound, changes).
 - **Make-up gain** on the compressor (0 to 24 dB).
+- **A velocity lane** under the piano roll: a bar per note, as high as
+  the note is struck hard. A press or a pull through the lane sets the
+  notes under it (of the selected ones if some of those are there); one
+  pull is one undo step.
 
 Still missing from what a DAW is expected to have: automation of a
-track's fader and of plugin parameters over time; a lane for the
-velocities of notes; choosing between takes in one lane; freezing a track
+track's fader and of plugin parameters over time; choosing between
+takes in one lane; freezing a track
 to a file; hearing the input through the track's own chain (the stages
 run half a second ahead of what is heard, so this needs another kind of
 stage); pitch bend; time stretching without a change of pitch.

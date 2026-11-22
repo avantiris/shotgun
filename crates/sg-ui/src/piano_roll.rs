@@ -31,6 +31,8 @@ const ROW_H: f32 = 17.0;
 const HEAD_H: f32 = 30.0;
 /// The strip above the rows with the bar numbers: a press there moves the playhead.
 const RULER_H: f32 = 16.0;
+/// The lane under the keys that shows how hard each note is struck.
+const VELOCITY_H: f32 = 44.0;
 /// Distance from a note's right end within which it is stretched, not moved.
 const EDGE: f32 = 8.0;
 const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -93,6 +95,8 @@ pub struct PianoRoll {
     /// The playhead should go to this sequence frame (a press or a drag in
     /// the ruler); taken by the editor.
     pub seek_request: Option<i64>,
+    /// The undo group of the pull through the velocity lane that is in progress.
+    velocity_group: Option<u64>,
     /// The notes of the open clip as a MIDI file to be written: a name
     /// for it and its bytes; taken by the shell.
     pub midi_request: Option<(String, Vec<u8>)>,
@@ -503,6 +507,19 @@ impl PianoRoll {
         notes: Vec<Note>,
         error: &mut Option<String>,
     ) {
+        Self::commit_in(session, sequence, track, clip, notes, None, error);
+    }
+
+    /// [`PianoRoll::commit`] as part of an undo group, if one is given.
+    fn commit_in(
+        session: &mut Session,
+        sequence: &Sequence,
+        track: TrackId,
+        clip: ClipId,
+        notes: Vec<Note>,
+        group: Option<u64>,
+        error: &mut Option<String>,
+    ) {
         // `notes` are as the roll shows them: put back where they lie in
         // the clip's notes, beside those the clip does not reach.
         let found = sequence.track(track).and_then(|t| {
@@ -541,7 +558,7 @@ impl PianoRoll {
             let grow = Op::SetClip { seq: sequence.id, track, start: longer.start, clip: longer };
             op = Op::Batch(vec![grow, op]);
         }
-        if let Err(e) = session.apply(op, None) {
+        if let Err(e) = session.apply(op, group) {
             *error = Some(e.to_string());
         }
     }
@@ -640,7 +657,7 @@ impl PianoRoll {
                     self.toggle_record();
                 }
                 if ui
-                    .button("To MIDI")
+                    .button("MIDI")
                     .on_hover_text("Writes the notes of this clip as a MIDI file into the project's exports folder")
                     .clicked()
                 {
@@ -689,7 +706,7 @@ impl PianoRoll {
                 }
                 ui.add_space(12.0);
                 // (Short: the head must have room for its buttons and "Close" in a narrow roll.)
-                ui.label(RichText::new("How?").color(theme::DIM)).on_hover_text(
+                ui.label(RichText::new("?").color(theme::DIM)).on_hover_text(
                     "Click: a note. Drag: draw one, move one, or stretch it at its end. Right button: removes \
                      every note it is drawn over. A note after the clip's end makes the clip longer.\n\
                      Ctrl + click adds to the selection, Ctrl + drag (or \"Select\") draws a box, Ctrl + A takes \
@@ -707,7 +724,11 @@ impl PianoRoll {
                 });
             });
         });
-        let body = Rect::from_min_max(pos2(area.left(), area.top() + HEAD_H), area.max);
+        // Under the keys, if the roll is high enough for both: the velocities.
+        let lane_h = if area.height() > HEAD_H + RULER_H + VELOCITY_H + 120.0 { VELOCITY_H } else { 0.0 };
+        let body =
+            Rect::from_min_max(pos2(area.left(), area.top() + HEAD_H), pos2(area.right(), area.bottom() - lane_h));
+        let velocities = (lane_h > 0.0).then(|| Rect::from_min_max(pos2(area.left(), body.bottom()), area.max));
         let response = ui.allocate_rect(body, Sense::click_and_drag());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Piano roll"));
         let lanes = Rect::from_min_max(pos2(body.left() + KEYS_W, body.top() + RULER_H), body.max);
@@ -760,6 +781,67 @@ impl PianoRoll {
         let y_of = |pitch: f32| lanes.top() + (top - pitch) * row_h;
         let tick_at = |x: f32| ((x - lanes.left()) / per_tick + left) as i64;
         let pitch_at = |y: f32| pitch_under(top, row_h, y - lanes.top());
+        // The velocity lane (feedback N2.4): a bar per note where the note
+        // begins, as high as it is struck hard. A press or a drag in the
+        // lane sets the bars it passes: of the selected notes if some of
+        // those are there, else of all that sound there.
+        if let Some(lane) = velocities {
+            let bars = Rect::from_min_max(pos2(lanes.left(), lane.top() + 1.0), lane.max);
+            let pressed = ui.allocate_rect(bars, Sense::click_and_drag());
+            pressed.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, "Velocities"));
+            if !pressed.is_pointer_button_down_on() {
+                self.velocity_group = None;
+            }
+            let mut shown_notes = stored.clone();
+            if pressed.is_pointer_button_down_on()
+                && let Some(pos) = pressed.interact_pointer_pos()
+            {
+                let share = (bars.bottom() - 2.0 - pos.y) / (bars.height() - 4.0);
+                let velocity = (share * 127.0).round().clamp(1.0, 127.0) as u8;
+                // (Under its bar, or anywhere under the note itself.)
+                let near =
+                    |n: &Note| pos.x >= x_of(n.start) - 5.0 && pos.x <= x_of(n.start + n.len).max(x_of(n.start) + 6.0);
+                let among_chosen = stored.iter().any(|n| near(n) && self.selected.contains(n));
+                let mut changed = false;
+                for note in shown_notes.iter_mut().filter(|n| near(n)) {
+                    if (among_chosen && !self.selected.contains(note)) || note.velocity == velocity {
+                        continue;
+                    }
+                    if let Some(chosen) = self.selected.iter_mut().find(|n| *n == note) {
+                        chosen.velocity = velocity;
+                    }
+                    note.velocity = velocity;
+                    changed = true;
+                }
+                if changed {
+                    // (One pull through the lane is one step to undo.)
+                    let group = *self.velocity_group.get_or_insert_with(|| session.new_group());
+                    Self::commit_in(session, sequence, track_id, clip_id, shown_notes.clone(), Some(group), error);
+                }
+            }
+            let painter = ui.painter_at(lane);
+            painter.rect_filled(lane, 0.0, theme::BG);
+            painter.hline(lane.x_range(), lane.top(), Stroke::new(1.0, theme::LINE));
+            painter.text(
+                pos2(lane.left() + 4.0, lane.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Velocity",
+                FontId::proportional(9.5),
+                theme::DIM,
+            );
+            let painter = painter.with_clip_rect(bars);
+            for note in &shown_notes {
+                let x = x_of(note.start);
+                let top = bars.bottom() - 2.0 - (bars.height() - 4.0) * note.velocity as f32 / 127.0;
+                let colour = if self.selected.contains(note) { theme::TEXT } else { theme::ACCENT };
+                painter.rect_filled(Rect::from_min_max(pos2(x, top), pos2(x + 3.0, bars.bottom() - 1.0)), 0.0, colour);
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(x - 1.5, top - 1.0), pos2(x + 4.5, top + 2.0)),
+                    0.0,
+                    colour,
+                );
+            }
+        }
         // (From here on the roll's end is what bounds a note, not the clip's.)
         let clip_length = length;
         let length = extent;
