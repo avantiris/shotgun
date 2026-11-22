@@ -26,9 +26,13 @@ def main() -> int:
         return 2
     model, src, out = sys.argv[1:4]
     threads = int(sys.argv[4]) if len(sys.argv) > 4 else 8
-    stream = json.loads(subprocess.check_output(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-         "stream=width,height,r_frame_rate:stream_side_data=rotation", "-of", "json", src]))["streams"][0]
+    try:
+        stream = json.loads(subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height,r_frame_rate:stream_side_data=rotation", "-of", "json", src]))["streams"][0]
+    except (subprocess.CalledProcessError, IndexError, KeyError, ValueError):
+        print("the video could not be read", file=sys.stderr)
+        return 1
     width, height, rate = stream["width"], stream["height"], stream["r_frame_rate"]
     # ffmpeg turns a picture that is stored on its side upright while decoding.
     turned = any(abs(int(float(d.get("rotation", 0)))) % 180 == 90 for d in stream.get("side_data_list", []))

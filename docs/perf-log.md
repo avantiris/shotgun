@@ -474,3 +474,19 @@ track.
 
 Not measured: anything through a real sound device, a real MIDI keyboard,
 a bridged Windows plugin, how the delay of hand play feels.
+
+## 2026-11-22 (night): after the night's work on chain, look and AI
+
+| What | Measured | Budget | |
+|------|----------|--------|---|
+| UI frame, 10 to 500 000 clips (`scripts/bench-m4.sh`, at c3f4686, load average 4, with the new look) | p99 0.4 to 1.9 ms | 6.9 ms p99 | pass |
+| "Voice": measuring a take and fitting its settings on it (`sg-bench voice`, takes of 15 to 30 s, up to six passes through the stages with noise reduction) | 0.2 to 2.5 s per take | none set | |
+| Cutting a person out, 1080p60, `sg-matte` on the CPU with 8 threads, VP9 with transparency out (337 frames while a build ran) | 4 frames a second | none set | |
+| The same, the model alone at 1080p / 960x540 / 640x360 (`spikes/s8-matte/rvm.py`) | 8.3 / 12.6 / 22.8 frames a second | none set | |
+| Lossless copy a cut-out is played from (utvideo with transparency), 1080p60 | 77 MB per second of video | none set | |
+| Export of a 4 s 1080p sequence with a cut-out over a clip (`sg-bench export ... master`) | 1.85x realtime, 175 frames a second in the render pass | >= realtime | pass |
+
+Not measured tonight: playback budgets (M3, M5) with the stages' new
+parts (fourth-order low cut, make-up, the taps for the chain's picture);
+the picture of the chain costs ten passes over each block of one track
+on the disk thread while its window is open.
