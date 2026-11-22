@@ -41,6 +41,13 @@ pub struct ClipPanel {
     pub stabilise_request: Option<sg_core::AssetId>,
     /// The fonts in the project's folder, once they have been listed.
     pub fonts: Option<Vec<String>>,
+    /// The fonts that come with the program, listed with the project's.
+    pub shipped: Vec<sg_project::analysis::ShippedFont>,
+    /// A font that comes with the program was chosen and is not in the
+    /// project yet: its file is to be copied there; taken by the shell.
+    pub font_import: Option<std::path::PathBuf>,
+    /// The file name of that font, so that its arrival is not announced.
+    pub chosen_font: Option<String>,
     /// The list of fonts is wanted; taken by the shell.
     pub fonts_request: bool,
     fonts_asked: bool,
@@ -216,23 +223,55 @@ impl ClipPanel {
                     [84.0, 16.0],
                     egui::Label::new(RichText::new("Font").color(theme::DIM)).halign(egui::Align::LEFT),
                 );
-                let shown = if title.font.is_empty() { "Built-in" } else { title.font.as_str() };
+                let shipped = |file: &str| self.shipped.iter().find(|font| font.file == file);
+                let shown = match shipped(&title.font) {
+                    _ if title.font.is_empty() => "Built-in",
+                    Some(font) => font.label.as_str(),
+                    None => title.font.as_str(),
+                };
+                let mut import = None;
                 egui::ComboBox::from_id_salt("title font")
                     .selected_text(shown.to_owned())
+                    .width(190.0)
+                    .height(420.0)
                     .show_ui(ui, |ui| {
                         if ui.selectable_label(title.font.is_empty(), "Built-in").clicked() && !title.font.is_empty() {
                             title.font.clear();
                             changed = true;
                         }
-                        for name in self.fonts.iter().flatten() {
+                        // The project's own (dropped onto the window) first.
+                        for name in self.fonts.iter().flatten().filter(|name| shipped(name).is_none()) {
                             if ui.selectable_label(title.font == *name, name).clicked() && title.font != *name {
                                 title.font = name.clone();
                                 changed = true;
                             }
                         }
+                        if !self.shipped.is_empty() {
+                            ui.separator();
+                        }
+                        // Those that come with the program: one that is
+                        // chosen is copied into the project, so that the
+                        // project holds everything it shows.
+                        for font in &self.shipped {
+                            if ui.selectable_label(title.font == font.file, &font.label).clicked()
+                                && title.font != font.file
+                            {
+                                title.font = font.file.clone();
+                                changed = true;
+                                if !self.fonts.iter().flatten().any(|name| *name == font.file) {
+                                    import = Some(font);
+                                }
+                            }
+                        }
                     })
                     .response
-                    .on_hover_text("Drop a .ttf or .otf file onto the window to add a font to the project");
+                    .on_hover_text(
+                        "Fonts that come with Shotgun (all under free licences), and the project's own: drop a \
+                         .ttf or .otf file onto the window to add one",
+                    );
+                if let Some(font) = import {
+                    (self.font_import, self.chosen_font) = (Some(font.path.clone()), Some(font.file.clone()));
+                }
             });
         }
         if video {

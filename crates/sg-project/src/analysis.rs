@@ -381,6 +381,53 @@ pub fn is_font(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
 }
 
+/// A font that comes with the program: what it is called in the menu,
+/// the file name it has once it is in a project, and where it is now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShippedFont {
+    pub label: String,
+    pub file: String,
+    pub path: PathBuf,
+}
+
+/// The fonts in the folder that comes with the program (`SHOTGUN_FONTS`,
+/// set by the flake), by label. Files there are named `Family-Style`.
+pub fn shipped_fonts(dir: &Path) -> Vec<ShippedFont> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut fonts: Vec<ShippedFont> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|path| is_font(path))
+        .map(|path| ShippedFont { label: font_label(&path), file: font_file_name(&path), path })
+        .collect();
+    fonts.sort_by(|a, b| a.label.cmp(&b.label));
+    fonts
+}
+
+/// "RobotoCondensed-Bold.ttf" is "Roboto Condensed Bold"; a regular cut
+/// goes by the family's name alone.
+fn font_label(path: &Path) -> String {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut label = String::with_capacity(stem.len() + 4);
+    let mut before = ' ';
+    for ch in stem.chars() {
+        let ch = if ch == '-' || ch == '_' { ' ' } else { ch };
+        if ch.is_uppercase() && before.is_lowercase() {
+            label.push(' ');
+        }
+        label.push(ch);
+        before = ch;
+    }
+    label.strip_suffix(" Regular").map(str::to_owned).unwrap_or(label)
+}
+
+/// The name a font file has in a project's `assets/font/`.
+fn font_file_name(source: &Path) -> String {
+    let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let extension = source.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "ttf".into());
+    format!("{}.{extension}", sg_core::text::slug(&stem))
+}
+
 /// Copies a font file into `assets/font/` after a look at its first bytes.
 /// Returns the file name it has there.
 pub fn import_font(root: &Path, source: &Path) -> Result<String, ToolError> {
@@ -390,13 +437,35 @@ pub fn import_font(root: &Path, source: &Path) -> Result<String, ToolError> {
     if !known {
         return Err(ToolError::other("it is not a TrueType or OpenType font"));
     }
-    let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let extension = source.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "ttf".into());
-    let name = format!("{}.{extension}", sg_core::text::slug(&stem));
+    let name = font_file_name(source);
     let dir = root.join("assets/font");
     std::fs::create_dir_all(&dir)?;
     let temporary = dir.join(format!("{name}.tmp"));
     std::fs::write(&temporary, bytes)?;
     std::fs::rename(&temporary, dir.join(&name))?;
     Ok(name)
+}
+
+#[cfg(test)]
+mod font_tests {
+    #[test]
+    fn the_fonts_that_come_with_the_program_are_listed_by_name() {
+        let dir = std::env::temp_dir().join(format!("sg-shipped-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["RobotoCondensed-Bold.ttf", "EB Garamond-Regular.otf", "LICENCES.txt"] {
+            std::fs::write(dir.join(name), [0u8, 1, 0, 0, 9]).unwrap();
+        }
+        let fonts = super::shipped_fonts(&dir);
+        let said: Vec<(&str, &str)> = fonts.iter().map(|f| (f.label.as_str(), f.file.as_str())).collect();
+        assert_eq!(
+            said,
+            [("EB Garamond", "eb-garamond-regular.otf"), ("Roboto Condensed Bold", "robotocondensed-bold.ttf")]
+        );
+        // The name in the menu's list is the name the copy in a project gets.
+        let project = dir.join("project");
+        assert_eq!(super::import_font(&project, &fonts[1].path).unwrap(), fonts[1].file);
+        assert_eq!(super::list_fonts(&project), [fonts[1].file.clone()]);
+        assert!(super::shipped_fonts(&dir.join("missing")).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

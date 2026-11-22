@@ -45,6 +45,75 @@
         exec ${pkgs.python3.withPackages (p: [ p.onnxruntime p.numpy ])}/bin/python3 -I ${./tools/sg-matte.py} "$@"
       '';
 
+      # Fonts for titles that come with the program (feedback F17.1): one
+      # folder of TrueType and OpenType files, named `Family-Style`, which
+      # the program finds through SHOTGUN_FONTS. A font that is chosen is
+      # copied into the project, so a project never depends on this folder.
+      # Only fonts under a free licence; the build fails for any other.
+      sgFonts =
+        let
+          # `"A"` takes the file A.ttf (or .otf) of the package under that
+          # name; `"A=B"` takes it as B.
+          picked = with pkgs; [
+            # Plain
+            { from = inter; files = [ "InterVariable=Inter-Regular" ]; }
+            { from = roboto; files = [ "Roboto-Light" "Roboto-Regular" "Roboto-Italic" "Roboto-Bold" "Roboto-Black" "RobotoCondensed-Regular" "RobotoCondensed-Bold" ]; }
+            { from = montserrat; files = [ "Montserrat-Light" "Montserrat-Regular" "Montserrat-Bold" "Montserrat-Black" ]; }
+            { from = poppins; files = [ "Poppins-Light" "Poppins-Regular" "Poppins-Bold" "Poppins-Black" ]; }
+            { from = lato; files = [ "Lato-Regular" "Lato-Bold" "Lato-Black" ]; }
+            { from = open-sans; files = [ "OpenSans-Regular" "OpenSans-Bold" "OpenSans-ExtraBold" ]; }
+            { from = raleway; files = [ "Raleway-Regular" "Raleway-Bold" "Raleway-Black" ]; }
+            { from = work-sans; files = [ "WorkSans-Regular" "WorkSans-Bold" ]; }
+            { from = rubik; files = [ "Rubik-Regular" "Rubik-Bold" "Rubik-Black" ]; }
+            { from = quicksand; files = [ "Quicksand-Regular" "Quicksand-Bold" ]; }
+            { from = barlow; files = [ "Barlow-Regular" "Barlow-Bold" "BarlowCondensed-Bold" "BarlowCondensed-Black" ]; }
+            # For headlines
+            { from = oswald; files = [ "Oswald-Regular" "Oswald-Bold" ]; }
+            { from = league-gothic; files = [ "LeagueGothic-Regular" "LeagueGothic-Condensed" ]; }
+            { from = league-spartan; files = [ "LeagueSpartan-Regular" "LeagueSpartan-Bold" "LeagueSpartan-Black" ]; }
+            { from = the-neue-black; files = [ "TheNeue-Black" ]; }
+            { from = norwester-font; files = [ "norwester=Norwester-Regular" ]; }
+            { from = chunk; files = [ "ChunkFive-Regular" ]; }
+            { from = orbitron; files = [ "Orbitron Bold=Orbitron-Bold" "Orbitron Black=Orbitron-Black" ]; }
+            { from = knewave; files = [ "knewave=Knewave-Regular" ]; }
+            # With serifs
+            { from = eb-garamond; files = [ "EBGaramond12-Regular=EB Garamond-Regular" "EBGaramond12-Italic=EB Garamond-Italic" ]; }
+            { from = libre-baskerville; files = [ "LibreBaskerville-Regular" "LibreBaskerville-Italic" "LibreBaskerville-Bold" ]; }
+            { from = merriweather; files = [ "Merriweather-Regular" "Merriweather-Bold" "Merriweather-Black" ]; }
+            { from = cormorant; files = [ "CormorantGaramond-Regular" "CormorantGaramond-Bold" ]; }
+            { from = libre-bodoni; files = [ "LibreBodoni-Regular" "LibreBodoni-Bold" ]; }
+            { from = zilla-slab; files = [ "ZillaSlab-Regular" "ZillaSlab-Bold" ]; }
+            { from = roboto-slab; files = [ "RobotoSlab-Regular" "RobotoSlab-Bold" ]; }
+            # Typewriter and screen
+            { from = jetbrains-mono; files = [ "JetBrainsMono-Regular" "JetBrainsMono-Bold" ]; }
+            { from = courier-prime; files = [ "CourierPrime-Regular" "CourierPrime-Bold" ]; }
+            { from = vt323; files = [ "VT323-Regular" ]; }
+            # By hand
+            { from = dancing-script; files = [ "DancingScript-Regular" "DancingScript-Bold" ]; }
+            { from = comic-neue; files = [ "ComicNeue-Regular" "ComicNeue-Bold" ]; }
+            { from = shantell-sans; files = [ "Shantell_Sans-Normal-Regular=ShantellSans-Regular" "Shantell_Sans-Normal-Bold=ShantellSans-Bold" ]; }
+          ];
+          licences = l: map (one: one.spdxId or one.shortName) (pkgs.lib.toList l);
+          take = { from, files }:
+            assert pkgs.lib.all (one: one.free or false) (pkgs.lib.toList from.meta.license);
+            pkgs.lib.concatMapStringsSep "\n"
+              (file:
+                let parts = pkgs.lib.splitString "=" file;
+                in "take ${from} ${pkgs.lib.escapeShellArg (builtins.head parts)} ${pkgs.lib.escapeShellArg (pkgs.lib.last parts)}")
+              files
+            + "\necho ${pkgs.lib.escapeShellArg "${from.pname or from.name}: ${toString (licences from.meta.license)}, ${from.meta.homepage or ""}"} >> $out/LICENCES.txt";
+        in
+        pkgs.runCommand "shotgun-fonts" { } ''
+          mkdir -p $out
+          take() {
+            # (TrueType before OpenType where a package has both.)
+            found=$(find -L "$1" -type f \( -name "$2.ttf" -o -name "$2.otf" \) | sort -t. -k2 -r | head -1)
+            if [ -z "$found" ]; then echo "no font file $2 in $1" >&2; exit 1; fi
+            cp "$found" "$out/$3.''${found##*.}"
+          }
+          ${pkgs.lib.concatMapStringsSep "\n" take picked}
+        '';
+
       # Windows plugins: Native Access / Kontakt and the bridge to them.
       musicTools = [
         niWine # ni, native-access
@@ -102,6 +171,7 @@
           # (What the library path was before: plugins are started with that one.)
           wrapProgram $out/bin/shotgun \
             --run 'export SHOTGUN_OUTER_LD_LIBRARY_PATH="''${LD_LIBRARY_PATH:-}"' \
+            --set-default SHOTGUN_FONTS ${sgFonts} \
             --prefix PATH : ${pkgs.lib.makeBinPath runtimeTools} \
             --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibs}
         '';
@@ -156,6 +226,8 @@
           export SHOTGUN_LIBRARY=''${SHOTGUN_LIBRARY:-/disk/shotgun}
           # A native plugin (instrument and effect) for the plugin host's tests.
           export SHOTGUN_TEST_VST3=${pkgs.surge-xt}/lib/vst3
+          # The fonts for titles that come with the program.
+          export SHOTGUN_FONTS=''${SHOTGUN_FONTS:-${sgFonts}}
           # Plugins run with the library path the system has, not this shell's
           # (crates/sg-plug: `Client::start`). The shell replaces the path, so: none.
           export SHOTGUN_OUTER_LD_LIBRARY_PATH=

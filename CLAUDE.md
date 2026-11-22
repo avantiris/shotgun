@@ -30,6 +30,8 @@ not marked are agreed with the user: do not change them without asking.
 - The user's real library is `/disk/shotgun`. Tests and experiments must set
   `SHOTGUN_LIBRARY` to a temp directory and never write to the real library.
 - Flake files must be `git add`ed before `nix develop` sees them.
+- The fonts for titles that come with the program are a folder built by the
+  flake (`sgFonts`, found through `SHOTGUN_FONTS`); add a family there.
 - The user works on this desktop while I run things. Automated app and spike
   runs must not take focus, the pointer or the clipboard: follow the "Do not
   disturb the user's desktop" rules in `docs/spikes/README.md`.

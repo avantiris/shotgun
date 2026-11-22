@@ -238,6 +238,28 @@ mod tests {
     }
 
     #[test]
+    fn every_font_that_comes_with_the_program_draws_letters() {
+        // (The folder is set by the dev shell; without it there is nothing to check.)
+        let Some(dir) = std::env::var_os("SHOTGUN_FONTS") else { return };
+        let builtin = rasterize("Hamburg 12", 60.0, [255; 4], None);
+        let mut seen = 0;
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|e| e == "ttf" || e == "otf") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(FontRef::try_from_slice(&bytes).is_ok(), "{path:?} is not read");
+            let drawn = rasterize("Hamburg 12", 60.0, [255; 4], Some(&bytes));
+            let ink = drawn.rgba.chunks_exact(4).filter(|p| p[3] > 128).count();
+            assert!(ink > 500, "{path:?} draws next to nothing ({ink})");
+            assert!(drawn.rgba != builtin.rgba, "{path:?} looks like the built-in font");
+            seen += 1;
+        }
+        assert!(seen >= 40, "only {seen} fonts in the folder");
+    }
+
+    #[test]
     fn a_font_file_changes_the_letters_and_a_bad_one_falls_back() {
         let built_in = rasterize("Wide", 60.0, [255; 4], None);
         // Another face of the same family: the letters are heavier.

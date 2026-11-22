@@ -601,6 +601,9 @@ impl Shell {
                 {
                     commands.push(Command::Stabilise { root: root.clone(), asset });
                 }
+                if let Some(path) = self.editor.clip_panel.font_import.take() {
+                    commands.push(Command::ImportFont { root: root.clone(), path });
+                }
                 if std::mem::take(&mut self.editor.clip_panel.fonts_request) {
                     commands.push(Command::LoadFonts { root: root.clone() });
                 }
@@ -2733,9 +2736,15 @@ impl Shell {
 
 impl Shell {
     /// The fonts in the project's folder were listed.
-    pub fn fonts_loaded(&mut self, root: &std::path::Path, fonts: Vec<String>) {
+    pub fn fonts_loaded(
+        &mut self,
+        root: &std::path::Path,
+        fonts: Vec<String>,
+        shipped: Vec<sg_project::analysis::ShippedFont>,
+    ) {
         if self.session.as_ref().is_some_and(|s| s.root == root) {
             self.editor.clip_panel.fonts = Some(fonts);
+            self.editor.clip_panel.shipped = shipped;
         }
     }
 
@@ -2744,7 +2753,11 @@ impl Shell {
         let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return Vec::new() };
         match result {
             Ok(name) => {
-                session.notice = Some(format!("{name} is in the project: choose it under Font in a title's settings."));
+                // (One chosen in the menu is on the title already.)
+                if self.editor.clip_panel.chosen_font.take().as_deref() != Some(name.as_str()) {
+                    session.notice =
+                        Some(format!("{name} is in the project: choose it under Font in a title's settings."));
+                }
                 vec![Command::LoadFonts { root: root.to_owned() }]
             }
             Err(e) => {

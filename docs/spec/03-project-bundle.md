@@ -22,7 +22,9 @@ refers to its own folder name.
     video/                originals, never modified after import
     audio/
     image/                stills and GIFs
-    font/                 fonts for titles (.ttf, .otf); tracked by git, like lut/
+    font/                 fonts for titles (.ttf, .otf); tracked by git, like lut/.
+                          Dropped onto the window, or copied here when one of the
+                          fonts that come with the program is chosen (below)
     lut/
     index/<asset-id>.toml one small metadata file per asset (see below)
   sequences/<slug>.sg     one file per timeline
@@ -248,3 +250,17 @@ jingles), always by copying, never by linking.
   its hash). Rule 4 of CLAUDE.md holds: the timeline never references the
   global folder.
 - Removing from Global deletes the file there and nothing else.
+
+## Fonts that come with the program (2026-11-22, feedback F17.1)
+
+The flake builds one folder of 76 font files from 32 families (plain,
+headline, serif, typewriter, handwritten; all under the SIL Open Font
+Licence or Apache 2.0, the build fails for a package whose licence is
+not free; `LICENCES.txt` in the folder names each). The program finds
+it through `SHOTGUN_FONTS`, set by the dev shell and by the packaged
+program. The Font menu of a title lists them by name under the
+project's own; choosing one copies its file into `assets/font/`, so a
+project still holds everything it shows and opens on a machine without
+that folder. `PROPOSED`: which families and cuts (the list is `sgFonts`
+in `flake.nix`); that the menu shows names in the interface's font, not
+each in its own.

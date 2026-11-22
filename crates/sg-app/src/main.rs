@@ -185,6 +185,7 @@ enum UserEvent {
     Fonts {
         root: PathBuf,
         fonts: Vec<String>,
+        shipped: Vec<sg_project::analysis::ShippedFont>,
     },
     Peaks {
         root: PathBuf,
@@ -553,7 +554,10 @@ impl App {
                     self.pending_jobs += 1;
                     self.reads.run(move || {
                         let fonts = sg_project::analysis::list_fonts(&root);
-                        let _ = proxy.send_event(UserEvent::Fonts { root, fonts });
+                        let shipped = std::env::var_os("SHOTGUN_FONTS")
+                            .map(|dir| sg_project::analysis::shipped_fonts(Path::new(&dir)))
+                            .unwrap_or_default();
+                        let _ = proxy.send_event(UserEvent::Fonts { root, fonts, shipped });
                     });
                 }
                 Command::LoadLooks { root } => {
@@ -1453,8 +1457,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.job_done();
                 self.run_commands(commands);
             }
-            UserEvent::Fonts { root, fonts } => {
-                self.shell.fonts_loaded(&root, fonts);
+            UserEvent::Fonts { root, fonts, shipped } => {
+                self.shell.fonts_loaded(&root, fonts, shipped);
                 self.job_done();
             }
             UserEvent::Looks { root, looks, luts } => {

@@ -949,7 +949,12 @@ fn a_title_gets_a_font_from_the_project_folder() {
     // The folder is asked for once a title is shown, and what it holds can be chosen.
     let root = harness.state().shell.session().unwrap().root.clone();
     assert!(harness.state().commands.iter().any(|c| matches!(c, Command::LoadFonts { .. })));
-    harness.state_mut().shell.fonts_loaded(&root, vec!["poster-bold.ttf".to_owned()]);
+    let shipped = vec![sg_project::analysis::ShippedFont {
+        label: "Roboto Bold".to_owned(),
+        file: "roboto-bold.ttf".to_owned(),
+        path: "/fonts/Roboto-Bold.ttf".into(),
+    }];
+    harness.state_mut().shell.fonts_loaded(&root, vec!["poster-bold.ttf".to_owned()], shipped);
     harness.run_steps(2);
     // (A combo box is known by what it shows, not by a label.)
     harness.get_by_value("Built-in").click();
@@ -959,6 +964,23 @@ fn a_title_gets_a_font_from_the_project_folder() {
     let track = &project.sequences[0].tracks[0];
     let title = track.props_of(track.clips.at(0).unwrap().id).and_then(|p| p.title.clone()).unwrap();
     assert_eq!(title.font, "poster-bold.ttf");
+    // One that comes with the program goes by its name, is on the title
+    // at once and is copied into the project; its arrival says nothing more.
+    harness.get_by_value("poster-bold.ttf").click();
+    harness.run_steps(3);
+    click(&mut harness, "Roboto Bold");
+    harness.run_steps(2);
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = &project.sequences[0].tracks[0];
+    let title = track.props_of(track.clips.at(0).unwrap().id).and_then(|p| p.title.clone()).unwrap();
+    assert_eq!(title.font, "roboto-bold.ttf");
+    assert!(harness.state().commands.iter().any(
+        |c| matches!(c, Command::ImportFont { path, .. } if path == std::path::Path::new("/fonts/Roboto-Bold.ttf"))
+    ));
+    assert!(harness.query_by_value("Roboto Bold").is_some());
+    let after = harness.state_mut().shell.font_imported(&root, Ok("roboto-bold.ttf".to_owned()));
+    assert!(matches!(after.as_slice(), [Command::LoadFonts { .. }]));
+    assert!(harness.state().shell.session().unwrap().notice.is_none());
     // A dropped font file goes to the fonts folder, not to the media.
     let commands =
         harness.state_mut().shell.incoming(sg_ui::Incoming::Paths(vec!["/somewhere/Poster Bold.TTF".into()]));
