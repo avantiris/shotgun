@@ -1041,6 +1041,20 @@ fn the_file_manager_is_opened_from_the_assets_and_from_the_export() {
 }
 
 #[test]
+fn the_person_is_cut_out_of_a_video_from_its_menu() {
+    let mut harness = editor();
+    right_click(&mut harness, "first take");
+    click(&mut harness, "Cut out the person (AI)");
+    harness.run_steps(2);
+    // The application is asked for it, and what happens is said.
+    assert!(
+        harness.state().commands.iter().any(|c| matches!(c, Command::CutOut { asset, .. } if asset.id == AssetId(1)))
+    );
+    assert_eq!(harness.state().shell.error_shown(), None);
+    assert!(harness.query_by_label_contains("Cutting the person out of first take").is_some());
+}
+
+#[test]
 fn a_finished_export_offers_the_way_to_its_file() {
     let mut harness = editor();
     assert!(harness.query_by_label("Show in folder").is_none());

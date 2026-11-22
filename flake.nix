@@ -34,7 +34,16 @@
         xdg-utils # "Show in folder"
         bash
         coreutils
+        curl # fetches the matting model on its first use
+        sgMatte # "Cut out the person"
       ] ++ musicTools;
+
+      # Cutting a person out of a video (docs/spikes/s8-matte.md): Robust
+      # Video Matting on onnxruntime, as a program of its own so that the
+      # editor neither links the runtime nor waits on it.
+      sgMatte = pkgs.writeShellScriptBin "sg-matte" ''
+        exec ${pkgs.python3.withPackages (p: [ p.onnxruntime p.numpy ])}/bin/python3 -I ${./tools/sg-matte.py} "$@"
+      '';
 
       # Windows plugins: Native Access / Kontakt and the bridge to them.
       musicTools = [

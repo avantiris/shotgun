@@ -173,8 +173,55 @@ pub fn conform_alpha(
     progress: Progress<'_>,
 ) -> Result<(), ToolError> {
     ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        // (ffmpeg's own VP8 and VP9 decoders leave the transparency of a
+        // WebM out; libvpx reads it.)
+        match src.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("webm") if webm_codec(src, cancel).as_deref() == Some("vp8") => cmd.args(["-c:v", "libvpx"]),
+            Some("webm") => cmd.args(["-c:v", "libvpx-vp9"]),
+            _ => cmd,
+        };
         cmd.arg("-i").arg(src).args(["-an", "-vf", &format!("fps={rate}"), "-c:v", "utvideo", "-pix_fmt", "gbrap"]);
     })
+}
+
+/// The codec of a file's first video stream, as ffprobe names it.
+fn webm_codec(src: &Path, cancel: &Cancel) -> Option<String> {
+    let mut probe = Command::new("ffprobe");
+    probe.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"]);
+    probe.arg(src);
+    crate::tool::run_output(probe, cancel).ok().map(|name| name.trim().to_owned())
+}
+
+/// Cuts the person out of a video (`sg-matte`, Robust Video Matting on
+/// the CPU): the picture with everything else transparent, as a WebM.
+/// `frames`: how many the source has, for the progress.
+pub fn cut_out(
+    model: &Path,
+    src: &Path,
+    out: &Path,
+    frames: i64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    let tmp = out.with_file_name(format!(".tmp-{}", out.file_name().unwrap_or_default().to_string_lossy()));
+    let mut cmd = Command::new("sg-matte");
+    // Half of the machine: the editor stays usable while it runs.
+    let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2));
+    cmd.arg(model).arg(src).arg(&tmp).arg(threads.to_string());
+    let result = run_lines(cmd, cancel, |line| {
+        if let Some(done) = line.strip_prefix("frame ").and_then(|n| n.trim().parse::<f32>().ok())
+            && frames > 0
+        {
+            progress((done / frames as f32).clamp(0.0, 1.0));
+        }
+    });
+    match result {
+        Ok(()) => std::fs::rename(&tmp, out).map_err(ToolError::from),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
 /// 540p all-intra H.264 proxy for scrubbing.

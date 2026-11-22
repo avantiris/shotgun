@@ -34,4 +34,6 @@ Given at 00:35, to be worked on unattended until 08:00. No questions: decisions 
 - Said: "If that is somehow possible give me a potential AI integration for the video editor so that I could use AI to enhance the Video (e.g. change background etc) I right now have no idea about what options there are, if possible it should be a local vendored model but if that doesnt work and there is no opensource stuff that is really good then just use an API optional to this provider so I can use it selectively."
 - Kind: idea
 - Area: other
-- Status: open
+- Status: a first feature built (this commit); the rest is a plan in `docs/spec/10-ai.md`
+- Now: "Cut out the person (AI)" in a video asset's menu: a local model makes a copy of the video with a transparent background, to put over any other background. A survey of what else is possible locally and through services is in `docs/spikes/s8-ai-survey.md`, measurements in `docs/spikes/s8-matte.md`.
+- Verified: a hidden run from import to the cut-out composited over another clip in the viewer (screenshot), including the model's download and check. On one clip only. Not exported, not seen by a person.

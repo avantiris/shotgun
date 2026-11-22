@@ -44,6 +44,8 @@ pub enum AssetRequest {
     Scenario(crate::session::ScenarioChoice),
     /// Remove the selected asset from the project.
     Remove,
+    /// Cut the person out of the selected video: a new asset with a transparent background.
+    CutOut,
     /// Open the file manager at this file of the project (its path in the
     /// bundle), or at the assets folder.
     ShowFolder(Option<String>),
@@ -364,6 +366,21 @@ impl AssetsPanel {
                                 .clicked()
                         {
                             out.push(AssetRequest::AngleByHand);
+                            ui.close();
+                        }
+                        let moving = asset.kind == sg_core::AssetKind::Video && asset.video.as_ref().is_some_and(|v| !v.is_still());
+                        if moving
+                            && ui
+                                .button("Cut out the person (AI)")
+                                .on_hover_text(
+                                    "Makes a copy of this video in which only the person is left and everything else is \
+                                     transparent: put it on a track above a colour, a picture or another clip. Done on \
+                                     this machine by a model made for one person in front of a camera; nothing is sent \
+                                     anywhere. Slow: ten to twenty times the clip's length.",
+                                )
+                                .clicked()
+                        {
+                            out.push(AssetRequest::CutOut);
                             ui.close();
                         }
                         if ui.button("Show in folder").on_hover_text("Opens the file manager where its file is").clicked() {

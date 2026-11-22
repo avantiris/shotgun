@@ -135,6 +135,12 @@ enum UserEvent {
         looks: Vec<(String, Vec<sg_core::Module>)>,
         luts: Vec<String>,
     },
+    /// A video with the person cut out was made: where it is.
+    CutOut {
+        id: AssetId,
+        label: String,
+        result: Result<PathBuf, String>,
+    },
     Stabilised {
         id: AssetId,
         label: String,
@@ -506,6 +512,39 @@ impl App {
                             (sg_project::analysis::load_looks(&root), sg_project::analysis::list_luts(&root));
                         let _ = proxy.send_event(UserEvent::Looks { root, looks, luts });
                     });
+                }
+                Command::CutOut { asset, .. } if !self.stabilising.insert(asset.id) => {}
+                Command::CutOut { root, asset } => {
+                    self.pending_jobs += 1;
+                    self.local_jobs += 1;
+                    let job = u64::MAX - self.local_jobs;
+                    let cancel = sg_media::Cancel::new();
+                    let library = sg_project::library_dir();
+                    let spawned = std::thread::Builder::new().name("sg-cut-out".into()).spawn(move || {
+                        let label = asset.label.clone();
+                        let mut last = -1i32;
+                        let mut progress = |fraction: f32| {
+                            if (fraction * 100.0) as i32 != last {
+                                last = (fraction * 100.0) as i32;
+                                let event = ImportEvent::Progress {
+                                    job,
+                                    label: label.clone(),
+                                    stage: "cutting out",
+                                    fraction: Some(fraction),
+                                };
+                                let _ = proxy.send_event(UserEvent::Import(event));
+                            }
+                        };
+                        progress(0.0);
+                        let result = sg_project::analysis::cut_out(&library, &root, &asset, &cancel, &mut progress)
+                            .map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Import(ImportEvent::Finished { job }));
+                        let _ =
+                            proxy.send_event(UserEvent::CutOut { id: asset.id, label: asset.label.clone(), result });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
                 }
                 // One run per asset: a second request while it is being made changes nothing.
                 Command::Stabilise { asset, .. } if !self.stabilising.insert(asset.id) => {}
@@ -1280,6 +1319,18 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Looks { root, looks, luts } => {
                 self.shell.looks_loaded(&root, looks, luts);
+                self.job_done();
+            }
+            UserEvent::CutOut { id, label, result } => {
+                self.stabilising.remove(&id);
+                match result {
+                    // The file is taken into the project like one that was dropped.
+                    Ok(path) => {
+                        let commands = self.shell.incoming(sg_ui::Incoming::Paths(vec![path]));
+                        self.run_commands(commands);
+                    }
+                    Err(e) => self.shell.report_error(format!("The person could not be cut out of {label}: {e}")),
+                }
                 self.job_done();
             }
             UserEvent::Stabilised { id, label, result } => {

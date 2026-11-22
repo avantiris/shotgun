@@ -1,7 +1,7 @@
 //! Analysis jobs on the conformed sound of assets: the beats of a song and
 //! the position of a take in it. Blocking; run on a job thread.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sg_core::AssetId;
 use sg_media::analysis::{self, Beats, Offset};
@@ -169,6 +169,65 @@ pub fn stabilise(
         progress(f * 0.85)
     })?;
     sg_media::derive::proxy(&out, &proxy, seconds, cancel, &mut |f| progress(0.85 + f * 0.15))
+}
+
+/// Where the model that cuts people out is kept: once per library, not per project.
+const MATTE_MODEL: &str = "_models/rvm_mobilenetv3_fp32.onnx";
+/// Where it comes from (the authors' release) and what it must be (SHA-256).
+const MATTE_MODEL_URL: &str =
+    "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx";
+const MATTE_MODEL_SHA256: &str = "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828";
+
+/// The matting model in the library, fetched (15 MB) the first time it is
+/// needed and checked against what it is known to be.
+fn matte_model(library: &Path, cancel: &Cancel) -> Result<PathBuf, ToolError> {
+    let model = library.join(MATTE_MODEL);
+    let checked = |path: &Path| -> Result<bool, ToolError> {
+        let mut sum = std::process::Command::new("sha256sum");
+        sum.arg(path);
+        Ok(sg_media::tool::run_output(sum, cancel)?.starts_with(MATTE_MODEL_SHA256))
+    };
+    if model.is_file() && checked(&model)? {
+        return Ok(model);
+    }
+    if let Some(dir) = model.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let fetched = model.with_extension("onnx.part");
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["--silent", "--show-error", "--fail", "--location", "--max-time", "600", "--output"]);
+    curl.arg(&fetched).arg(MATTE_MODEL_URL);
+    sg_media::tool::run_output(curl, cancel)
+        .map_err(|e| ToolError::other(format!("the model could not be fetched from {MATTE_MODEL_URL}: {e}")))?;
+    if !checked(&fetched)? {
+        let _ = std::fs::remove_file(&fetched);
+        return Err(ToolError::other("the model that was fetched is not the one that was expected; it was not used"));
+    }
+    std::fs::rename(&fetched, &model)?;
+    Ok(model)
+}
+
+/// Cuts the person out of a video asset (feedback N2.5): writes the
+/// picture with a transparent background as a WebM into the project's
+/// cache and returns where it is, to be imported like any other file.
+/// `library`: where the model is kept.
+pub fn cut_out(
+    library: &Path,
+    root: &Path,
+    asset: &sg_core::Asset,
+    cancel: &Cancel,
+    progress: &mut dyn FnMut(f32),
+) -> Result<PathBuf, ToolError> {
+    let video = asset.video.as_ref().filter(|v| !v.is_still()).ok_or_else(|| ToolError::other("it is not a video"))?;
+    let model = matte_model(library, cancel)?;
+    let folder = root.join(".shotgun/cache/cutout");
+    std::fs::create_dir_all(&folder)?;
+    let out = folder.join(format!("{} cut out.webm", sg_core::text::slug(&asset.label)));
+    // (A copy with its frame rate put right, if there is one: the cut-out then has the same timing.)
+    let conform = cache::conform(root, asset.id, false);
+    let source = if conform.is_file() { conform } else { root.join(&asset.file) };
+    sg_media::derive::cut_out(&model, &source, &out, video.frames, cancel, progress)?;
+    Ok(out)
 }
 
 /// The look-up tables in `assets/lut/`, by file name.

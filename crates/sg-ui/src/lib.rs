@@ -146,6 +146,12 @@ pub enum Command {
     LoadLooks {
         root: PathBuf,
     },
+    /// Cut the person out of a video asset; the result arrives as a new
+    /// asset through [`Shell::incoming`], a failure through [`Shell::report_error`].
+    CutOut {
+        root: PathBuf,
+        asset: Arc<Asset>,
+    },
     /// Make the stabilised copy of an asset if it is not there yet.
     Stabilise {
         root: PathBuf,
@@ -335,6 +341,8 @@ pub enum DevStep {
     Lut(String),
     /// Make the selected asset the hero of its scenario.
     Hero,
+    /// Cut the person out of the selected asset.
+    CutOut,
     /// Open the "Chain" panel (the selected track's chain).
     Chain,
     /// Show the picture of this stage in the "Chain" panel, by its name there.
@@ -631,6 +639,21 @@ impl Shell {
                 AssetRequest::ShowFolder(file) => {
                     if let Some(session) = &self.session {
                         self.reveal = Some(session.root.join(file.as_deref().unwrap_or("assets")));
+                    }
+                }
+                AssetRequest::CutOut => {
+                    let asset = self
+                        .editor
+                        .assets
+                        .selected
+                        .and_then(|id| self.session.as_ref()?.project().assets.get(&id).cloned());
+                    if let (Some(asset), Some(session)) = (asset, &mut self.session) {
+                        session.notice = Some(format!(
+                            "Cutting the person out of {}: it arrives as a new asset with a transparent background. \
+                             This takes ten to twenty times as long as the clip; the first time, the model (15 MB) is fetched.",
+                            asset.label
+                        ));
+                        commands.push(Command::CutOut { root: session.root.clone(), asset });
                     }
                 }
                 AssetRequest::ListGlobal => commands.push(Command::ListGlobal),
@@ -1172,6 +1195,19 @@ impl Shell {
             DevStep::Chain => {
                 (self.editor.mixer.open, self.editor.mixer.chain) = (true, true);
                 self.editor.colour.open = false;
+            }
+            DevStep::CutOut => {
+                let asset = self
+                    .editor
+                    .assets
+                    .selected
+                    .and_then(|id| self.session.as_ref()?.project().assets.get(&id).cloned());
+                match (asset, &self.session) {
+                    (Some(asset), Some(session)) => {
+                        commands.push(Command::CutOut { root: session.root.clone(), asset })
+                    }
+                    _ => self.error = Some("cutout: no asset is selected".to_owned()),
+                }
             }
             DevStep::Stage(name) => match scope::Stage::named(&name) {
                 Some(stage) => self.editor.mixer.stage = Some(stage),

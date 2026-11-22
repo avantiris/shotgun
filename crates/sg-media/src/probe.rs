@@ -65,6 +65,8 @@ struct RawStream {
     disposition: std::collections::BTreeMap<String, i32>,
     #[serde(default)]
     side_data_list: Vec<RawSideData>,
+    #[serde(default)]
+    tags: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -165,8 +167,12 @@ pub fn parse(json: &str) -> Result<Probed, ToolError> {
             if image_container && format != "gif" && format != "apng" && counted.is_none() {
                 frames = 1;
             }
-            let alpha = has_alpha(&pix_fmt);
-            animated_alpha = image_container && frames > 1 && (alpha || format == "gif");
+            // WebM keeps transparency beside the picture and says so in a
+            // tag; the pixel format is that of the picture alone.
+            let beside =
+                s.tags.iter().any(|(tag, value)| tag.eq_ignore_ascii_case("alpha_mode") && value.trim() == "1");
+            let alpha = has_alpha(&pix_fmt) || beside;
+            animated_alpha = frames > 1 && ((image_container && (alpha || format == "gif")) || beside);
             let rotation =
                 s.side_data_list.iter().find_map(|d| d.rotation).map_or(0, |r| (r.round() as i32).rem_euclid(360));
             // Only the MP4/MOV demuxer derives the average from its sample
@@ -204,7 +210,9 @@ pub fn parse(json: &str) -> Result<Probed, ToolError> {
         })
     });
     let kind = match (&video, &audio) {
-        (Some(v), _) if image_container || (v.frames <= 1 && audio.is_none()) => AssetKind::Image,
+        // (A video with transparency is handled as animated pictures
+        // are: through the lossless copy that keeps the transparency.)
+        (Some(v), _) if image_container || animated_alpha || (v.frames <= 1 && audio.is_none()) => AssetKind::Image,
         (Some(_), _) => AssetKind::Video,
         (None, Some(_)) => AssetKind::Audio,
         (None, None) => return Err(ToolError::other("no video, audio or image found in this file")),
@@ -263,6 +271,19 @@ mod tests {
         let p = parse(gif).unwrap();
         assert_eq!((p.kind, p.animated_alpha), (AssetKind::Image, true));
         assert_eq!(p.video.unwrap().frames, 25);
+
+        // A WebM with transparency (what "Cut out the person" writes): the pixel
+        // format is the picture's alone, a tag says that there is more.
+        let cut = r#"{"streams":[{"codec_type":"video","codec_name":"vp9","width":1920,"height":1080,"pix_fmt":"yuv420p",
+            "r_frame_rate":"60/1","avg_frame_rate":"60/1","tags":{"alpha_mode":"1","ENCODER":"Lavc libvpx-vp9"}}],
+            "format":{"format_name":"matroska,webm","duration":"2.000000"}}"#;
+        let p = parse(cut).unwrap();
+        assert_eq!((p.kind, p.animated_alpha), (AssetKind::Image, true));
+        let video = p.video.unwrap();
+        assert_eq!((video.frames, video.alpha), (120, true));
+        // The same without the tag is a plain video.
+        let plain = parse(&cut.replace(r#""alpha_mode":"1","#, "")).unwrap();
+        assert_eq!((plain.kind, plain.animated_alpha), (AssetKind::Video, false));
 
         let mp3 = r#"{"streams":[{"codec_type":"audio","codec_name":"mp3","sample_rate":"48000","channels":2,"duration":"2.5"},
             {"codec_type":"video","codec_name":"mjpeg","width":500,"height":500,"disposition":{"attached_pic":1}}],
