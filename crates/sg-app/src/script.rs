@@ -65,6 +65,11 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
         "chain" => Step::Dev(DevStep::Chain),
         "cutout" => Step::Dev(DevStep::CutOut),
+        // stretch:<semitones>:<times as fast>
+        "stretch" => {
+            let (semitones, tempo) = arg.split_once(':').ok_or_else(|| anyhow!("stretch needs <semitones>:<tempo>"))?;
+            Step::Dev(DevStep::Stretch(semitones.parse()?, tempo.parse()?))
+        }
         "stage" => Step::Dev(DevStep::Stage(need()?)),
         "lyrics" => Step::Dev(DevStep::Lyrics(need()?)),
         "help" => Step::Dev(DevStep::Act(Action::Help)),

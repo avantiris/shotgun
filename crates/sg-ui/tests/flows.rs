@@ -1055,6 +1055,27 @@ fn the_person_is_cut_out_of_a_video_from_its_menu() {
 }
 
 #[test]
+fn a_copy_of_an_assets_sound_at_another_pitch_or_tempo_is_asked_for_from_its_menu() {
+    let mut harness = editor();
+    right_click(&mut harness, "first take");
+    click(&mut harness, "Another pitch or tempo");
+    harness.run_steps(2);
+    // Nothing is changed yet: there is no copy to make.
+    assert!(harness.query_by_label("Make the copy").is_some());
+    click(&mut harness, "Make the copy");
+    harness.run_steps(2);
+    assert!(!harness.state().commands.iter().any(|c| matches!(c, Command::Stretch { .. })));
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    // (The numbers are pulled by hand; a scripted step stands in for that here.)
+    let asked = harness.state_mut().shell.dev(sg_ui::DevStep::Stretch(2.0, 1.056));
+    assert!(matches!(
+        &asked[..],
+        [Command::Stretch { asset, semitones, tempo, .. }] if asset.id == AssetId(1) && *semitones == 2.0 && (*tempo - 1.056).abs() < 1e-6
+    ));
+}
+
+#[test]
 fn a_finished_export_offers_the_way_to_its_file() {
     let mut harness = editor();
     assert!(harness.query_by_label("Show in folder").is_none());

@@ -152,6 +152,14 @@ pub enum Command {
         root: PathBuf,
         asset: Arc<Asset>,
     },
+    /// Make a copy of an asset's sound at another pitch (semitones) and
+    /// tempo (times as fast); it arrives as a new asset through [`Shell::incoming`].
+    Stretch {
+        root: PathBuf,
+        asset: Arc<Asset>,
+        semitones: f32,
+        tempo: f32,
+    },
     /// Make the stabilised copy of an asset if it is not there yet.
     Stabilise {
         root: PathBuf,
@@ -345,6 +353,8 @@ pub enum DevStep {
     Hero,
     /// Cut the person out of the selected asset.
     CutOut,
+    /// A copy of the selected asset's sound: semitones up, times as fast.
+    Stretch(f32, f32),
     /// Open the "Chain" panel (the selected track's chain).
     Chain,
     /// Show the picture of this stage in the "Chain" panel, by its name there.
@@ -646,6 +656,20 @@ impl Shell {
                 AssetRequest::ShowFolder(file) => {
                     if let Some(session) = &self.session {
                         self.reveal = Some(session.root.join(file.as_deref().unwrap_or("assets")));
+                    }
+                }
+                AssetRequest::Stretch(semitones, tempo) => {
+                    let asset = self
+                        .editor
+                        .assets
+                        .selected
+                        .and_then(|id| self.session.as_ref()?.project().assets.get(&id).cloned());
+                    if let (Some(asset), Some(session)) = (asset, &mut self.session) {
+                        session.notice = Some(format!(
+                            "Making a copy of {} at another pitch or tempo: it arrives as a new asset.",
+                            asset.label
+                        ));
+                        commands.push(Command::Stretch { root: session.root.clone(), asset, semitones, tempo });
                     }
                 }
                 AssetRequest::CutOut => {
@@ -1204,6 +1228,19 @@ impl Shell {
             DevStep::Chain => {
                 (self.editor.mixer.open, self.editor.mixer.chain) = (true, true);
                 self.editor.colour.open = false;
+            }
+            DevStep::Stretch(semitones, tempo) => {
+                let asset = self
+                    .editor
+                    .assets
+                    .selected
+                    .and_then(|id| self.session.as_ref()?.project().assets.get(&id).cloned());
+                match (asset, &self.session) {
+                    (Some(asset), Some(session)) => {
+                        commands.push(Command::Stretch { root: session.root.clone(), asset, semitones, tempo })
+                    }
+                    _ => self.error = Some("stretch: no asset is selected".to_owned()),
+                }
             }
             DevStep::CutOut => {
                 let asset = self

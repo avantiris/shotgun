@@ -46,6 +46,9 @@ pub enum AssetRequest {
     Remove,
     /// Cut the person out of the selected video: a new asset with a transparent background.
     CutOut,
+    /// A copy of the selected asset's sound at another pitch (semitones)
+    /// and tempo (times as fast): a new asset.
+    Stretch(f32, f32),
     /// Open the file manager at this file of the project (its path in the
     /// bundle), or at the assets folder.
     ShowFolder(Option<String>),
@@ -74,6 +77,8 @@ pub struct AssetsPanel {
     sound_only: bool,
     /// A drag from another application is over the window.
     pub drag_hover: bool,
+    /// What "Another pitch or tempo" in an asset's menu is set to: semitones, and percent of the tempo.
+    stretch: (f32, f32),
     /// The "Global" tab is shown instead of the project's assets.
     global_tab: bool,
     /// What the global folder holds, as last read.
@@ -367,6 +372,34 @@ impl AssetsPanel {
                         {
                             out.push(AssetRequest::AngleByHand);
                             ui.close();
+                        }
+                        if asset.audio.is_some() {
+                            ui.menu_button("Another pitch or tempo", |ui| {
+                                ui.set_min_width(230.0);
+                                if self.stretch.1 == 0.0 {
+                                    self.stretch = (0.0, 100.0);
+                                }
+                                ui.label(
+                                    RichText::new("A copy of its sound: higher or lower without getting faster, faster or slower without getting higher.")
+                                        .size(11.0)
+                                        .color(theme::DIM),
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.label("Pitch");
+                                    ui.add(egui::DragValue::new(&mut self.stretch.0).range(-12.0..=12.0).speed(0.05).fixed_decimals(0).suffix(" semitones"))
+                                        .on_hover_text("12 is an octave up, -12 an octave down");
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Tempo");
+                                    ui.add(egui::DragValue::new(&mut self.stretch.1).range(50.0..=200.0).speed(0.2).fixed_decimals(1).suffix(" %"))
+                                        .on_hover_text("A beat at 90 beats a minute played at 95: 105.6 % (95 / 90)");
+                                });
+                                let changed = self.stretch.0 != 0.0 || (self.stretch.1 - 100.0).abs() > 0.05;
+                                if ui.add_enabled(changed, egui::Button::new("Make the copy")).clicked() {
+                                    out.push(AssetRequest::Stretch(self.stretch.0.round(), self.stretch.1 / 100.0));
+                                    ui.close();
+                                }
+                            });
                         }
                         let moving = asset.kind == sg_core::AssetKind::Video && asset.video.as_ref().is_some_and(|v| !v.is_still());
                         if moving

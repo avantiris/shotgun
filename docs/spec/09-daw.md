@@ -280,6 +280,13 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
 - **A clip at full level.** "Loudest moment to -1 dB" in a sound clip's
   volume menu (normalising: the clip's volume, not its sound, changes).
 - **Make-up gain** on the compressor (0 to 24 dB).
+- **Another pitch or tempo.** "Another pitch or tempo" in the menu of an
+  asset that has sound makes a copy of its sound moved by semitones,
+  played faster or slower, or both, each without the other changing
+  (ffmpeg's rubberband filter, as a background job; the copy arrives as
+  a new asset, FLAC). For a beat in another key or at the song's tempo.
+  Checked in a hidden run: a tone asked an octave up and twice as fast
+  came out with twice the zero crossings and half the length.
 - **A velocity lane** under the piano roll: a bar per note, as high as
   the note is struck hard. A press or a pull through the lane sets the
   notes under it (of the selected ones if some of those are there); one
@@ -290,7 +297,8 @@ track's fader and of plugin parameters over time; choosing between
 takes in one lane; freezing a track
 to a file; hearing the input through the track's own chain (the stages
 run half a second ahead of what is heard, so this needs another kind of
-stage); pitch bend; time stretching without a change of pitch.
+stage); pitch bend; stretching a clip on the timeline without a change
+of pitch (a copy of an asset can be made at another tempo).
 
 ## Open
 

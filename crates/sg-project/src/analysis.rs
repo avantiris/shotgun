@@ -180,6 +180,35 @@ pub fn stabilise(
     sg_media::derive::proxy(&out, &proxy, seconds, cancel, &mut |f| progress(0.85 + f * 0.15))
 }
 
+/// A copy of an asset's sound moved by `semitones` in pitch and played
+/// `tempo` times as fast (each without the other changing), written into
+/// the project's cache; returns where it is, to be imported like any
+/// other file. For a beat in another key or at another tempo.
+pub fn stretch(
+    root: &Path,
+    asset: &sg_core::Asset,
+    semitones: f32,
+    tempo: f32,
+    cancel: &Cancel,
+    progress: &mut dyn FnMut(f32),
+) -> Result<PathBuf, ToolError> {
+    let sound = asset.audio.as_ref().ok_or_else(|| ToolError::other("it has no sound"))?;
+    let folder = root.join(".shotgun/cache/stretch");
+    std::fs::create_dir_all(&folder)?;
+    let mut name = sg_core::text::slug(&asset.label);
+    if semitones != 0.0 {
+        name += &format!(" {semitones:+} st");
+    }
+    if (tempo - 1.0).abs() > 1e-4 {
+        name += &format!(" {:.0} pct", tempo * 100.0);
+    }
+    let out = folder.join(format!("{name}.flac"));
+    let seconds = sound.samples as f64 / sound.sample_rate.max(1) as f64;
+    let pitch = 2f64.powf(semitones as f64 / 12.0);
+    sg_media::derive::stretch(&root.join(&asset.file), &out, pitch, tempo as f64, seconds, cancel, progress)?;
+    Ok(out)
+}
+
 /// Where the model that cuts people out is kept: once per library, not per project.
 const MATTE_MODEL: &str = "_models/rvm_mobilenetv3_fp32.onnx";
 /// Where it comes from (the authors' release) and what it must be (SHA-256).

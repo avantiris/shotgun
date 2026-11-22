@@ -135,6 +135,14 @@ enum UserEvent {
         looks: Vec<(String, Vec<sg_core::Module>)>,
         luts: Vec<String>,
     },
+    /// A file was made from an asset (`what` was done to it): where it is,
+    /// to be taken into the project it was made in.
+    Made {
+        root: PathBuf,
+        label: String,
+        what: &'static str,
+        result: Result<PathBuf, String>,
+    },
     /// A video with the person cut out was made: where it is.
     CutOut {
         root: PathBuf,
@@ -513,6 +521,42 @@ impl App {
                             (sg_project::analysis::load_looks(&root), sg_project::analysis::list_luts(&root));
                         let _ = proxy.send_event(UserEvent::Looks { root, looks, luts });
                     });
+                }
+                Command::Stretch { root, asset, semitones, tempo } => {
+                    self.pending_jobs += 1;
+                    self.local_jobs += 1;
+                    let job = u64::MAX - self.local_jobs;
+                    let cancel = sg_media::Cancel::new();
+                    let spawned = std::thread::Builder::new().name("sg-stretch".into()).spawn(move || {
+                        let label = asset.label.clone();
+                        let mut last = -1i32;
+                        let mut progress = |fraction: f32| {
+                            if (fraction * 100.0) as i32 != last {
+                                last = (fraction * 100.0) as i32;
+                                let event = ImportEvent::Progress {
+                                    job,
+                                    label: label.clone(),
+                                    stage: "stretching",
+                                    fraction: Some(fraction),
+                                };
+                                let _ = proxy.send_event(UserEvent::Import(event));
+                            }
+                        };
+                        progress(0.0);
+                        let result =
+                            sg_project::analysis::stretch(&root, &asset, semitones, tempo, &cancel, &mut progress)
+                                .map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Import(ImportEvent::Finished { job }));
+                        let _ = proxy.send_event(UserEvent::Made {
+                            root,
+                            label: asset.label.clone(),
+                            what: "given another pitch or tempo",
+                            result,
+                        });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
                 }
                 Command::CutOut { asset, .. } if !self.stabilising.insert(asset.id) => {}
                 Command::CutOut { root, asset } => {
@@ -1324,6 +1368,21 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Looks { root, looks, luts } => {
                 self.shell.looks_loaded(&root, looks, luts);
+                self.job_done();
+            }
+            UserEvent::Made { root, label, what, result } => {
+                let here = self.shell.session().is_some_and(|session| session.root == root);
+                match result {
+                    Ok(path) if !here => self.shell.notify(format!(
+                        "{label} was {what} after its project was closed. The file is {}: drop it into the project to use it.",
+                        path.display()
+                    )),
+                    Ok(path) => {
+                        let commands = self.shell.incoming(sg_ui::Incoming::Paths(vec![path]));
+                        self.run_commands(commands);
+                    }
+                    Err(e) => self.shell.report_error(format!("{label} could not be {what}: {e}")),
+                }
                 self.job_done();
             }
             UserEvent::CutOut { root, id, label, result } => {

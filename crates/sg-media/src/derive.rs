@@ -192,6 +192,25 @@ fn webm_codec(src: &Path, cancel: &Cancel) -> Option<String> {
     crate::tool::run_output(probe, cancel).ok().map(|name| name.trim().to_owned())
 }
 
+/// A copy of a file's sound at another pitch, another tempo or both
+/// (ffmpeg's rubberband filter: the one changes without the other), as
+/// FLAC. `pitch`: the ratio of the frequencies (2 is an octave up);
+/// `tempo`: how many times as fast.
+pub fn stretch(
+    src: &Path,
+    out: &Path,
+    pitch: f64,
+    tempo: f64,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    let filter = format!("rubberband=pitch={pitch:.6}:tempo={tempo:.6}:pitchq=quality");
+    ffmpeg_to(out, total_secs / tempo.max(0.01), cancel, progress, |cmd| {
+        cmd.arg("-i").arg(src).args(["-vn", "-af", &filter, "-ar", "48000", "-c:a", "flac"]);
+    })
+}
+
 /// Cuts the person out of a video (`sg-matte`, Robust Video Matting on
 /// the CPU): the picture with everything else transparent, as a WebM.
 /// `frames`: how many the source has, for the progress.
