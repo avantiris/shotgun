@@ -336,7 +336,7 @@ fn gain_at(y: f32, y0: f32, y1: f32) -> f32 {
 const SELECT_MOST: usize = 2000;
 
 /// Waveform colour: dark on the clip's fill, like ink on the track colour.
-const WAVE: Color32 = Color32::from_rgb(10, 38, 30);
+const WAVE: Color32 = Color32::from_rgb(22, 22, 22);
 
 enum Wave {
     /// Asked for; nothing to draw yet.

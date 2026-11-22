@@ -1,5 +1,10 @@
 //! Colours, edges and spacing in one place.
 //!
+//! Black and white, like the icon (feedback F17.6): greys without a tint,
+//! white as the one accent. Colour is left to what means something by its
+//! colour: errors and recording (red), levels near their limit (yellow),
+//! and the tools that work on colour.
+//!
 //! The look (feedback N2.3, 2026-11-22, `PROPOSED` in its details): flat
 //! surfaces with hard edges. A control is a dark face with a one-pixel
 //! border and nearly square corners; pointing at it lights the border,
@@ -9,39 +14,39 @@
 
 use egui::{Color32, Stroke, Visuals};
 
-pub const BG: Color32 = Color32::from_rgb(14, 14, 16);
-pub const PANEL: Color32 = Color32::from_rgb(22, 22, 25);
-pub const RAISED: Color32 = Color32::from_rgb(33, 33, 38);
-pub const LINE: Color32 = Color32::from_rgb(56, 56, 64);
-pub const TEXT: Color32 = Color32::from_rgb(228, 228, 232);
-pub const DIM: Color32 = Color32::from_rgb(138, 138, 150);
-pub const ACCENT: Color32 = Color32::from_rgb(255, 122, 48);
+pub const BG: Color32 = Color32::from_rgb(14, 14, 14);
+pub const PANEL: Color32 = Color32::from_rgb(22, 22, 22);
+pub const RAISED: Color32 = Color32::from_rgb(33, 33, 33);
+pub const LINE: Color32 = Color32::from_rgb(56, 56, 56);
+pub const TEXT: Color32 = Color32::from_rgb(228, 228, 228);
+pub const DIM: Color32 = Color32::from_rgb(138, 138, 138);
+pub const ACCENT: Color32 = Color32::from_rgb(246, 246, 246);
 pub const ERROR: Color32 = Color32::from_rgb(232, 84, 84);
-pub const VIDEO: Color32 = Color32::from_rgb(76, 141, 214);
-pub const AUDIO: Color32 = Color32::from_rgb(87, 184, 148);
+pub const VIDEO: Color32 = Color32::from_rgb(168, 168, 168);
+pub const AUDIO: Color32 = Color32::from_rgb(112, 112, 112);
 
 /// The corners of controls and of what is painted by hand: just off square.
 pub const RADIUS: f32 = 1.5;
 
 /// The face of a control at rest, pointed at, and of one that is on.
-const FACE: Color32 = Color32::from_rgb(38, 38, 44);
-const FACE_HOT: Color32 = Color32::from_rgb(52, 52, 60);
-const FACE_ON: Color32 = Color32::from_rgb(82, 46, 24);
-const PRESSED: Color32 = Color32::from_rgb(206, 92, 30);
-const EDGE_HOT: Color32 = Color32::from_rgb(104, 104, 118);
+const FACE: Color32 = Color32::from_rgb(38, 38, 38);
+const FACE_HOT: Color32 = Color32::from_rgb(52, 52, 52);
+const FACE_ON: Color32 = Color32::from_rgb(74, 74, 74);
+const PRESSED: Color32 = Color32::from_rgb(128, 128, 128);
+const EDGE_HOT: Color32 = Color32::from_rgb(104, 104, 104);
 
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Dark);
     ctx.all_styles_mut(|style| {
         let mut v = Visuals::dark();
         v.panel_fill = PANEL;
-        v.window_fill = Color32::from_rgb(24, 24, 28);
+        v.window_fill = Color32::from_rgb(24, 24, 24);
         v.window_stroke = Stroke::new(1.0, LINE);
         v.extreme_bg_color = BG;
-        v.faint_bg_color = Color32::from_rgb(26, 26, 30);
+        v.faint_bg_color = Color32::from_rgb(26, 26, 26);
         v.override_text_color = Some(TEXT);
-        // What is on (a chosen tab, a pressed toggle): a warm dark face
-        // with the accent around it, not a block of colour.
+        // What is on (a chosen tab, a pressed toggle): a lighter face
+        // with the accent around it, not a block of white.
         v.selection.bg_fill = FACE_ON;
         v.selection.stroke = Stroke::new(1.0, ACCENT);
         v.hyperlink_color = ACCENT;
@@ -61,7 +66,7 @@ pub fn apply(ctx: &egui::Context) {
         v.widgets.inactive.bg_fill = FACE;
         v.widgets.inactive.weak_bg_fill = FACE;
         v.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
-        v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(204, 204, 212));
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(204, 204, 204));
         v.widgets.inactive.expansion = 0.0;
 
         // Pointed at: the edge lights up and the label goes white. No growing.
