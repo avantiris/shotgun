@@ -1,0 +1,75 @@
+# A release for every push to main whose commits call for one
+# (scripts/next-version.sh: fix -> patch, feat -> minor, breaking -> major).
+# It builds the AppImage with Nix, tags the commit it built as v<version>
+# and puts the file on the release.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One at a time, and never stopped half-way between tagging and uploading.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # every commit and tag: the version comes from them
+
+      - name: Version of this release
+        id: version
+        run: |
+          next=$(bash scripts/next-version.sh)
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "next release: ${next:-none}"
+
+      - name: Free disk space
+        if: steps.version.outputs.next != ''
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - uses: cachix/install-nix-action@v31
+        if: steps.version.outputs.next != ''
+
+      - name: Build the AppImage
+        if: steps.version.outputs.next != ''
+        env:
+          VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          bash scripts/set-version.sh "$VERSION"
+          nix build .#appimage --print-build-logs
+          cp -L result "shotgun-$VERSION-x86_64.AppImage"
+          chmod 755 "shotgun-$VERSION-x86_64.AppImage"
+
+      # Only after the build: a build that fails leaves no tag behind.
+      - name: Tag
+        if: steps.version.outputs.next != ''
+        env:
+          VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --quiet --all --message "chore(release): v$VERSION" --allow-empty
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          # The new version number goes to main too. Main may have moved on
+          # during the build; the tag stays on what was built.
+          git push origin HEAD:main || { git pull --rebase origin main && git push origin HEAD:main; }
+
+      - name: Release
+        if: steps.version.outputs.next != ''
+        env:
+          VERSION: ${{ steps.version.outputs.next }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" "shotgun-$VERSION-x86_64.AppImage" \
+            --title "Shotgun $VERSION" --generate-notes --verify-tag

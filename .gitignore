@@ -10,3 +10,4 @@ target/
 !docs/**/*.gif
 .direnv/
 result
+*.AppImage

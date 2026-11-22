@@ -38,6 +38,7 @@ shotgun [options]
                        script steps: filter:<text> new:<name> open:<folder> rename:<name> undo redo close
                        import:<path or link> asset:<n> add del perf esc wait:<ms> shot:<file.png> quit
                        size:<w>x<h> exportpanel export:<master|vertical|gif|share:<MB>> (see script.rs for all)
+  --version            print the version and quit
   --bench-start        print the time to the first library frame and quit
   --bench-open         with --open: print the time to the first editor frame and quit
 Environment: SHOTGUN_LIBRARY (library folder), SHOTGUN_KEYS (key file instead of ~/.config/shotgun/keys.conf), SHOTGUN_APP_ID (Wayland app id), SHOTGUN_LOG (error..trace),
@@ -63,6 +64,10 @@ fn parse_args() -> anyhow::Result<Args> {
             "--exit-after" => args.exit_after = Some(value()?.parse().context("--exit-after needs seconds")?),
             "--bench-start" => args.bench_start = true,
             "--bench-open" => args.bench_open = true,
+            "--version" | "-V" => {
+                println!("shotgun {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--help" | "-h" => {
                 println!("{USAGE}");
                 std::process::exit(0);

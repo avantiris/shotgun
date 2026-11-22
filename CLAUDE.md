@@ -53,6 +53,7 @@ nix develop --command bash scripts/bench-m5.sh        # M5: three 4K60 layers pl
 nix develop --command bash scripts/bench-m6.sh        # M6: export speed, outputs probed
 nix develop --command bash scripts/check.sh           # fmt + clippy + tests; run before every commit
 nix build                                             # the packaged program with every tool it runs (flake.nix)
+nix build .#appimage                                  # the AppImage the release workflow publishes
 ```
 
 The binary is `shotgun` (`$CARGO_TARGET_DIR/release/shotgun --help`).
@@ -129,3 +130,11 @@ the script steps `level;hear` (both are needed).
 - External tools (`yt-dlp`, `git`, `gifski`, `wl-copy`) are called only from
   the job pool, with cancellation and captured stderr surfaced in the UI.
 - Commit only when a milestone step is complete and verified.
+- Commit subjects are conventional commits (`feat: ...`, `fix: ...`,
+  `perf:`, `docs:`, `test:`, `refactor:`, `chore:`; `!` for a breaking
+  change): a push to `main` is released by `.github/workflows/release.yml`
+  with the version `scripts/next-version.sh` works out from them. `feat`
+  and `fix` are for what the user of the program notices.
+- Published under AGPL-3.0-only, copyright Avantiris Association
+  (`LICENSE`). Only add code, fonts, models and tools whose licence allows
+  that; the icon is drawn by `assets/icon/make.py`.

@@ -11,7 +11,10 @@
   inputs.ni-wine.url = "github:selimbucher/native-instruments";
   inputs.ni-wine.inputs.nixpkgs.follows = "nixpkgs";
 
-  outputs = { self, nixpkgs, ni-wine }:
+  # Packs a program and everything it needs into one AppImage file.
+  inputs.nix-appimage.url = "github:ralismark/nix-appimage";
+
+  outputs = { self, nixpkgs, ni-wine, nix-appimage }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
@@ -25,7 +28,10 @@
       # Everything the program runs as a separate process. Nothing of it
       # has to be installed on the system (feedback F14.2): the packaged
       # program and the dev shell both bring it along.
-      runtimeTools = with pkgs; [
+      version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
+
+      runtimeTools = baseTools ++ musicTools;
+      baseTools = with pkgs; [
         ffmpeg-full # ffmpeg, ffprobe: import, proxies, export
         yt-dlp # links
         gifski # GIF export
@@ -37,7 +43,7 @@
         curl # fetches the matting model on its first use
         sgMatte # "Cut out the person"
         sgSky # "Replace the sky"
-      ] ++ musicTools;
+      ];
 
       # Cutting a person out of a video (docs/spikes/s8-matte.md): Robust
       # Video Matting on onnxruntime, as a program of its own so that the
@@ -141,26 +147,27 @@
         pipewire
         alsa-lib
       ];
-    in
-    {
-      # The program with everything it needs: `nix run`, or put
-      # `packages.x86_64-linux.default` into a system or home profile.
-      packages.${system}.default = pkgs.rustPlatform.buildRustPackage {
+
+      # The program as built, with its launcher entry and icons, but without
+      # the tools it runs: those are put around it below, so that the two
+      # variants share one build.
+      unwrapped = pkgs.rustPlatform.buildRustPackage {
         pname = "shotgun";
-        version = "0.1.0";
+        inherit version;
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
-          # Sources only: neither the documents nor the spikes change the build.
+          # Only what the build reads: a change to a document, a script or
+          # this file does not build the program again.
           filter = path: type:
             let rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
-            in !(pkgs.lib.hasPrefix "docs" rel || pkgs.lib.hasPrefix "spikes" rel || pkgs.lib.hasPrefix "scripts" rel);
+            in pkgs.lib.any (prefix: pkgs.lib.hasPrefix prefix rel) [ "Cargo." "crates" "assets" ".cargo" ];
         };
         cargoLock.lockFile = ./Cargo.lock;
         # The program, and the process its plugins run in (found beside it).
         cargoBuildFlags = [ "-p" "sg-app" "-p" "sg-plug" ];
         # The tests want media, a GPU and a sound server; they run in the dev shell.
         doCheck = false;
-        nativeBuildInputs = with pkgs; [ pkg-config clang mold makeWrapper ];
+        nativeBuildInputs = with pkgs; [ pkg-config clang mold copyDesktopItems resvg ];
         buildInputs = with pkgs; [
           ffmpeg-full
           pipewire
@@ -175,15 +182,87 @@
           freetype
         ];
         LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-        postFixup = ''
+        # The entry in the desktop's launcher. Its file name is the window's
+        # app id, which is how a Wayland desktop finds a window's icon.
+        desktopItems = [
+          (pkgs.makeDesktopItem {
+            name = "shotgun";
+            desktopName = "Shotgun";
+            genericName = "Video editor";
+            comment = "Video editor with a music workstation inside";
+            exec = "shotgun";
+            icon = "shotgun";
+            categories = [ "AudioVideo" "Video" "Audio" "AudioVideoEditing" ];
+            startupWMClass = "shotgun";
+          })
+        ];
+        postInstall = ''
+          icons=$out/share/icons/hicolor
+          install -Dm644 assets/icon/shotgun.svg $icons/scalable/apps/shotgun.svg
+          for size in 32 48 64 128 256 512; do
+            mkdir -p $icons/''${size}x$size/apps
+            resvg -w $size -h $size assets/icon/shotgun.svg $icons/''${size}x$size/apps/shotgun.png
+          done
+        '';
+        meta = {
+          description = "Video editor with a music workstation inside";
+          license = pkgs.lib.licenses.agpl3Only;
+          platforms = [ system ];
+          mainProgram = "shotgun";
+        };
+      };
+
+      # The program with the tools it runs. `tools` is what it finds on its
+      # PATH; `wrap` is added to the start script.
+      shotgunWith = { tools, wrap ? "" }: pkgs.symlinkJoin {
+        pname = "shotgun";
+        inherit version;
+        paths = [ unwrapped ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
           # (What the library path was before: plugins are started with that one.)
           wrapProgram $out/bin/shotgun \
             --run 'export SHOTGUN_OUTER_LD_LIBRARY_PATH="''${LD_LIBRARY_PATH:-}"' \
+            ${wrap} \
             --set-default SHOTGUN_FONTS ${sgFonts} \
-            --prefix PATH : ${pkgs.lib.makeBinPath runtimeTools} \
+            --prefix PATH : ${pkgs.lib.makeBinPath tools} \
             --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibs}
         '';
-        meta.mainProgram = "shotgun";
+        inherit (unwrapped) meta;
+      };
+
+      shotgun = shotgunWith { tools = runtimeTools; };
+
+      # For the AppImage, which also runs where there is no Nix:
+      # - without Wine and the bridge for Windows plugins (they would have
+      #   to be built for an hour and make the file three times as large);
+      # - with Mesa's graphics drivers, used only where the system has none
+      #   this program can load (/run/opengl-driver is NixOS). The system's
+      #   own drivers are built against another C library. Nvidia's driver
+      #   is not in Mesa: such a machine needs Nix and `nix run` instead.
+      portable = shotgunWith {
+        tools = baseTools;
+        wrap = ''--run 'if [ ! -e /run/opengl-driver ]; then export XDG_DATA_DIRS="''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:${pkgs.mesa}/share"; export LIBVA_DRIVERS_PATH="''${LIBVA_DRIVERS_PATH:-${pkgs.mesa}/lib/dri}"; fi' '';
+      };
+    in
+    {
+      # `nix build`, `nix run`, or put `packages.x86_64-linux.default` into
+      # a system or home profile: the launcher entry and icon come with it.
+      packages.${system} = {
+        default = shotgun;
+        inherit shotgun portable;
+        # `nix build .#appimage`: one file that runs without installing.
+        appimage = nix-appimage.lib.${system}.mkAppImage {
+          program = "${portable}/bin/shotgun";
+          pname = "shotgun-${version}-x86_64";
+          squashfsArgs = [ "-comp" "zstd" "-Xcompression-level" "15" ];
+        };
+      };
+
+      apps.${system}.default = {
+        type = "app";
+        program = "${shotgun}/bin/shotgun";
+        meta.description = shotgun.meta.description;
       };
 
       devShells.${system}.default = pkgs.mkShell {

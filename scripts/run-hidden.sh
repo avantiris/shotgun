@@ -9,4 +9,5 @@ for r in 'workspace special:sgdev silent' 'no_initial_focus on' 'no_focus on' 'f
 done
 lib=$1; shift
 export SHOTGUN_KEYS=${SHOTGUN_KEYS:-/disk/shotgun-dev/tmp/no-keys.conf} SHOTGUN_LIBRARY=$lib SHOTGUN_APP_ID=shotgun-dev SHOTGUN_AUDIO=${SHOTGUN_AUDIO:-null} SHOTGUN_NO_CLIPBOARD=1
-timeout ${RUN_TIMEOUT:-60} "$CARGO_TARGET_DIR/release/shotgun" "$@"; echo "exit=$?"
+# (SHOTGUN_BIN: another build of the program, e.g. the AppImage.)
+timeout ${RUN_TIMEOUT:-60} "${SHOTGUN_BIN:-$CARGO_TARGET_DIR/release/shotgun}" "$@"; echo "exit=$?"
