@@ -231,6 +231,8 @@ struct App {
     synced: Option<(PathBuf, std::sync::Arc<sg_core::Project>)>,
     /// Jobs started here that show among the import jobs.
     local_jobs: u64,
+    /// The way to stop each of them, by the number it is shown under.
+    local_cancels: std::collections::HashMap<u64, sg_media::Cancel>,
     /// Assets whose stabilised copy is being made.
     stabilising: std::collections::HashSet<AssetId>,
     /// Scratch for the level meters read each frame.
@@ -387,7 +389,10 @@ impl App {
                     }
                 }
                 Command::CancelImport(job) => {
-                    if let Some(importer) = &self.importer {
+                    // (A job made here, a cut-out or the like, or one of the importer's.)
+                    if let Some(cancel) = self.local_cancels.get(&job) {
+                        cancel.cancel();
+                    } else if let Some(importer) = &self.importer {
                         importer.cancel(job);
                     }
                 }
@@ -537,6 +542,7 @@ impl App {
                     self.local_jobs += 1;
                     let job = u64::MAX - self.local_jobs;
                     let cancel = sg_media::Cancel::new();
+                    self.local_cancels.insert(job, cancel.clone());
                     let spawned = std::thread::Builder::new().name("sg-stretch".into()).spawn(move || {
                         let label = asset.label.clone();
                         let mut last = -1i32;
@@ -574,6 +580,7 @@ impl App {
                     self.local_jobs += 1;
                     let job = u64::MAX - self.local_jobs;
                     let cancel = sg_media::Cancel::new();
+                    self.local_cancels.insert(job, cancel.clone());
                     let library = sg_project::library_dir();
                     let spawned = std::thread::Builder::new().name("sg-cut-out".into()).spawn(move || {
                         let label = asset.label.clone();
@@ -613,6 +620,7 @@ impl App {
                     // Shown among the import jobs; numbered from the top so as not to collide with them.
                     let job = u64::MAX - self.local_jobs;
                     let cancel = sg_media::Cancel::new();
+                    self.local_cancels.insert(job, cancel.clone());
                     let spawned = std::thread::Builder::new().name("sg-stabilise".into()).spawn(move || {
                         let label = asset.label.clone();
                         let mut last = -1i32;
@@ -1397,6 +1405,8 @@ impl ApplicationHandler<UserEvent> for App {
                         let commands = self.shell.incoming(sg_ui::Incoming::Paths(vec![path]));
                         self.run_commands(commands);
                     }
+                    // (Stopped by hand: nothing to report.)
+                    Err(e) if e == "cancelled" => {}
                     Err(e) => self.shell.report_error(format!("{label} could not be {what}: {e}")),
                 }
                 self.job_done();
@@ -1418,6 +1428,7 @@ impl ApplicationHandler<UserEvent> for App {
                         let commands = self.shell.incoming(sg_ui::Incoming::Paths(vec![path]));
                         self.run_commands(commands);
                     }
+                    Err(e) if e == "cancelled" => {}
                     Err(e) => self.shell.report_error(format!("The person could not be cut out of {label}: {e}")),
                 }
                 self.job_done();
@@ -1660,6 +1671,7 @@ fn main() -> anyhow::Result<()> {
         synced: None,
         meters: vec![0.0; sg_play::MAX_METERS],
         local_jobs: 0,
+        local_cancels: std::collections::HashMap::new(),
         export_cancel: None,
         library,
         repaint_at: None,
