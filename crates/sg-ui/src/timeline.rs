@@ -338,6 +338,25 @@ enum Wave {
     Ready(Arc<Peaks>),
 }
 
+/// The loudest moment of the stretch of its asset a clip plays (linear,
+/// 1 is full scale), from the asset's peaks; `None` for silence.
+fn loudest(peaks: &Peaks, clip: &Clip) -> Option<f32> {
+    let per = peaks.sample_rate as f64 / SAMPLE_RATE as f64;
+    let block = peaks.block_len(0) as f64;
+    let first = (clip.src_in.max(0) as f64 * per / block).floor() as usize;
+    let last =
+        ((((clip.src_in.max(0) + clip.len) as f64 * per / block).ceil() as usize).max(first + 1)).min(peaks.blocks(0));
+    let mut peak = 0.0f32;
+    for at in first..last {
+        for channel in 0..peaks.channels as usize {
+            if let Some((min, max)) = peaks.get(0, channel, at) {
+                peak = peak.max(min.abs()).max(max.abs());
+            }
+        }
+    }
+    (peak > 1e-4).then_some(peak)
+}
+
 /// The clip a waveform is drawn for.
 struct WaveSpan<'a> {
     clip: &'a Clip,
@@ -894,6 +913,20 @@ impl Timeline {
                             if ui.button(label).clicked() {
                                 db = to;
                             }
+                        }
+                        // As loud as it can be without clipping: its loudest moment 1 dB below full scale.
+                        let peak = sequence.track(first.track).and_then(|t| t.clips.iter().find(|c| c.id == first.id)).and_then(
+                            |clip| match self.waves.get(&clip.asset) {
+                                Some(Wave::Ready(peaks)) => loudest(peaks, &clip),
+                                _ => None,
+                            },
+                        );
+                        let button = ui.add_enabled(peak.is_some(), egui::Button::new("Loudest moment to -1 dB"));
+                        let hint = "Normalise: turns the clip up or down so that its loudest moment is 1 dB below \
+                                    full scale. The sound itself is not changed.";
+                        if let (true, Some(peak)) = (button.on_hover_text(hint).clicked(), peak) {
+                            db = (-1.0 - 20.0 * peak.log10()).clamp(*GAIN_RANGE.start(), *GAIN_RANGE.end());
+                            db = (db * 10.0).round() / 10.0;
                         }
                         if db != now {
                             Timeline::shift_gain(session, sequence, &sound, db - now, Some(group));

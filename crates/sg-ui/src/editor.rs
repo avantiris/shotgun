@@ -60,6 +60,8 @@ pub struct Editor {
     pub actions: Vec<Action>,
     /// Undo group while a tempo field is being dragged: one drag, one step.
     tempo_group: Option<u64>,
+    /// When "Tap" was clicked of late, in seconds: the tempo by hand.
+    taps: Vec<f64>,
     /// The metronome is on.
     pub metronome: bool,
     /// A take is being recorded: the button says so.
@@ -982,6 +984,21 @@ impl Editor {
                 }
             }
         }
+        // The tempo by hand: clicked in time with the music.
+        let tap = ui.button("Tap");
+        if tap
+            .on_hover_text(
+                "Click in time with the music, four times or more: the tempo becomes the pace of your clicks \
+                 (a whole number of beats a minute). Two seconds without a click start anew.",
+            )
+            .clicked()
+        {
+            let now = ui.input(|i| i.time);
+            if let Some(bpm) = tapped(&mut self.taps, now) {
+                let tempo = wanted.get_or_insert(sg_core::Tempo::DEFAULT);
+                tempo.milli_bpm = bpm * 1000;
+            }
+        }
         if wanted != sequence.tempo {
             let group = dragging.then(|| *self.tempo_group.get_or_insert_with(|| session.new_group()));
             if let Err(e) = session.apply(Op::SetTempo { id: sequence.id, tempo: wanted }, group) {
@@ -1206,5 +1223,38 @@ impl Editor {
         if let Err(e) = session.apply(Op::SetSequenceSize { id, width, height }, None) {
             *error = Some(e.to_string());
         }
+    }
+}
+
+/// A click on "Tap" at `now` seconds: the beats a minute the clicks so
+/// far are at, from the fourth one on. A pause of two seconds starts a
+/// new count; the last eight clicks count, so that the hand can settle.
+fn tapped(taps: &mut Vec<f64>, now: f64) -> Option<u32> {
+    if taps.last().is_some_and(|last| now - last > 2.0 || now < *last) {
+        taps.clear();
+    }
+    taps.push(now);
+    if taps.len() > 8 {
+        taps.remove(0);
+    }
+    let (first, last) = (*taps.first()?, *taps.last()?);
+    (taps.len() >= 4 && last > first)
+        .then(|| (60.0 * (taps.len() - 1) as f64 / (last - first)).round().clamp(20.0, 400.0) as u32)
+}
+
+#[cfg(test)]
+mod tap_tests {
+    use super::tapped;
+
+    #[test]
+    fn four_clicks_in_time_give_the_tempo_and_a_pause_starts_anew() {
+        let mut taps = Vec::new();
+        // Clicks 0.652 s apart: 92 beats a minute, from the fourth click on.
+        let got: Vec<Option<u32>> = (0..5).map(|n| tapped(&mut taps, 10.0 + n as f64 * 0.652)).collect();
+        assert_eq!(got, [None, None, None, Some(92), Some(92)]);
+        // After a pause the count starts again; then twice as fast.
+        assert_eq!(tapped(&mut taps, 20.0), None);
+        let fast: Vec<Option<u32>> = (1..4).map(|n| tapped(&mut taps, 20.0 + n as f64 * 0.326)).collect();
+        assert_eq!(fast, [None, None, Some(184)]);
     }
 }

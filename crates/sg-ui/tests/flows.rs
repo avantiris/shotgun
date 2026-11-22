@@ -770,6 +770,24 @@ fn the_line_across_a_sound_clip_sets_its_volume() {
     click(&mut harness, "Clip volume");
     click(&mut harness, "Quieter (-3 dB)");
     assert_eq!(gain(&harness), -3.0);
+    // Once its waveform is known, the clip can be brought to just below full scale:
+    // its loudest moment is at a quarter of it (-12 dB), so it goes up by 11 dB.
+    let mut left = 1;
+    let peaks = sg_media::peaks::Peaks::build(48_000, 2, |out| {
+        out.extend((0..480_000 * 2).map(|i| 0.25 * (i as f32 * 0.01).sin()));
+        left -= 1;
+        Ok(left >= 0)
+    })
+    .unwrap();
+    let root = harness.state().root.clone();
+    harness.state_mut().shell.peaks_loaded(&root, AssetId(1), Some(peaks));
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    pointer(&mut harness, on_sound, egui::PointerButton::Secondary);
+    click(&mut harness, "Clip volume");
+    click(&mut harness, "Loudest moment to -1 dB");
+    harness.run_steps(2);
+    assert!((gain(&harness) - 11.0).abs() < 0.15, "{}", gain(&harness));
 }
 
 #[test]
@@ -1862,6 +1880,41 @@ fn a_take_goes_onto_the_track_marked_for_recording_over_what_is_there() {
     harness.key_press(Key::Z);
     harness.run_steps(3);
     assert_eq!(on_a1(&harness), [(1, 0, 480_000, 0)]);
+}
+
+#[test]
+fn with_a_looped_stretch_a_take_replaces_only_that_stretch() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    click(&mut harness, "R");
+    // Two markers, three and four seconds in; the stretch between them is the one to loop.
+    for frame in [180, 240] {
+        playhead(&mut harness, frame);
+        harness.key_press(Key::G);
+        harness.run_steps(2);
+    }
+    playhead(&mut harness, 200);
+    harness.key_press(Key::L);
+    harness.run_steps(2);
+    // Played from a second before it, and on for a second and a half after it.
+    playhead(&mut harness, 120);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::R);
+    harness.run_steps(3);
+    assert_eq!(harness.state().shell.live_take().map(|(_, from, _)| from), Some(144_000), "drawn from the stretch on");
+    let root = harness.state().root.clone();
+    harness.state_mut().shell.take_recorded(root.join(".shotgun/takes/take-8.wav"), 96_000 - 48_000, 240_000, 0);
+    let mut asset = take(9, "take-8");
+    asset.kind = AssetKind::Audio;
+    asset.video = None;
+    asset.audio = Some(AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 2, samples: 240_000 });
+    harness.state_mut().shell.import_event(ImportEvent::Usable { job: 9, root, asset: Box::new(asset) });
+    harness.run_steps(3);
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+    let on_a1: Vec<(u128, i64, i64, i64)> = track.clips.iter().map(|c| (c.asset.0, c.start, c.len, c.src_in)).collect();
+    // Only the second between the markers is the new take; before and after it the old sound stays.
+    assert_eq!(on_a1, [(1, 0, 144_000, 0), (9, 144_000, 48_000, 96_000), (1, 192_000, 288_000, 192_000)]);
+    assert_eq!(harness.state().shell.error_shown(), None);
 }
 
 #[test]

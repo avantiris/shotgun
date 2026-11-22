@@ -77,6 +77,7 @@ impl MidiIn {
         let run = move || {
             use alsa::poll::Descriptors;
             let Ok(mut fds) = (&seq, Some(alsa::Direction::Capture)).get() else { return };
+            let mut sustain = Sustain::default();
             let mut input = seq.input();
             while !stopped.load(Ordering::Relaxed) {
                 // (Woken a few times a second to see whether to stop.)
@@ -92,7 +93,19 @@ impl MidiIn {
                         EventType::Noteon | EventType::Noteoff => {
                             let Some(note) = event.get_data::<EvNote>() else { continue };
                             let down = event.get_type() == EventType::Noteon && note.velocity > 0;
-                            on_note(down, note.note.min(127), if down { note.velocity.min(127) } else { 0 });
+                            let (pitch, velocity) = (note.note.min(127), if down { note.velocity.min(127) } else { 0 });
+                            for (down, pitch) in sustain.key(down, pitch).into_iter().flatten() {
+                                on_note(down, pitch, if down { velocity } else { 0 });
+                            }
+                        }
+                        // The sustain pedal (controller 64): down from the middle of its way.
+                        EventType::Controller => {
+                            let Some(control) = event.get_data::<alsa::seq::EvCtrl>() else { continue };
+                            if control.param == 64 {
+                                for pitch in sustain.pedal(control.value >= 64) {
+                                    on_note(false, pitch, 0);
+                                }
+                            }
                         }
                         // A keyboard was plugged in: listen to it too.
                         EventType::PortStart => {
@@ -108,6 +121,47 @@ impl MidiIn {
         };
         let thread = std::thread::Builder::new().name("sg-audio-midi".into()).spawn(run)?;
         Ok(MidiIn { stop, thread: Some(thread), address: (own, port) })
+    }
+}
+
+/// The sustain pedal, done here and not in the instrument (`PROPOSED`):
+/// while it is down, keys that are let go keep sounding, and end when it
+/// comes up. That works the same for the built-in instruments and for
+/// every plugin, and a take records what was heard. What a sampled piano
+/// does with its own pedal (the strings ringing along, half pedalling) it
+/// does not do this way.
+#[derive(Default)]
+pub struct Sustain {
+    down: bool,
+    /// Keys that were let go while the pedal was down and still sound.
+    ringing: Vec<u8>,
+}
+
+impl Sustain {
+    /// A key went down or up: the notes to start and end for it, in order.
+    pub fn key(&mut self, down: bool, pitch: u8) -> [Option<(bool, u8)>; 2] {
+        let ringing = self.ringing.iter().position(|p| *p == pitch);
+        match (down, ringing) {
+            // Struck again while it still rings: it ends and begins anew.
+            (true, Some(at)) => {
+                self.ringing.remove(at);
+                [Some((false, pitch)), Some((true, pitch))]
+            }
+            (true, None) => [Some((true, pitch)), None],
+            (false, _) if self.down => {
+                if ringing.is_none() {
+                    self.ringing.push(pitch);
+                }
+                [None, None]
+            }
+            (false, _) => [Some((false, pitch)), None],
+        }
+    }
+
+    /// The pedal went down or came up: the keys that end now.
+    pub fn pedal(&mut self, down: bool) -> Vec<u8> {
+        self.down = down;
+        if down { Vec::new() } else { std::mem::take(&mut self.ringing) }
     }
 }
 
@@ -156,4 +210,28 @@ pub fn play(to: &str, notes: &[(u8, u8, u64)], gap: std::time::Duration) -> Resu
         std::thread::sleep(gap);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod sustain_tests {
+    use super::Sustain;
+
+    #[test]
+    fn the_pedal_holds_what_is_let_go_until_it_comes_up() {
+        let mut sustain = Sustain::default();
+        // Without the pedal a key is what it is.
+        assert_eq!(sustain.key(true, 60), [Some((true, 60)), None]);
+        assert_eq!(sustain.key(false, 60), [Some((false, 60)), None]);
+        // Pedal down: two keys struck and let go keep sounding.
+        assert!(sustain.pedal(true).is_empty());
+        sustain.key(true, 60);
+        sustain.key(true, 64);
+        assert_eq!(sustain.key(false, 60), [None, None]);
+        assert_eq!(sustain.key(false, 64), [None, None]);
+        // One of them struck again: it ends and starts anew, and is held by the hand now.
+        assert_eq!(sustain.key(true, 60), [Some((false, 60)), Some((true, 60))]);
+        // Pedal up: what only the pedal held ends; the key still down does not.
+        assert_eq!(sustain.pedal(false), vec![64]);
+        assert_eq!(sustain.key(false, 60), [Some((false, 60)), None]);
+    }
 }

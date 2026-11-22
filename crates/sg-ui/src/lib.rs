@@ -375,6 +375,9 @@ pub struct Shell {
     takes: Vec<(PathBuf, i64)>,
     /// The track that takes the recording in progress, and the timeline sample it was asked for at.
     record_onto: Option<(sg_core::TrackId, i64)>,
+    /// The timeline sample the take in progress is to end at: the end of
+    /// the looped stretch, if one was on when the recording began.
+    record_until: Option<i64>,
     spent_takes: Vec<PathBuf>,
     /// What the application was last told about monitoring the input.
     monitor: Option<(Option<String>, bool)>,
@@ -920,6 +923,20 @@ impl Shell {
                             }
                             self.record_onto = self.record_target(false);
                         }
+                        // Punching in (`PROPOSED`): with a stretch marked to be looped
+                        // that is not behind the playhead, only that stretch is
+                        // replaced, however early the playing starts and however
+                        // long it goes on. (The loop itself rests while recording.)
+                        let stretch = self
+                            .editor
+                            .timeline
+                            .loop_range
+                            .filter(|(_, to)| self.record_onto.is_some_and(|(_, from)| from < *to));
+                        self.record_until = stretch.map(|(_, to)| to);
+                        if let (Some((from, _)), Some(onto)) = (stretch, &mut self.record_onto) {
+                            onto.1 = onto.1.max(from);
+                        }
+                        let punched = stretch.is_some();
                         self.editor.timeline.live_take = self.record_onto.map(|(track, from)| {
                             crate::timeline::LiveTake { track, from, to: from, peaks: Vec::new() }
                         });
@@ -927,7 +944,9 @@ impl Shell {
                             let name =
                                 session.project().sequences.first().and_then(|s| Some(s.track(track)?.name.clone()));
                             let name = name.unwrap_or_default();
-                            session.notice = Some(if armed {
+                            session.notice = Some(if punched {
+                                format!("Recording onto {name}: only the looped stretch is replaced.")
+                            } else if armed {
                                 format!("Recording onto {name}, from the playhead on.")
                             } else {
                                 format!(
@@ -2076,7 +2095,7 @@ impl Shell {
         self.spent_takes.push(path);
         // (What was drawn while it was made gives way to the clip.)
         self.editor.timeline.live_take = None;
-        match session.place_take(&asset, start, self.record_onto.take()) {
+        match session.place_take(&asset, start, self.record_onto.take(), self.record_until.take()) {
             Ok(Some((track, clip))) => {
                 self.editor.timeline.select_only(track, &clip);
                 session.notice = Some(format!("Recorded {:.1} s.", clip.len as f64 / 48_000.0));

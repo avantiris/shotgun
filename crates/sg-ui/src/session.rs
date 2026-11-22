@@ -360,6 +360,7 @@ impl Session {
         asset: &Asset,
         start: i64,
         onto: Option<(sg_core::TrackId, i64)>,
+        until: Option<i64>,
     ) -> Result<Option<(sg_core::TrackId, Clip)>, OpError> {
         let project = self.project().clone();
         let (Some(sequence), Some(info)) = (project.sequences.first(), &asset.audio) else { return Ok(None) };
@@ -368,7 +369,11 @@ impl Session {
         // Left out in front: what lies before the timeline, or before the place it was asked for.
         let from = onto.map_or(0, |(_, asked)| asked.max(0));
         let before = (from - start).max(0);
-        let (start, len) = (start.max(from), samples - before);
+        let (start, mut len) = (start.max(from), samples - before);
+        // Left out behind: what was played on after the place the take was to end at.
+        if let Some(until) = until {
+            len = len.min(until - start);
+        }
         if len <= 0 {
             return Ok(None);
         }
