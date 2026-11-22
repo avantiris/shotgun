@@ -1936,6 +1936,16 @@ fn the_input_level_is_shown_and_the_input_heard_only_when_asked() {
     harness.state_mut().view.input_level = 0.5;
     harness.run_steps(2);
     assert!(harness.query_by_label("-6 dB").is_some());
+    // An input that reaches full scale is said to have clipped, and stays said
+    // after the level has fallen, until it is clicked away.
+    assert!(harness.query_by_label("clipped").is_none());
+    harness.state_mut().view.input_level = 1.0;
+    harness.run_steps(2);
+    harness.state_mut().view.input_level = 0.1;
+    harness.run_steps(2);
+    click(&mut harness, "clipped");
+    harness.run_steps(2);
+    assert!(harness.query_by_label("clipped").is_none());
     // "Hear" is a button of its own, and another input is followed.
     click(&mut harness, "Hear");
     assert_eq!(monitor(&harness), Some(Some((None, true))));

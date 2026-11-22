@@ -78,6 +78,8 @@ pub struct Editor {
     pub hear_input: bool,
     /// The level shown: the highest of the last moments, falling back slowly.
     input_shown: f32,
+    /// The input reached full scale since "Level" was switched on or this was cleared.
+    input_clipped: bool,
     /// The settings popover is showing.
     pub settings_open: bool,
     /// The notes of a note clip, shown in place of the viewer while open.
@@ -626,6 +628,7 @@ impl Editor {
         {
             self.monitor = !self.monitor;
             self.input_shown = 0.0;
+            self.input_clipped = false;
         }
         if !self.monitor {
             return;
@@ -649,11 +652,30 @@ impl Editor {
         let said = if db <= -119.0 { "no signal".to_owned() } else { format!("{db:.0} dB") };
         response.on_hover_text(format!("Input level: {said}. Loud passages should stay in the yellow, below the red."));
         ui.label(RichText::new(said).monospace().size(10.0).color(theme::DIM));
+        // Full scale was reached: said until it is clicked away, because a
+        // moment of red on the bar is missed while rapping (four of his
+        // first five takes clipped, feedback F16.14).
+        if view.input_level >= 0.985 {
+            self.input_clipped = true;
+        }
+        if self.input_clipped
+            && ui
+                .add(egui::Button::new(RichText::new("clipped").size(10.5).color(theme::ERROR)).frame(false))
+                .on_hover_text(
+                    "The input reached full scale: what is louder than that is cut off and sounds harsh, and no \
+                     setting repairs it. Turn the input (the microphone's level in the system's sound settings) \
+                     down until loud passages stay in the yellow. Click to clear this.",
+                )
+                .clicked()
+        {
+            self.input_clipped = false;
+        }
         if ui
             .selectable_label(self.hear_input, "Hear")
             .on_hover_text(
                 "Adds the input to what is heard (a few milliseconds late). For headphones: through \
-                 loudspeakers the microphone would pick itself up.",
+                 loudspeakers the microphone would pick itself up. With a track marked \"R\", it is heard \
+                 through that track's low cut, equaliser, de-esser, leveller, compressor and saturation.",
             )
             .clicked()
         {
