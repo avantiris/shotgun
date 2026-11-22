@@ -72,6 +72,13 @@ that sink's monitor (`pactl load-module module-null-sink sink_name=<name>`,
 `SHOTGUN_AUDIO=sink:<name>`, unload the module afterwards); short runs can
 miss what only shows over ten seconds (ring underruns did). `sg-bench midi
 shotgun-dev <pitch> <velocity> <ms>...` stands in for a MIDI keyboard.
+`sg-bench voice <48 kHz float wav>...` prints what "Voice" measures on a
+take, the settings it fits and what the take is like with them on: the
+way to judge a change to the vocal chain or its set-up without ears.
+To check what is heard of the input, use two null sinks (one played into
+with `pw-play --target`, as `SHOTGUN_AUDIO_IN=<it>.monitor`; the other as
+`SHOTGUN_AUDIO=sink:<it>`, recorded with `parec -d <it>.monitor`), and
+the script steps `level;hear` (both are needed).
 
 ## Rules that are easy to break
 
