@@ -9,6 +9,7 @@ edition = "2024"
 publish = false
 license = "AGPL-3.0-only"
 authors = ["Avantiris Association"]
+repository = "https://github.com/avantiris/shotgun"
 
 [workspace.dependencies]
 sg-core = { path = "crates/sg-core" }

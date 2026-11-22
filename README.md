@@ -11,10 +11,12 @@ Linux on x86-64 with Wayland, Vulkan and PipeWire.
 ## Get it
 
 - **AppImage**: download `shotgun-<version>-x86_64.AppImage` from the
-  releases, make it executable, run it. For AMD and Intel graphics; with
+  [releases](https://github.com/avantiris/shotgun/releases/latest), make
+  it executable, run it. For AMD and Intel graphics; with
   Nvidia's driver use Nix.
-- **Nix**: `nix run` in a checkout, or add `packages.x86_64-linux.default`
-  of this flake to your profile (launcher entry and icon included).
+- **Nix**: `nix run github:avantiris/shotgun`, or add
+  `packages.x86_64-linux.default` of this flake to your profile (launcher
+  entry and icon included).
 
 ## Build
 

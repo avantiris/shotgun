@@ -206,6 +206,7 @@
         '';
         meta = {
           description = "Video editor with a music workstation inside";
+          homepage = "https://github.com/avantiris/shotgun";
           license = pkgs.lib.licenses.agpl3Only;
           platforms = [ system ];
           mainProgram = "shotgun";
