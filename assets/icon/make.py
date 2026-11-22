@@ -3,19 +3,22 @@
 
     python3 assets/icon/make.py > assets/icon/shotgun.svg
 
-The gun is a flat outline (side view, muzzle to the right) that is laid on
-the floor and looked at from low down, which is a projection of a plane:
-SVG's own transforms cannot do that, so the points are projected here.
+A logo: one flat, heavy shape without details (no trigger, no sights, no
+gradients), which still reads at 16 pixels. The gun is a flat outline
+(side view, muzzle to the right) that is laid on the floor and looked at
+from low down, which is a projection of a plane: SVG's own transforms
+cannot do that, so the points are projected here.
 """
 
 import math
 
 SIZE = 512
+INK = "#111214"
 
 # Where the corners of the outline's box (0,0)-(1000,300) land in the icon:
-# the butt near and large at the lower left, the muzzle far and small.
+# the butt near and large at the lower left, the muzzle far and smaller.
 BOX = [(0, 0), (1000, 0), (1000, 300), (0, 300)]
-FLOOR = [(34, 322), (436, 70), (474, 136), (106, 468)]
+FLOOR = [(44, 318), (420, 70), (476, 152), (108, 430)]
 
 
 def solve(rows):
@@ -56,91 +59,51 @@ def dense(points, step=6.0):
     return out
 
 
-def arc(cx, cy, rx, ry, a0, a1, n=24):
+def arc(cx, cy, r, a0, a1, n=10):
     return [
-        (cx + rx * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
-         cy + ry * math.sin(math.radians(a0 + (a1 - a0) * i / n)))
+        (cx + r * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+         cy + r * math.sin(math.radians(a0 + (a1 - a0) * i / n)))
         for i in range(n + 1)
     ]
 
 
 def rounded(x0, y0, x1, y1, r):
     return (
-        arc(x1 - r, y0 + r, r, r, -90, 0, 8)
-        + arc(x1 - r, y1 - r, r, r, 0, 90, 8)
-        + arc(x0 + r, y1 - r, r, r, 90, 180, 8)
-        + arc(x0 + r, y0 + r, r, r, 180, 270, 8)
+        arc(x1 - r, y0 + r, r, -90, 0)
+        + arc(x1 - r, y1 - r, r, 0, 90)
+        + arc(x0 + r, y1 - r, r, 90, 180)
+        + arc(x0 + r, y0 + r, r, 180, 270)
     )
 
 
-# A pump-action shotgun from the side. Each part is a closed outline; they
-# overlap and are filled as one shape.
-STOCK = [
-    (300, 96), (150, 104), (20, 112), (6, 122), (0, 150), (4, 232), (16, 244),
-    (60, 240), (150, 206), (228, 176), (262, 172), (276, 196), (286, 236),
-    (300, 250), (330, 246), (336, 228), (322, 190), (318, 168), (330, 160),
-]
-RECEIVER = rounded(292, 88, 500, 166, 10)
-BARREL = rounded(480, 88, 1000, 118, 6)
-MAGAZINE = rounded(480, 124, 930, 154, 10)
-BAND = rounded(892, 96, 916, 150, 4)
-PUMP = rounded(590, 114, 800, 180, 18)
-SIGHT = rounded(976, 76, 992, 100, 3)
-GUARD_OUTER = arc(392, 164, 50, 46, 0, 180, 30)
-# (Wound the other way: a hole.)
-GUARD_INNER = arc(392, 164, 38, 34, 180, 0, 30)
-TRIGGER = [(388, 164), (398, 164), (392, 190), (382, 196)]
+# A pump-action shotgun from the side, as four heavy blocks that overlap:
+# what makes it a shotgun and nothing else.
+STOCK = [(330, 66), (40, 100), (0, 124), (0, 236), (30, 258), (90, 258), (250, 196), (330, 196)]
+RECEIVER = rounded(300, 60, 540, 196, 22)
+BARREL = rounded(500, 76, 1000, 146, 20)
+PUMP = rounded(620, 76, 820, 196, 30)
 
-PARTS = [STOCK, RECEIVER, BARREL, MAGAZINE, BAND, PUMP, SIGHT, GUARD_OUTER + GUARD_INNER, TRIGGER]
+PARTS = [STOCK, RECEIVER, BARREL, PUMP]
 
 
 def paths(project):
-    """One path per part: in one path, parts wound in opposite directions
-    would cut holes into each other where they overlap."""
     out = []
     for part in PARTS:
         points = [project(p) for p in dense(part)]
         d = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in points) + " Z"
-        out.append(f'<path fill-rule="evenodd" d="{d}"/>')
-    return "\n      ".join(out)
+        # (A stroke of the same colour rounds the corners and closes the seams between the blocks.)
+        out.append(f'<path d="{d}"/>')
+    return "\n    ".join(out)
 
 
 def main():
     project = projection(BOX, FLOOR)
-    # The shadow gets lighter along the gun, from the near end to the far one
-    # (a colour, not an opacity: the parts overlap and would add up).
-    (x0, y0), (x1, y1) = project((0, 150)), project((1000, 110))
     print(f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SIZE} {SIZE}" width="{SIZE}" height="{SIZE}">
-  <defs>
-    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#eceef1"/>
-    </linearGradient>
-    <linearGradient id="shade" gradientUnits="userSpaceOnUse" x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}">
-      <stop offset="0" stop-color="#0b0c0e"/>
-      <stop offset="0.55" stop-color="#25282d"/>
-      <stop offset="1" stop-color="#6d727b"/>
-    </linearGradient>
-    <filter id="soft" filterUnits="userSpaceOnUse" x="0" y="0" width="{SIZE}" height="{SIZE}">
-      <feGaussianBlur stdDeviation="1.6"/>
-    </filter>
-    <filter id="spill" filterUnits="userSpaceOnUse" x="0" y="0" width="{SIZE}" height="{SIZE}">
-      <feGaussianBlur stdDeviation="14"/>
-    </filter>
-    <clipPath id="tile">
-      <rect x="16" y="16" width="480" height="480" rx="108"/>
-    </clipPath>
-  </defs>
-  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#floor)"/>
-  <g clip-path="url(#tile)">
-    <g fill="#0b0c0e" opacity="0.16" filter="url(#spill)">
-      {paths(project)}
-    </g>
-    <g fill="url(#shade)" filter="url(#soft)">
-      {paths(project)}
-    </g>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#ffffff"/>
+  <g fill="{INK}" stroke="{INK}" stroke-width="10" stroke-linejoin="round">
+    {paths(project)}
   </g>
-  <rect x="16.5" y="16.5" width="479" height="479" rx="107.5" fill="none" stroke="#0b0c0e" stroke-opacity="0.12"/>
+  <rect x="16.5" y="16.5" width="479" height="479" rx="107.5" fill="none" stroke="{INK}" stroke-opacity="0.12"/>
 </svg>""")
 
 
