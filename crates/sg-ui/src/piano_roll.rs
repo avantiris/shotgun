@@ -720,7 +720,9 @@ impl PianoRoll {
                      right a sixteenth (Shift: a beat).\n\
                      Wheel: up and down the keys. Shift + wheel: along the time. Ctrl + wheel: zoom along the \
                      time. Alt + wheel: higher or lower rows. Middle button: drag the view.\n\
-                     A press or a drag in the strip with the bar numbers moves the playhead.",
+                     A press or a drag in the strip with the bar numbers moves the playhead.\n\
+                     Under the keys: how hard each note is struck; press or pull there to set it. \"Key\" in \
+                     the corner dims the rows outside a scale. The faint notes are those of the other tracks.",
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").on_hover_text("Back to the picture (Esc)").clicked() {
