@@ -197,6 +197,8 @@ pub enum Command {
         track: sg_core::TrackId,
         style: Option<sg_media::voice::VoiceStyle>,
         parts: Vec<(AssetId, i64, i64)>,
+        /// How loud each of them is set to play (linear): what the stages get.
+        gains: Vec<f32>,
     },
     /// Start playing and recording sound into a file in this project;
     /// when it ends, [`Shell::take_recorded`] is told.
@@ -432,7 +434,12 @@ impl Shell {
 
     pub fn set_library(&mut self, result: Result<Vec<ProjectEntry>, String>) {
         match result {
-            Ok(entries) => self.library.set_entries(entries),
+            Ok(entries) => {
+                self.library.set_entries(entries);
+                if self.library.pending.as_deref() == Some("Closing...") {
+                    self.library.pending = None;
+                }
+            }
             Err(e) => self.error = Some(format!("Cannot read the library: {e}")),
         }
     }
@@ -796,8 +803,10 @@ impl Shell {
                     let (root, poster) = (session.root.clone(), poster_asset(session.project()));
                     // (A running export still writes into the folder; and the
                     // way to the last one's file would lead nowhere after a rename.)
-                    let rename = !self.export.is_running();
+                    let rename = !self.export.is_running() && self.editor.assets.jobs.is_empty();
                     self.exported = None;
+                    // (Until the library has been read again, a tile may point at a folder that is being renamed.)
+                    self.library.pending = Some("Closing...".to_owned());
                     commands.push(Command::Close { writer: session.into_writer(), root, poster, rename });
                 }
             }
@@ -1540,7 +1549,14 @@ impl Shell {
         assets.sort_unstable();
         assets.dedup();
         mixer.listened.insert(track, mixer::Listened { assets, style, set: None, seen: found.clone(), stale: false });
-        Some(Command::MeasureVoice { root: session.root.clone(), track, style, parts })
+        // (A clip turned up or down, e.g. to full level, reaches the stages so.)
+        let gains: Vec<f32> = found
+            .clips
+            .iter()
+            .take(512)
+            .map(|c| found.props_of(c.id).map_or(1.0, |props| 10f32.powf(props.gain_db.at(0) / 20.0)))
+            .collect();
+        Some(Command::MeasureVoice { root: session.root.clone(), track, style, parts, gains })
     }
 
     /// A strip that was set up by listening follows its track: when other

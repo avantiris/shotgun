@@ -69,10 +69,13 @@ def main() -> int:
             frames += 1
             print(f"frame {frames}", flush=True)
     except BrokenPipeError:
-        pass
-    finally:
         decode.kill()
+    finally:
         encode.stdin.close()
+    # (A video that could not be read to its end must not pass for a short one.)
+    if decode.wait() != 0:
+        print("the video could not be read to its end", file=sys.stderr)
+        return 1
     if encode.wait() != 0 or frames == 0:
         print("no picture could be written", file=sys.stderr)
         return 1

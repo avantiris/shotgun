@@ -28,23 +28,32 @@ pub fn voice(
     parts: &[(AssetId, i64, i64)],
     cancel: &Cancel,
 ) -> Result<sg_media::voice::VoiceStats, ToolError> {
-    sg_media::voice::measure(&voice_sound(root, parts, cancel)?)
+    sg_media::voice::measure(&voice_sound(root, parts, &[], cancel)?)
         .ok_or_else(|| ToolError::other("there is too little sound on this track to listen to"))
 }
 
 /// The sound [`voice`] listens to: the stretches one after the other,
 /// mono at 48 kHz, four minutes at most.
-pub fn voice_sound(root: &Path, parts: &[(AssetId, i64, i64)], cancel: &Cancel) -> Result<Vec<f32>, ToolError> {
+///
+/// `gains`: how loud each stretch is set to play (linear), in the order of
+/// `parts`; a stretch without one plays as it is.
+pub fn voice_sound(
+    root: &Path,
+    parts: &[(AssetId, i64, i64)],
+    gains: &[f32],
+    cancel: &Cancel,
+) -> Result<Vec<f32>, ToolError> {
     let mut loaded: std::collections::HashMap<AssetId, Vec<f32>> = std::collections::HashMap::new();
     let mut heard: Vec<f32> = Vec::new();
-    for (id, from, len) in parts {
+    for (index, (id, from, len)) in parts.iter().enumerate() {
+        let gain = gains.get(index).copied().filter(|gain| gain.is_finite()).unwrap_or(1.0);
         if !loaded.contains_key(id) {
             loaded.insert(*id, sound(root, *id, cancel)?);
         }
         let Some(samples) = loaded.get(id) else { continue };
         let first = (*from).clamp(0, samples.len() as i64) as usize;
         let last = (*from + *len).clamp(first as i64, samples.len() as i64) as usize;
-        heard.extend_from_slice(&samples[first..last]);
+        heard.extend(samples[first..last].iter().map(|sample| sample * gain));
         if heard.len() >= analysis::RATE * 240 {
             break;
         }
@@ -197,8 +206,13 @@ fn matte_model(library: &Path, cancel: &Cancel) -> Result<PathBuf, ToolError> {
     let mut curl = std::process::Command::new("curl");
     curl.args(["--silent", "--show-error", "--fail", "--location", "--max-time", "600", "--output"]);
     curl.arg(&fetched).arg(MATTE_MODEL_URL);
-    sg_media::tool::run_output(curl, cancel)
-        .map_err(|e| ToolError::other(format!("the model could not be fetched from {MATTE_MODEL_URL}: {e}")))?;
+    sg_media::tool::run_output(curl, cancel).map_err(|e| {
+        let _ = std::fs::remove_file(&fetched);
+        ToolError::other(format!(
+            "the model (15 MB) could not be fetched from {MATTE_MODEL_URL}: {e}. It is needed once; with the file put at {} by hand it works without a network",
+            model.display()
+        ))
+    })?;
     if !checked(&fetched)? {
         let _ = std::fs::remove_file(&fetched);
         return Err(ToolError::other("the model that was fetched is not the one that was expected; it was not used"));
@@ -226,7 +240,13 @@ pub fn cut_out(
     // (A copy with its frame rate put right, if there is one: the cut-out then has the same timing.)
     let conform = cache::conform(root, asset.id, false);
     let source = if conform.is_file() { conform } else { root.join(&asset.file) };
-    sg_media::derive::cut_out(&model, &source, &out, video.frames, cancel, progress)?;
+    sg_media::derive::cut_out(&model, &source, &out, video.frames, cancel, progress).map_err(|e| match e {
+        // (A program started before this was built, from a shell that has not got the tool yet.)
+        ToolError::Spawn { .. } => ToolError::other(format!(
+            "{e}. The tool comes with the program: start Shotgun again from a new `nix develop` shell, or use the packaged program"
+        )),
+        other => other,
+    })?;
     Ok(out)
 }
 

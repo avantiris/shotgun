@@ -452,6 +452,15 @@ impl TrackFx {
                             let now_db = 20.0 * frame[0].abs().max(frame[1].abs()).max(1e-6).log10();
                             self.phrase_db +=
                                 if now_db > self.phrase_db { rise } else { fast } * (now_db - self.phrase_db);
+                            // While it is still getting to know the track (three seconds
+                            // of sound), something far louder than what it has heard is
+                            // the voice arriving after room noise or a breath: the
+                            // average goes to it quickly, instead of holding the voice
+                            // down for seconds (found in review: playback started in a pause).
+                            let learning = tone.level_ref_db >= 0.0 && self.sounded < 3.0 * rate;
+                            if learning && self.sounded > 0.0 && self.phrase_db > self.average_db + 3.0 {
+                                self.average_db += time(0.1) * (self.phrase_db - self.average_db);
+                            }
                             // (Not far below where sound counts: as for the compressor
                             // below, a word must not have to be climbed up to from the
                             // bottom of a pause.)
@@ -469,6 +478,13 @@ impl TrackFx {
                             }
                             // Pauses are neither part of the average nor raised.
                             let sounding = self.phrase_db > self.average_db - 25.0 && self.phrase_db > -70.0;
+                            // Something that can be heard but lies far below the average
+                            // for long (playback began on a loud stretch, the rest is
+                            // quiet): the average comes down to it, slowly, instead of
+                            // leaving the leveller idle for good.
+                            if !known && !sounding && self.phrase_db > -60.0 && self.sounded > 0.0 {
+                                self.average_db += slow * (self.phrase_db - self.average_db);
+                            }
                             if sounding && !known {
                                 // The plain mean of what has sounded so far until that
                                 // is as long as the average's own memory: the track is
@@ -476,7 +492,10 @@ impl TrackFx {
                                 self.sounded = (self.sounded + 1.0).min(1e9);
                                 self.average_db += (1.0 / self.sounded).max(slow) * (self.phrase_db - self.average_db);
                             }
-                            let wanted = if sounding {
+                            // (Not before it has heard a quarter of a second: the
+                            // average of the first moments is the follower's own climb.)
+                            let heard_enough = known || self.sounded > 0.25 * rate;
+                            let wanted = if sounding && heard_enough {
                                 let under = self.average_db - self.phrase_db;
                                 // Pushed up in full only what is within 10 dB of the
                                 // average, and less from there down to nothing at 20:
@@ -754,6 +773,44 @@ mod tests {
     }
 
     #[test]
+    fn a_leveller_that_starts_in_a_pause_or_on_a_loud_stretch_finds_the_voice() {
+        let run = |levels: &[(f32, f32)]| -> Vec<f32> {
+            let mut seed = 0x1234_5678u32;
+            let mut sound: Vec<f32> = Vec::new();
+            for (seconds, level) in levels {
+                for i in 0..(seconds * SAMPLE_RATE as f32) as usize {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    let noise = seed as f32 / u32::MAX as f32 * 2.0 - 1.0;
+                    // (Noise for the quiet parts, a tone for the voice.)
+                    let v = if *level < 0.01 { level * noise } else { level * (i as f32 * 0.03).sin() };
+                    sound.extend([v, v]);
+                }
+            }
+            let mut fx = TrackFx::new(false, false);
+            let tone = Tone { level: 1.0, ..Tone::default() };
+            for block in sound.chunks_mut(2 * 512) {
+                fx.process(block, 0.0, 0.0, &tone);
+            }
+            sound
+        };
+        let peak = |sound: &[f32], from: f32, to: f32| {
+            let (a, b) = ((from * SAMPLE_RATE as f32) as usize * 2, (to * SAMPLE_RATE as f32) as usize * 2);
+            20.0 * sound[a..b].iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6).log10()
+        };
+        // A second of room noise at -55 dB, then the voice at -15: half a
+        // second in, the voice is within 3 dB of itself, not held down by 12.
+        let after_noise = run(&[(1.0, 0.0018), (2.0, 0.18)]);
+        assert!(peak(&after_noise, 1.5, 2.0) > -18.5, "{}", peak(&after_noise, 1.5, 2.0));
+        // A second at -6 dB, then a voice 29 dB below it for a long while:
+        // the leveller comes round to it and does not stay idle.
+        let after_loud = run(&[(1.0, 0.5), (30.0, 0.018), (1.0, 0.07)]);
+        // (The last second is 12 dB above the quiet voice: by then that is loud, and it is pulled down.)
+        assert!(peak(&after_loud, 31.5, 32.0) < -25.0, "{}", peak(&after_loud, 31.5, 32.0));
+    }
+
+    #[test]
     fn the_stages_run_in_the_order_the_track_has_them_in() {
         // A loud tone through compressor and saturation: squeezed first it
         // reaches the saturation quieter and is rounded less than the other way round.
@@ -801,10 +858,12 @@ mod tests {
         };
         // The 14 dB between loud and quiet are gone but for a little, in
         // the first round already (the track is known from its first phrase on).
-        for round in [0.0, 9.0] {
+        // (In the first round it knows only the loud phrase, and does not
+        // push something 14 dB below that up in full; later it knows both.)
+        for (round, left) in [(0.0, 7.0), (9.0, 4.0)] {
             let before = level(&phrases, round + 0.5, round + 0.9) - level(&phrases, round + 1.5, round + 1.9);
             let after = level(&evened, round + 0.5, round + 0.9) - level(&evened, round + 1.5, round + 1.9);
-            assert!((13.5..14.5).contains(&before) && (-1.0..4.0).contains(&after), "{round}: {before} {after}");
+            assert!((13.5..14.5).contains(&before) && (-1.0..left).contains(&after), "{round}: {before} {after}");
         }
         // The pause stays a pause.
         assert!(level(&evened, 11.3, 11.9) < -100.0);

@@ -137,6 +137,7 @@ enum UserEvent {
     },
     /// A video with the person cut out was made: where it is.
     CutOut {
+        root: PathBuf,
         id: AssetId,
         label: String,
         result: Result<PathBuf, String>,
@@ -380,12 +381,12 @@ impl App {
                         importer.cancel(job);
                     }
                 }
-                Command::MeasureVoice { root, track, style, parts } => {
+                Command::MeasureVoice { root, track, style, parts, gains } => {
                     self.pending_jobs += 1;
                     let cancel = sg_media::Cancel::new();
                     let spawned = std::thread::Builder::new().name("sg-analysis".into()).spawn(move || {
                         // Measured, set up, and the set-up checked on the sound itself.
-                        let fitted = sg_project::analysis::voice_sound(&root, &parts, &cancel)
+                        let fitted = sg_project::analysis::voice_sound(&root, &parts, &gains, &cancel)
                             .map_err(|e| e.to_string())
                             .and_then(|sound| {
                                 sg_play::fit_voice(&sound, style)
@@ -539,8 +540,12 @@ impl App {
                         let result = sg_project::analysis::cut_out(&library, &root, &asset, &cancel, &mut progress)
                             .map_err(|e| e.to_string());
                         let _ = proxy.send_event(UserEvent::Import(ImportEvent::Finished { job }));
-                        let _ =
-                            proxy.send_event(UserEvent::CutOut { id: asset.id, label: asset.label.clone(), result });
+                        let _ = proxy.send_event(UserEvent::CutOut {
+                            root,
+                            id: asset.id,
+                            label: asset.label.clone(),
+                            result,
+                        });
                     });
                     if spawned.is_err() {
                         self.pending_jobs -= 1;
@@ -1321,9 +1326,18 @@ impl ApplicationHandler<UserEvent> for App {
                 self.shell.looks_loaded(&root, looks, luts);
                 self.job_done();
             }
-            UserEvent::CutOut { id, label, result } => {
+            UserEvent::CutOut { root, id, label, result } => {
                 self.stabilising.remove(&id);
+                let here = self.shell.session().is_some_and(|session| session.root == root);
                 match result {
+                    // Its project was closed meanwhile: the file stays where
+                    // it was made and goes into no other project.
+                    Ok(path) if !here => {
+                        self.shell.notify(format!(
+                            "{label} was cut out after its project was closed. The file is {}: drop it into the project to use it.",
+                            path.display()
+                        ));
+                    }
                     // The file is taken into the project like one that was dropped.
                     Ok(path) => {
                         let commands = self.shell.incoming(sg_ui::Incoming::Paths(vec![path]));

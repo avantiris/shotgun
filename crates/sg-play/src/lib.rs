@@ -1288,7 +1288,10 @@ pub fn fit_voice(
     let most = SAMPLE_RATE as usize * 60;
     let from = samples.len().saturating_sub(most) / 2;
     let part = &samples[from..(from + most).min(samples.len())];
-    for _ in 0..4 {
+    // (The last pass moves nothing but make-up and fader: what it sets is what was measured.)
+    const PASSES: usize = 6;
+    for pass in 0..PASSES {
+        let last = pass + 1 == PASSES;
         let mix = set.onto(sg_core::TrackSettings::default());
         // (The pitch correction changes no level; without it this is four times as fast.)
         let tone = sg_audio::Tone { tune: sg_audio::tune::Tune { amount: 0.0, ..tone_of(&mix).tune }, ..tone_of(&mix) };
@@ -1306,14 +1309,16 @@ pub fn fit_voice(
         // (Only under a take that had a floor of noise to begin with: what
         // lies between the phrases of a clean one is breath.)
         let noisy = stats.noise_db.is_some() && after.noise_db.is_some_and(|noise| after.loudness_db - noise < 50.0);
-        if noisy && set.denoise < 1.0 {
+        if noisy && set.denoise < 1.0 && !last {
             set.denoise = (set.denoise + 0.25).min(1.0);
             settled = false;
         }
         // The loud phrases against the average: the compressor's threshold.
         let off = (after.loud_db - after.loudness_db) - spread;
         let slope = 1.0 - 1.0 / set.comp_ratio.max(1.0);
-        if off > 1.0 && set.comp_threshold_db > -44.0 {
+        if last {
+            // (Nothing more is moved.)
+        } else if off > 1.0 && set.comp_threshold_db > -44.0 {
             set.comp_threshold_db = (set.comp_threshold_db - off / slope).max(-45.0);
             settled = false;
         } else if off < -2.5 && set.comp_threshold_db < -6.0 {

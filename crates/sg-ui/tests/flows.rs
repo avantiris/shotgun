@@ -1234,6 +1234,10 @@ fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
         _ => None,
     });
     assert_eq!(asked, Some(vec![(AssetId(1), 0, 480_000)]));
+    // (With how loud each clip is set to play: here as it is.)
+    assert!(
+        harness.state().commands.iter().any(|c| matches!(c, Command::MeasureVoice { gains, .. } if gains == &[1.0]))
+    );
     assert!(harness.query_by_label("Voice").is_some());
     // What it heard: a low, dull, noisy speaking voice. The strip follows; pan stays.
     let heard = sg_media::voice::VoiceStats {

@@ -107,14 +107,19 @@ pub fn parse(bytes: &[u8]) -> Result<MidiFile, MidiError> {
             let Ok(delta) = track.variable() else { break };
             now += delta as u64;
             let Ok(first) = track.byte() else { break };
-            // A data byte where a status belongs: the last status again.
+            // A data byte where a status belongs: the last channel status
+            // again. (Meta and system-exclusive events are not kept as that:
+            // some programs go on with the status from before them.)
             let data = if first & 0x80 == 0 {
                 Some(first)
             } else {
-                status = first;
+                if first < 0xf0 {
+                    status = first;
+                }
                 None
             };
-            match status {
+            let kind = if first >= 0xf0 { first } else { status };
+            match kind {
                 0xff => {
                     let (Ok(kind), Ok(length)) = (track.byte(), track.variable()) else { break };
                     let Ok(body) = track.take(length as usize) else { break };
@@ -272,6 +277,9 @@ mod tests {
             0x00, 0x91, 36, 90, // key 36 down on channel 2
             0x30, 36, 0, // half a beat later, running status: velocity 0 lets it go
             0x00, 0xb1, 7, 100, // a controller
+            0x00, 0x91, 40, 1, // a key down, to set the status...
+            0x00, 0xff, 0x01, 0x02, b'h', b'i', // ...a text event in between...
+            0x00, 40, 0, // ...and its release by the status from before the text
             0x30, 0x91, 38, 70, // at one beat: key 38 down
             0x81, 0x40, 0xc1, 5, // two beats later a program change (one data byte)
             0x00, 0xff, 0x2f, 0x00,
@@ -287,6 +295,7 @@ mod tests {
             file.tracks[0].notes,
             vec![
                 Note { start: 0, len: 480, pitch: 36, velocity: 90 },
+                Note { start: 480, len: 1, pitch: 40, velocity: 1 },
                 Note { start: 960, len: 1920, pitch: 38, velocity: 70 },
             ]
         );

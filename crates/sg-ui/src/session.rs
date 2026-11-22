@@ -418,16 +418,31 @@ impl Session {
             clip.asset != sg_core::AssetId(0)
                 && lane.props_of(clip.id).is_none_or(|props| props.speed == (1, 1) && !props.gain_db.is_animated())
         };
-        let parts: Vec<Clip> = lane
+        // Each with the settings of the clip it is of (its volume): without
+        // its fades, which belonged to the clip's ends.
+        let parts: Vec<(Clip, Option<sg_core::ClipProps>)> = lane
             .clips
             .range(from, to)
             .filter(plain)
             .map(|old| {
                 let start = old.start.max(from);
                 let end = old.end().min(to);
-                Clip { id: self.ids.clip(), start, len: end - start, src_in: old.src_in + (start - old.start), ..old }
+                let part = Clip {
+                    id: self.ids.clip(),
+                    start,
+                    len: end - start,
+                    src_in: old.src_in + (start - old.start),
+                    ..old
+                };
+                let props = lane.props_of(old.id).map(|props| sg_core::ClipProps {
+                    fade_in: 0,
+                    fade_out: 0,
+                    transition: None,
+                    ..sg_core::ClipProps::clone(props)
+                });
+                (part, props.filter(|props| *props != sg_core::ClipProps::default()))
             })
-            .filter(|part| part.len > 0)
+            .filter(|(part, _)| part.len > 0)
             .collect();
         if parts.is_empty() {
             return Vec::new();
@@ -445,7 +460,7 @@ impl Session {
                 let count = sequence.tracks.iter().filter(|t| t.name.starts_with(&name)).count();
                 let (add, id) = self.add_track_op(sequence, TrackKind::Audio, sequence.tracks.len());
                 let name = if count == 0 { name } else { format!("{name} {}", count + 1) };
-                let muted = sg_core::TrackSettings { mute: true, ..lane.mix };
+                let muted = sg_core::TrackSettings { mute: true, solo: false, ..lane.mix };
                 ops.extend([
                     add,
                     Op::SetTrackName { seq, track: id, name },
@@ -455,7 +470,12 @@ impl Session {
                 id
             }
         };
-        ops.extend(parts.into_iter().map(|clip| Op::InsertClip { seq, track: onto, clip }));
+        for (clip, props) in parts {
+            ops.push(Op::InsertClip { seq, track: onto, clip });
+            if let Some(props) = props {
+                ops.push(Op::SetClipProps { seq, track: onto, clip: clip.id, props: Some(Box::new(props)) });
+            }
+        }
         ops
     }
 

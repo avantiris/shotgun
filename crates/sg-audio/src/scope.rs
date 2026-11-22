@@ -61,7 +61,17 @@ impl Default for Scope {
 
 impl Scope {
     pub(crate) fn watch(&self, track: Option<usize>, spectrum_at: Option<usize>) {
-        self.track.store(track.unwrap_or(usize::MAX), Ordering::Relaxed);
+        let before = self.track.swap(track.unwrap_or(usize::MAX), Ordering::Relaxed);
+        if before != track.unwrap_or(usize::MAX) {
+            // Another track: what is kept is not its sound. (The disk thread
+            // may be writing meanwhile; a slot it has just filled is the new track's.)
+            for slot in self.slots.chunks(WIDTH) {
+                slot[0].store(0, Ordering::Relaxed);
+            }
+            for tag in self.spectrum_tags.iter() {
+                tag.store(0, Ordering::Relaxed);
+            }
+        }
         self.spectrum_at.store(spectrum_at.unwrap_or(usize::MAX), Ordering::Relaxed);
     }
 
