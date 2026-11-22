@@ -12,6 +12,12 @@ A new shell matters this time: the program now brings two more tools
 Nothing below was heard or looked at by a person. What "checked" means is
 said for each point.
 
+I stopped at about 03:30, not at 08:00. What is left on the roadmap
+(pitch bend, plugin parameters over time, pitch correction by hand,
+LV2, a GPU path for the cut-out) needs Kontakt running, a MIDI keyboard,
+your graphics card under load or your ears; I did not want to start
+Kontakt beside your open Shotgun or build more that nobody can check.
+
 ## First thing to do in your project
 
 1. Press **Voice** again on your voice track (A3). The chain changed, so
