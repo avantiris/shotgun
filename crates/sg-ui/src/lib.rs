@@ -2263,12 +2263,19 @@ impl Shell {
         let (path, start) = self.takes.remove(index);
         // (The file in the project is a copy; the one it was recorded into has done its work.)
         self.spent_takes.push(path);
-        // (What was drawn while it was made gives way to the clip.)
-        self.editor.timeline.live_take = None;
+        // (What was drawn while it was made gives way to the clip. How loud
+        // it got is kept: a take that reached full scale is said to have.)
+        let loudest =
+            self.editor.timeline.live_take.take().map_or(0.0, |live| live.peaks.iter().copied().fold(0.0, f32::max));
         match session.place_take(&asset, start, self.record_onto.take(), self.record_until.take()) {
             Ok(Some((track, clip))) => {
                 self.editor.timeline.select_only(track, &clip);
-                session.notice = Some(format!("Recorded {:.1} s.", clip.len as f64 / 48_000.0));
+                let clipped = if loudest >= 0.985 {
+                    " It reached full scale and is cut off there: turn the input down and record it again."
+                } else {
+                    ""
+                };
+                session.notice = Some(format!("Recorded {:.1} s.{clipped}", clip.len as f64 / 48_000.0));
             }
             Ok(None) => {}
             Err(e) => self.error = Some(e.to_string()),
