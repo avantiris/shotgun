@@ -852,6 +852,79 @@ mod tests {
     }
 
     #[test]
+    fn whatever_the_settings_and_the_sound_what_comes_out_is_sound() {
+        // Two hundred made-up combinations of settings, order and input
+        // (bursts, silence, full scale, a step): nothing that is not a
+        // number, and nothing absurdly loud.
+        let mut seed = 0x0bad_5eedu32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        for case in 0..200 {
+            let mut order = [0u8, 1, 2, 3, 4, 5, 6, 7];
+            for i in (1..8).rev() {
+                order.swap(i, (next() * (i + 1) as f32) as usize % (i + 1));
+            }
+            let tone = Tone {
+                low_db: next() * 36.0 - 18.0,
+                mid_db: next() * 36.0 - 18.0,
+                mid_hz: 100.0 + next() * 9900.0,
+                high_db: next() * 36.0 - 18.0,
+                threshold_db: -next() * 60.0,
+                ratio: 1.0 + next() * 19.0,
+                makeup_db: next() * 24.0,
+                deess: next(),
+                level: next(),
+                level_ref_db: if next() < 0.5 { 0.0 } else { -next() * 90.0 },
+                drive: next(),
+                voice: next() < 0.5,
+                order,
+                ..Tone::default()
+            };
+            let low_cut = if next() < 0.3 { 0.0 } else { next() * 1000.0 };
+            let mut fx = TrackFx::new(false, false);
+            let kind = case % 4;
+            let mut loudest = 0.0f32;
+            for block_number in 0..40 {
+                let mut block: Vec<f32> = (0..512)
+                    .map(|i| match kind {
+                        0 => next() * 2.0 - 1.0,
+                        1 => {
+                            if (block_number / 8) % 2 == 0 {
+                                0.0
+                            } else {
+                                (next() * 2.0 - 1.0) * 0.3
+                            }
+                        }
+                        2 => {
+                            if i % 2 == 0 {
+                                1.0
+                            } else {
+                                -1.0
+                            }
+                        }
+                        _ => {
+                            if block_number < 20 {
+                                0.0
+                            } else {
+                                0.9
+                            }
+                        }
+                    })
+                    .collect();
+                fx.process(&mut block, low_cut, 0.0, &tone);
+                assert!(block.iter().all(|s| s.is_finite()), "case {case}: {tone:?}");
+                loudest = block.iter().fold(loudest, |m, s| m.max(s.abs()));
+            }
+            // (Full scale in, at most 18 dB of every band, 12 of the leveller and 24 of make-up on top.)
+            assert!(loudest < 2000.0, "case {case}: {loudest} with {tone:?}");
+        }
+    }
+
+    #[test]
     fn the_stages_run_in_the_order_the_track_has_them_in() {
         // A loud tone through compressor and saturation: squeezed first it
         // reaches the saturation quieter and is rounded less than the other way round.

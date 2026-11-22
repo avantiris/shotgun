@@ -301,6 +301,50 @@ mod tests {
         );
     }
 
+    proptest::proptest! {
+        /// Whatever bytes follow a MIDI header: an answer, never a panic,
+        /// and notes that a clip can hold.
+        #[test]
+        fn any_bytes_are_read_without_harm(
+            division in 1u16..0x7fff,
+            body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..400),
+            claimed in 0u32..600,
+        ) {
+            let mut bytes = b"MThd\x00\x00\x00\x06\x00\x01\x00\x01".to_vec();
+            bytes.extend(division.to_be_bytes());
+            bytes.extend(b"MTrk");
+            bytes.extend(claimed.to_be_bytes());
+            bytes.extend(&body);
+            if let Ok(file) = parse(&bytes) {
+                for note in file.tracks.iter().flat_map(|track| track.notes.iter()) {
+                    proptest::prop_assert!(note.start >= 0 && note.len >= 1 && note.pitch <= 127 && (1..=127).contains(&note.velocity));
+                }
+            }
+        }
+
+        /// What is written is read back as it was, whatever the notes.
+        #[test]
+        fn any_notes_survive_the_file(
+            notes in proptest::collection::vec((0i64..200_000, 1i64..50_000, 0u8..128, 1u8..128), 0..40),
+            tempo in proptest::option::of(20_000u32..400_000),
+        ) {
+            let mut notes: Vec<Note> =
+                notes.into_iter().map(|(start, len, pitch, velocity)| Note { start, len, pitch, velocity }).collect();
+            // (A file cannot hold the same key down twice at once: one of two that overlap is left out.)
+            notes.sort_by_key(|n| (n.pitch, n.start));
+            let mut plain: Vec<Note> = Vec::new();
+            for note in notes {
+                if plain.last().is_none_or(|last| last.pitch != note.pitch || last.start + last.len <= note.start) {
+                    plain.push(note);
+                }
+            }
+            plain.sort_by_key(|n| (n.start, n.pitch));
+            let file = parse(&write(&plain, tempo, "t")).unwrap();
+            let read = file.tracks.first().map_or(Vec::new(), |track| track.notes.clone());
+            proptest::prop_assert_eq!(read, plain);
+        }
+    }
+
     #[test]
     fn what_is_not_a_midi_file_says_so() {
         assert_eq!(parse(b"RIFF....WAVE"), Err(MidiError::NotMidi));
