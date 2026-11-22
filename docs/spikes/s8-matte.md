@@ -46,6 +46,16 @@ from this machine. The numbers below are.
   as for animated pictures) is 77 MB per second of 1080p60 (154 MB for
   the 2 s test). The file kept in the project is small (0.8 MB per second).
 
+- Where the time goes, per 1080p frame with 8 threads: the model 109 to
+  112 ms, turning the frame into numbers for it 19 ms, putting picture
+  and matte together 35 ms, reading the frame 6 ms. Reusing the buffers
+  of the last two did not make the whole measurably faster (tried and
+  taken back), nor did a faster setting of the VP9 encoder (30 s against
+  32 s for 120 frames).
+- onnxruntime's OpenVINO provider on the CPU (it is in the packaged
+  build): 111.6 ms per frame for the model against 108.7 ms with the
+  plain CPU provider. No gain.
+
 ## Not measured
 
 - Any GPU path (ncnn on Vulkan, onnxruntime with MIGraphX): not tried.
