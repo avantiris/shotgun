@@ -66,7 +66,9 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "chain" => Step::Dev(DevStep::Chain),
         "cutout" => Step::Dev(DevStep::CutOut),
         "findkey" => Step::Dev(DevStep::FindKey),
-        "sky" => Step::Dev(DevStep::Sky(need()?)),
+        "sky" => Step::Dev(DevStep::Sky),
+        // change:<service's name>:<sentence>
+        "change" => Step::Dev(DevStep::Change(need()?)),
         "blurred" => Step::Dev(DevStep::Blurred),
         "builtinlooks" => Step::Dev(DevStep::BuiltinLooks),
         // scale:<root, 0 is C>:<1 minor, 0 major>

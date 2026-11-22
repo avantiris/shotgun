@@ -204,7 +204,9 @@ pub struct Timeline {
     /// The song whose beats should be loaded; taken by the shell.
     pub beat_request: Option<AssetId>,
     /// A clip is to get another sky ("Another sky" in its menu); taken by the shell.
-    pub sky_request: Option<(TrackId, Clip, sg_project::analysis::Sky)>,
+    pub sky_request: Option<(TrackId, Clip)>,
+    /// A clip is to be changed by a sentence: the shell opens the window for it.
+    pub sentence_request: Option<(TrackId, Clip)>,
     /// What the grid of a sequence with a tempo is made of.
     pub grid_step: GridStep,
     /// The audio track recordings go onto ("R" in its header), if one is marked.
@@ -285,6 +287,7 @@ impl Default for Timeline {
             grid_for: None,
             beat_request: None,
             sky_request: None,
+            sentence_request: None,
             grid_step: GridStep::Auto,
             record_track: None,
             renaming: None,
@@ -970,19 +973,20 @@ impl Timeline {
                         }
                         ui.close();
                     }
-                    // Another sky for this clip (10-ai.md): the part of the video it
-                    // shows is made anew with the sky replaced, and the clip then shows
-                    // that. A clip that has one can have the sky as it was again.
+                    // The part of the video that this clip shows, made anew by a
+                    // model (10-ai.md): without its sky, or changed by a sentence. The
+                    // clip then shows that; one that does can have its picture back.
                     let asset = project.assets.get(&clip.asset);
                     let original = asset.and_then(|asset| {
-                        let (slug, src_in) = sg_project::analysis::sky_origin(&asset.label)?;
+                        let (slug, src_in) = sg_project::analysis::sky_origin(&asset.label)
+                            .or_else(|| sg_project::ai::change_origin(&asset.label))?;
                         let original = project.assets.values().find(|other| sg_core::text::slug(&other.label) == slug)?;
                         Some((original.id, src_in))
                     });
                     if let Some((original, src_in)) = original {
                         if ui
-                            .button("The sky as it was")
-                            .on_hover_text("This clip shows a part of its video with another sky: back to the video itself.")
+                            .button("The picture as it was")
+                            .on_hover_text("This clip shows a part of its video that a model made anew: back to the video itself.")
                             .clicked()
                         {
                             let back = Timeline::swap_asset(session, sequence, track, clip, original, clip.src_in + src_in);
@@ -993,18 +997,22 @@ impl Timeline {
                         }
                     } else if asset.is_some_and(|a| a.kind == sg_core::AssetKind::Video && a.video.as_ref().is_some_and(|v| !v.is_still()))
                     {
-                        ui.menu_button("Another sky (AI)", |ui| {
-                            for sky in sg_project::analysis::Sky::ALL {
-                                let tip = "Finds the sky in this clip and puts another one there, drawn by Shotgun and moving \
-                                           with the camera; the rest of the picture is graded to fit. Done on this machine by a \
-                                           model that marks sky; nothing is sent anywhere. About a minute for four seconds of \
-                                           1080p. A plain bright wall can be taken for sky: use it on clips that show sky.";
-                                if ui.button(sky.label()).on_hover_text(tip).clicked() {
-                                    self.sky_request = Some((track.id, clip, sky));
-                                    ui.close();
-                                }
-                            }
-                        });
+                        let tip = "Finds the sky in this clip and makes it transparent, so that what is on the track \
+                                   below shows there: a sky of your own. Done on this machine by a model that marks sky; \
+                                   nothing is sent anywhere. About a minute for four seconds of 1080p. A plain bright \
+                                   wall can be taken for sky: use it on clips that show sky.";
+                        if ui.button("Remove the sky (AI)").on_hover_text(tip).clicked() {
+                            self.sky_request = Some((track.id, clip));
+                            ui.close();
+                        }
+                        let tip = "Hands this clip's picture whole to a generative model with a sentence of yours \
+                                   (\"dark, epic storm clouds in the sky\"); what comes back takes the clip's place. \
+                                   Which model, at which service or on this machine, is yours to set up; before anything \
+                                   is sent you are shown what leaves this machine and what it costs.";
+                        if ui.button("Change by a sentence (AI)...").on_hover_text(tip).clicked() {
+                            self.sentence_request = Some((track.id, clip));
+                            ui.close();
+                        }
                     }
                     ui.menu_button("Scenario", |ui| {
                         use crate::session::ScenarioChoice;

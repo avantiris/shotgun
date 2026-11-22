@@ -7,6 +7,12 @@ with clouds, blown-out white, seen through leaves; and shots without).
 Code: `spikes/s9-sky/sky.py` (first look), `tools/sg-sky.py` (what the
 program runs).
 
+> 2026-11-22, later (feedback F17.4): of what is described here only the
+> transparent sky ("Remove the sky (AI)") is still in the program. The
+> drawn skies, the camera tracking for them and the grading were taken
+> out: he wanted a generative model on the whole picture instead
+> (`docs/spec/10-ai.md`). The measurements below are as they were.
+
 ## Decision
 
 - **Finding the sky**: the skyseg model (a U2-Net trained for sky, from

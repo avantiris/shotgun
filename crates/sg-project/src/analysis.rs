@@ -311,84 +311,36 @@ const SKY_MODEL: &str = "_models/skyseg.onnx";
 const SKY_MODEL_URL: &str = "https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx";
 const SKY_MODEL_SHA256: &str = "ab9c34c64c3d821220a2886a4a06da4642ffa14d5b30e8d5339056a089aa1d39";
 
-/// The skies a clip can be given.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Sky {
-    Storm,
-    Sunset,
-    Night,
-    /// None: the sky is made transparent, for one's own on the track below.
-    Clear,
-}
-
-impl Sky {
-    pub const ALL: [Sky; 4] = [Sky::Storm, Sky::Sunset, Sky::Night, Sky::Clear];
-
-    /// The word the tool and the file names know it by.
-    pub fn word(self) -> &'static str {
-        match self {
-            Sky::Storm => "storm",
-            Sky::Sunset => "sunset",
-            Sky::Night => "night",
-            Sky::Clear => "clear",
-        }
-    }
-
-    pub fn from_word(word: &str) -> Option<Sky> {
-        Sky::ALL.into_iter().find(|sky| sky.word() == word)
-    }
-
-    /// What it is called in the menu.
-    pub fn label(self) -> &'static str {
-        match self {
-            Sky::Storm => "Dark storm clouds",
-            Sky::Sunset => "Sunset",
-            Sky::Night => "Night with stars",
-            Sky::Clear => "None: transparent, for a sky of your own",
-        }
-    }
-}
-
-/// The name of the asset that is a part of `asset` with another sky:
+/// The name of the asset that is a part of `asset` without its sky:
 /// the part begins `src_in` into the video and is `span` long, both as a
 /// clip of the sequence counts the source. The name is how the part is
 /// known again (as takes are, by their file's name).
-pub fn sky_name(asset: &sg_core::Asset, sky: Sky, src_in: i64, span: i64) -> String {
-    format!("{} {} sky {src_in}-{span}", sg_core::text::slug(&asset.label), sky.word())
+pub fn sky_name(asset: &sg_core::Asset, src_in: i64, span: i64) -> String {
+    format!("{} clear sky {src_in}-{span}", sg_core::text::slug(&asset.label))
 }
 
 /// Taken apart again: the slug of the video it was made from, and where in it the part begins.
 pub fn sky_origin(label: &str) -> Option<(&str, i64)> {
     let (rest, part) = label.rsplit_once(" sky ")?;
-    let (slug, word) = rest.rsplit_once(' ')?;
-    Sky::from_word(word)?;
+    // (Any one word: parts made when there were drawn skies are still known.)
+    let (slug, _) = rest.rsplit_once(' ')?;
     let (src_in, span) = part.split_once('-')?;
     span.parse::<i64>().ok()?;
     Some((slug, src_in.parse().ok()?))
 }
 
-/// A part of a video asset with another sky (feedback F17.2), written
-/// into the project's cache; returns where it is, to be imported like
-/// any other file. `src_in` and `span` in frames of `rate` (the
-/// sequence's), as a clip counts them. `library`: where the model is kept.
-#[allow(clippy::too_many_arguments)]
-pub fn replace_sky(
-    library: &Path,
+/// The part of a video that a clip shows, for a tool that makes it
+/// anew: the file to read, where in it the part begins (seconds) and how
+/// many of the video's own frames it has. `src_in` and `span` in frames
+/// of `rate` (the sequence's), as a clip counts them.
+pub(crate) fn source_part(
     root: &Path,
     asset: &sg_core::Asset,
-    sky: Sky,
+    video: &sg_core::VideoInfo,
     src_in: i64,
     span: i64,
     rate: sg_core::Rate,
-    cancel: &Cancel,
-    progress: &mut dyn FnMut(f32),
-) -> Result<PathBuf, ToolError> {
-    let video = asset.video.as_ref().filter(|v| !v.is_still()).ok_or_else(|| ToolError::other("it is not a video"))?;
-    let model = model(library, SKY_MODEL, SKY_MODEL_URL, SKY_MODEL_SHA256, "176 MB", cancel)?;
-    let folder = root.join(".shotgun/cache/sky");
-    std::fs::create_dir_all(&folder)?;
-    let extension = if sky == Sky::Clear { "webm" } else { "mp4" };
-    let out = folder.join(format!("{}.{extension}", sky_name(asset, sky, src_in, span)));
+) -> Result<(PathBuf, f64, i64), ToolError> {
     let conform = cache::conform(root, asset.id, false);
     let source = if conform.is_file() { conform } else { root.join(&asset.file) };
     // From the sequence's frames to the video's own: the first frame at
@@ -402,7 +354,32 @@ pub fn replace_sky(
     }
     // (A quarter of a frame early: the frame itself, whatever the rounding of its time.)
     let from = if first > 0 { (first as f64 - 0.25) / per_second } else { 0.0 };
-    sg_media::derive::sky(&model, &source, &out, sky.word(), from, frames, cancel, progress).map_err(|e| match e {
+    Ok((source, from, frames))
+}
+
+/// A part of a video asset with its sky made transparent (feedback
+/// F17.2, F17.4), written
+/// into the project's cache; returns where it is, to be imported like
+/// any other file. `src_in` and `span` in frames of `rate` (the
+/// sequence's), as a clip counts them. `library`: where the model is kept.
+#[allow(clippy::too_many_arguments)]
+pub fn remove_sky(
+    library: &Path,
+    root: &Path,
+    asset: &sg_core::Asset,
+    src_in: i64,
+    span: i64,
+    rate: sg_core::Rate,
+    cancel: &Cancel,
+    progress: &mut dyn FnMut(f32),
+) -> Result<PathBuf, ToolError> {
+    let video = asset.video.as_ref().filter(|v| !v.is_still()).ok_or_else(|| ToolError::other("it is not a video"))?;
+    let model = model(library, SKY_MODEL, SKY_MODEL_URL, SKY_MODEL_SHA256, "176 MB", cancel)?;
+    let folder = root.join(".shotgun/cache/sky");
+    std::fs::create_dir_all(&folder)?;
+    let out = folder.join(format!("{}.webm", sky_name(asset, src_in, span)));
+    let (source, from, frames) = source_part(root, asset, video, src_in, span, rate)?;
+    sg_media::derive::sky(&model, &source, &out, from, frames, cancel, progress).map_err(|e| match e {
         ToolError::Spawn { .. } => ToolError::other(format!(
             "{e}. The tool comes with the program: start Shotgun again from a new `nix develop` shell, or use the packaged program"
         )),
@@ -569,15 +546,12 @@ pub fn import_font(root: &Path, source: &Path) -> Result<String, ToolError> {
 mod sky_tests {
     #[test]
     fn a_part_with_another_sky_is_known_again_by_its_name() {
-        assert_eq!(super::sky_origin("my-clip storm sky 3600-90"), Some(("my-clip", 3600)));
+        assert_eq!(super::sky_origin("my-clip clear sky 3600-90"), Some(("my-clip", 3600)));
         assert_eq!(super::sky_origin("a clear sky 0-1"), Some(("a", 0)));
-        // Not one: another word, no numbers, a video that only has "sky" in its name.
-        assert_eq!(super::sky_origin("my-clip purple sky 3600-90"), None);
+        assert_eq!(super::sky_origin("my-clip storm sky 3600-90"), Some(("my-clip", 3600)));
+        // Not one: no numbers, a video that only has "sky" in its name.
         assert_eq!(super::sky_origin("storm sky"), None);
         assert_eq!(super::sky_origin("the night sky 12"), None);
-        for sky in super::Sky::ALL {
-            assert_eq!(super::Sky::from_word(sky.word()), Some(sky));
-        }
     }
 }
 

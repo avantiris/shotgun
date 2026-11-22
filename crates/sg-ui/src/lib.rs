@@ -6,6 +6,7 @@
 //! [`Shell::opened`], [`Shell::import_event`] and [`Shell::poster_loaded`].
 
 mod actions;
+mod ai_panel;
 mod assets;
 mod clip_panel;
 mod colour_panel;
@@ -170,17 +171,21 @@ pub enum Command {
         root: PathBuf,
         asset: Arc<Asset>,
     },
-    /// Make a part of a video with another sky; the file is then taken in
-    /// like a dropped one, and [`Shell::sky_failed`] is told if it could not be made.
-    Sky {
+    /// Make the part of a video that a clip shows anew; the file is then
+    /// taken in like a dropped one, and [`Shell::part_failed`] is told if
+    /// it could not be made.
+    Part {
         root: PathBuf,
         asset: Box<Asset>,
-        sky: sg_project::analysis::Sky,
+        how: Part,
         /// Where the part begins in the video and how long it is, in the sequence's frames.
         src_in: i64,
         span: i64,
         rate: sg_core::Rate,
     },
+    /// Read which models change a clip by a sentence (the file of this
+    /// machine); answered with [`Shell::ai_services_loaded`].
+    LoadAiServices,
     /// Find the key an asset's music is in; answered with [`Shell::key_found`].
     FindKey {
         root: PathBuf,
@@ -392,8 +397,10 @@ pub enum DevStep {
     Blurred,
     /// Find the key of the selected asset's music.
     FindKey,
-    /// Give the selected clip another sky (storm, sunset, night, clear).
-    Sky(String),
+    /// Make the selected clip's sky transparent.
+    Sky,
+    /// Change the selected clip by a sentence: `<service's name>:<sentence>`.
+    Change(String),
     /// Cut the person out of the selected asset.
     CutOut,
     /// A copy of the selected asset's sound: semitones up, times as fast.
@@ -436,8 +443,13 @@ pub struct Shell {
     dropped_at: Option<(i64, Option<usize>, usize)>,
     /// Recorded takes being imported: the file and the timeline sample it starts at.
     takes: Vec<(PathBuf, i64)>,
-    /// Clips that wait for a part of their video with another sky.
-    skies: Vec<PendingSky>,
+    /// Clips that wait for a part of their video made anew.
+    parts: Vec<PendingPart>,
+    /// The window in which a clip is changed by a sentence, while it is open.
+    ai: Option<ai_panel::AiPanel>,
+    /// Which models there are for that (`None`: being read), and the file they are written in.
+    ai_services: Option<Result<Vec<sg_project::ai::Service>, String>>,
+    ai_file: String,
     /// The track that takes the recording in progress, and the timeline sample it was asked for at.
     record_onto: Option<(sg_core::TrackId, i64)>,
     /// How loud the tracks beside the voice that is being listened to are.
@@ -622,8 +634,11 @@ impl Shell {
                 if std::mem::take(&mut self.editor.clip_panel.fonts_request) {
                     commands.push(Command::LoadFonts { root: root.clone() });
                 }
-                if let Some((track, clip, sky)) = self.editor.timeline.sky_request.take() {
-                    commands.extend(self.ask_for_sky(track, clip, sky));
+                if let Some((track, clip)) = self.editor.timeline.sky_request.take() {
+                    commands.extend(self.ask_for_part(track, clip, Part::NoSky));
+                }
+                if let Some((track, clip)) = self.editor.timeline.sentence_request.take() {
+                    self.open_ai(track, clip, &mut commands);
                 }
                 if let Some(id) = self.editor.timeline.beat_request.take() {
                     commands.push(Command::LoadBeats { root: root.clone(), id });
@@ -799,6 +814,22 @@ impl Shell {
                 commands.push(Command::Plugins(request));
             }
             None => {}
+        }
+        if let Some(panel) = &mut self.ai {
+            match panel.ui(&ctx, self.ai_services.as_ref(), &self.ai_file) {
+                Some(ai_panel::AiAction::Send(service, sentence)) => {
+                    let (track, clip) = (panel.track, panel.clip);
+                    self.ai = None;
+                    commands.extend(self.ask_for_part(track, clip, Part::Sentence { service, sentence }));
+                }
+                Some(ai_panel::AiAction::Close) => {
+                    if panel.scripted.is_some() {
+                        self.error = Some("change: no such service in the file".to_owned());
+                    }
+                    self.ai = None;
+                }
+                None => {}
+            }
         }
         match self.export.ui(&ctx, gif_range) {
             Some(ExportAction::Start(request)) => self.start_export(request, &mut commands),
@@ -1334,17 +1365,25 @@ impl Shell {
                     _ => self.error = Some("blurred: no asset is selected".to_owned()),
                 }
             }
-            DevStep::Sky(word) => {
-                let sky = sg_project::analysis::Sky::from_word(&word);
+            DevStep::Sky | DevStep::Change(_) => {
                 let chosen = self.session.as_ref().and_then(|session| {
                     let sequence = session.project().sequences.first()?.clone();
                     // (The picture of the selected take, not its sound.)
                     let (track, clip) = self.editor.timeline.selected_picture(&sequence)?;
-                    Some((track.id, clip, sky?))
+                    Some((track.id, clip))
                 });
-                match chosen {
-                    Some(request) => self.editor.timeline.sky_request = Some(request),
-                    None => self.error = Some("sky: no clip is selected, or no such sky".to_owned()),
+                match (chosen, step) {
+                    (Some(request), DevStep::Change(told)) => {
+                        let (service, sentence) = told.split_once(':').unwrap_or((told.as_str(), ""));
+                        self.open_ai(request.0, request.1, &mut commands);
+                        // (Without a service's name the window only opens, to be looked at.)
+                        if let Some(panel) = self.ai.as_mut().filter(|_| !service.is_empty()) {
+                            panel.scripted = Some(service.to_owned());
+                            panel.sentence = sentence.to_owned();
+                        }
+                    }
+                    (Some(request), _) => self.editor.timeline.sky_request = Some(request),
+                    (None, _) => self.error = Some("no clip of a video is selected".to_owned()),
                 }
             }
             DevStep::FindKey => {
@@ -2005,7 +2044,7 @@ impl Shell {
         }
         // A recorded take goes where it was played; anything else where it was dropped.
         if let Some(id) = placed
-            && !self.place_sky(id)
+            && !self.place_part(id)
             && !self.place_take(id)
         {
             self.place_dropped(id);
@@ -2019,9 +2058,30 @@ impl Shell {
     }
 }
 
-/// A clip that waits for its new sky: the name the part will have as an
-/// asset, the clip, and where in the video the part begins.
-struct PendingSky {
+/// How the part of a video that a clip shows is made anew.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Part {
+    /// Its sky made transparent, for one's own on the track below.
+    NoSky,
+    /// Changed by a sentence, by a model at a service or a program.
+    Sentence { service: Box<sg_project::ai::Service>, sentence: String },
+}
+
+impl Part {
+    /// The name the part has as an asset: how it is known again.
+    pub fn name(&self, asset: &Asset, src_in: i64, span: i64) -> String {
+        match self {
+            Part::NoSky => sg_project::analysis::sky_name(asset, src_in, span),
+            Part::Sentence { service, sentence } => {
+                sg_project::ai::change_name(asset, &service.name, sentence, src_in, span)
+            }
+        }
+    }
+}
+
+/// A clip that waits for its part made anew: the name the part will have
+/// as an asset, the clip, and where in the video the part begins.
+struct PendingPart {
     name: String,
     seq: sg_core::SequenceId,
     track: sg_core::TrackId,
@@ -2881,14 +2941,29 @@ impl Shell {
         }
     }
 
-    /// A clip is to get another sky: the part of its video that it shows
-    /// is made anew (a job), and when that arrives the clip shows it.
-    fn ask_for_sky(
-        &mut self,
-        track: sg_core::TrackId,
-        clip: sg_core::Clip,
-        sky: sg_project::analysis::Sky,
-    ) -> Option<Command> {
+    /// The window for changing a clip by a sentence opens, and which
+    /// models there are is read again (the file may have been written since).
+    fn open_ai(&mut self, track: sg_core::TrackId, clip: sg_core::Clip, commands: &mut Vec<Command>) {
+        let Some(session) = &self.session else { return };
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return };
+        let props = sequence.track(track).and_then(|track| track.props_of(clip.id));
+        let span = props.map_or(clip.len, |props| props.source_offset(clip.len)).max(1);
+        let seconds = span as f64 * sequence.rate.den() as f64 / sequence.rate.num() as f64;
+        self.ai = Some(ai_panel::AiPanel::new(track, clip, seconds));
+        self.ai_services = None;
+        commands.push(Command::LoadAiServices);
+    }
+
+    /// Which models change a clip by a sentence was read from `file`.
+    pub fn ai_services_loaded(&mut self, file: String, services: Result<Vec<sg_project::ai::Service>, String>) {
+        self.ai_file = file;
+        self.ai_services = Some(services);
+    }
+
+    /// The part of its video that a clip shows is to be made anew (a
+    /// job); when that arrives the clip shows it.
+    fn ask_for_part(&mut self, track: sg_core::TrackId, clip: sg_core::Clip, how: Part) -> Option<Command> {
         let session = self.session.as_mut()?;
         let project = session.project().clone();
         let sequence = project.sequences.first()?;
@@ -2896,39 +2971,44 @@ impl Shell {
         let props = sequence.track(track)?.props_of(clip.id);
         // (As much of the source as the clip plays, at its speed.)
         let span = props.map_or(clip.len, |props| props.source_offset(clip.len)).max(1);
-        let name = sg_project::analysis::sky_name(asset, sky, clip.src_in, span);
-        // Made before (the same part, the same sky): it is there already.
+        let name = how.name(asset, clip.src_in, span);
+        // Made before (the same part, the same change): it is there already.
         if let Some(made) = project.assets.values().find(|other| other.label == name) {
             let made = made.id;
-            self.skies.push(PendingSky { name, seq: sequence.id, track, clip: clip.id, src_in: clip.src_in });
-            self.place_sky(made);
+            self.parts.push(PendingPart { name, seq: sequence.id, track, clip: clip.id, src_in: clip.src_in });
+            self.place_part(made);
             return None;
         }
-        let waiting = self.skies.iter().any(|pending| pending.name == name);
-        self.skies.push(PendingSky { name, seq: sequence.id, track, clip: clip.id, src_in: clip.src_in });
-        session.notice = Some(format!(
-            "Another sky for this clip ({}): it is being made, see the jobs above the assets, and the clip shows it \
-             when it is done. About a minute for four seconds of 1080p at 60 frames a second; the first time, the model (176 MB) is fetched.",
-            sky.label().to_lowercase()
-        ));
-        (!waiting).then(|| Command::Sky {
+        let waiting = self.parts.iter().any(|pending| pending.name == name);
+        self.parts.push(PendingPart { name, seq: sequence.id, track, clip: clip.id, src_in: clip.src_in });
+        session.notice = Some(match &how {
+            Part::NoSky => "The sky of this clip is being removed: see the jobs above the assets; the clip shows it when \
+                            it is done, and what is on the track below then shows where the sky was. About a minute for \
+                            four seconds of 1080p at 60 frames a second; the first time, the model (176 MB) is fetched."
+                .to_owned(),
+            Part::Sentence { service, .. } => format!(
+                "This clip is being changed by {}: see the jobs above the assets. The clip shows the result when it is there.",
+                service.name
+            ),
+        });
+        (!waiting).then(|| Command::Part {
             root: session.root.clone(),
             asset: Box::new(Asset::clone(asset)),
-            sky,
+            how,
             src_in: clip.src_in,
             span,
             rate: sequence.rate,
         })
     }
 
-    /// An asset arrived: if it is a part with another sky that clips wait
+    /// An asset arrived: if it is a part made anew that clips wait
     /// for, they show it now (each one undo step). True if it was one.
-    fn place_sky(&mut self, id: AssetId) -> bool {
+    fn place_part(&mut self, id: AssetId) -> bool {
         let Some(session) = &mut self.session else { return false };
         let Some(label) = session.project().assets.get(&id).map(|asset| asset.label.clone()) else { return false };
-        let (waiting, rest): (Vec<PendingSky>, Vec<PendingSky>) =
-            std::mem::take(&mut self.skies).into_iter().partition(|pending| pending.name == label);
-        self.skies = rest;
+        let (waiting, rest): (Vec<PendingPart>, Vec<PendingPart>) =
+            std::mem::take(&mut self.parts).into_iter().partition(|pending| pending.name == label);
+        self.parts = rest;
         if waiting.is_empty() {
             return false;
         }
@@ -2953,12 +3033,12 @@ impl Shell {
                     )
                     .map_err(|e| e.to_string())
                 }
-                _ => Err("its clip is no longer where it was; the new sky is among the assets".to_owned()),
+                _ => Err("its clip is no longer where it was; the new part is among the assets".to_owned()),
             };
             match outcome {
                 Ok(()) => {
                     session.notice = Some(
-                        "The clip has its new sky. Its menu has \"The sky as it was\"; undo also takes it back."
+                        "The clip shows the new part. Its menu has \"The picture as it was\"; undo also takes it back."
                             .to_owned(),
                     )
                 }
@@ -2968,9 +3048,9 @@ impl Shell {
         true
     }
 
-    /// A part with another sky could not be made: nothing waits for it any more.
-    pub fn sky_failed(&mut self, name: &str) {
-        self.skies.retain(|pending| pending.name != name);
+    /// A part could not be made anew: nothing waits for it any more.
+    pub fn part_failed(&mut self, name: &str) {
+        self.parts.retain(|pending| pending.name != name);
     }
 
     /// The key of an asset's music was found (or not): the piano roll

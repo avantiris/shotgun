@@ -1,20 +1,15 @@
-"""sg-sky: finds the sky in a video and puts another one there.
+"""sg-sky: finds the sky in a video and makes it transparent.
 
-sg-sky <model.onnx> <video in> <video out> <sky> <from seconds> <frames> [threads]
+sg-sky <model.onnx> <video in> <video out> <from seconds> <frames> [threads]
 
-<sky>: storm, sunset, night (the picture with that sky, as H.264 in
-.mp4) or clear (the picture with the sky transparent, VP9 with an alpha
-channel in .webm, for a sky of one's own on the track below).
+The output is the picture with the sky transparent (VP9 with an alpha
+channel, .webm), for a sky of one's own on the track below.
 <frames>: how many to make from <from seconds> on; 0 is to the end.
 
 How: a model made for it (skyseg, a U2-Net; MIT) marks the sky in a small
 copy of the picture, every few frames. That mark is fitted to the edges
 of each full frame (a guided filter), and widened to what has the sky's
-colour right beside it (the gaps between leaves). The new sky is drawn
-here, from noise, and moves against the camera's motion (measured from
-frame to frame), so that it stays in place behind the picture. At the
-edges the new sky is darkened by what was there, so that branches stay
-branches; the rest of the picture is graded towards the new light.
+colour right beside it (the gaps between leaves).
 
 One line "frame <n>" per frame on standard output, for the progress
 shown in the program. Run by Shotgun from its job threads
@@ -55,98 +50,9 @@ def box(a, r):
     return cv2.blur(a, (2 * r + 1, 2 * r + 1), borderType=cv2.BORDER_REFLECT)
 
 
-class Clouds:
-    """A sky drawn from noise: one tile of cloud-like noise, looked at
-    through a made-up perspective, lit from one side, in a style's colours."""
-
-    STYLES = {
-        # The sky seen through the gaps (overhead and at the horizon), the
-        # clouds' thin edges and their thick middles, how much of the sky
-        # is cloud (the noise level where cloud begins and where it is
-        # thick), and the grade of the rest of the picture: gain,
-        # saturation, tint.
-        "storm": dict(top=(0.24, 0.27, 0.33), low=(0.66, 0.66, 0.63), edge=(0.46, 0.48, 0.53),
-                      core=(0.07, 0.078, 0.10), cover=(0.16, 0.64),
-                      gain=0.74, sat=0.62, tint=(0.93, 0.98, 1.06), stars=False),
-        "sunset": dict(top=(0.13, 0.12, 0.30), low=(1.0, 0.56, 0.18), edge=(1.0, 0.60, 0.26),
-                       core=(0.11, 0.05, 0.11), cover=(0.38, 0.80),
-                       gain=0.82, sat=0.95, tint=(1.10, 0.96, 0.84), stars=False),
-        "night": dict(top=(0.004, 0.008, 0.026), low=(0.03, 0.05, 0.10), edge=(0.13, 0.17, 0.27),
-                      core=(0.004, 0.006, 0.014), cover=(0.42, 0.85),
-                      gain=0.36, sat=0.50, tint=(0.80, 0.94, 1.22), stars=True),
-    }
-
-    def __init__(self, style, width, height, rate):
-        self.style = self.STYLES[style]
-        self.rate = rate
-        # Drawn at about 640 points across and enlarged: clouds are soft.
-        self.w = min(width, 640)
-        self.h = max(2, round(self.w * height / width))
-        self.up = Resize(self.w, self.h, width, height)
-        random = np.random.default_rng(20261122)
-        # Noise whose large shapes are strong and whose small ones are weak
-        # (a spectrum falling with the frequency): it repeats at its borders.
-        n = 1024
-        fy, fx = np.fft.fftfreq(n)[:, None], np.fft.rfftfreq(n)[None, :]
-        f = np.sqrt(fx * fx + fy * fy)
-        f[0, 0] = 1.0
-        spectrum = np.fft.rfft2(random.standard_normal((n, n))) / f**1.75
-        spectrum[0, 0] = 0.0
-        tile = np.fft.irfft2(spectrum, s=(n, n))
-        lo, hi = np.percentile(tile, [1, 99])
-        self.tile = np.clip((tile - lo) / (hi - lo), 0, 1).astype(np.float32)
-        self.n = n
-        ys, xs = np.mgrid[0:self.h, 0:self.w].astype(np.float32)
-        self.x = (xs + 0.5) / self.w - 0.5
-        self.y = (ys + 0.5) / self.h
-        self.aspect = width / height
-        stars = random.random((n, n)) > 0.9985
-        self.stars = (stars * random.random((n, n)) ** 2).astype(np.float32)
-
-    def sample(self, tile, u, v):
-        """The tile at (u, v), one tile being 1 wide; it repeats."""
-        n = self.n
-        return cv2.remap(tile, (u * n) % n, (v * n) % n, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
-
-    def draw(self, frame, camera):
-        """The sky of frame `frame`, with the camera turned by `camera`
-        (x, y as parts of the picture's width and height) since the first."""
-        s = self.style
-        t = frame / self.rate
-        x, y = self.x + camera[0], self.y + camera[1]
-        # Looking up at a flat layer of cloud: far away towards the
-        # horizon, near overhead.
-        depth = 1.0 / (1.3 - np.clip(y, -0.5, 1.1))
-        u = x * self.aspect * depth * 0.30
-        v = depth * 0.55
-        drift = t * 0.0030
-        warp = self.sample(self.tile, u * 0.6 + 0.31, v * 0.6 + 0.17 - drift * 0.5) - 0.5
-        pu, pv = u + warp * 0.08 + drift, v + warp * 0.08
-        fine = self.sample(self.tile, u * 2.9 + 0.5 + drift * 2.2, v * 2.9 + 0.2)
-        noise = self.sample(self.tile, pu, pv) * 0.86 + fine * 0.14
-        thick = smooth(noise, s["cover"][0], s["cover"][1])
-        # Lit from the upper left: the side of a cloud that faces the light is brighter.
-        towards = self.sample(self.tile, pu - 0.006, pv - 0.006) * 0.86 + fine * 0.14
-        facing = np.clip((noise - towards) * 7.0, -0.5, 0.5)
-        height = np.clip(y / 1.0, 0, 1)[..., None]
-        behind = np.array(s["top"], np.float32) * (1 - height) + np.array(s["low"], np.float32) * height
-        if s["stars"]:
-            stars = self.sample(self.stars, x * 0.9 + 0.5, y * 0.9 / self.aspect + 0.5)
-            behind = behind + (stars * (1 - height[..., 0]) * 6.0)[..., None]
-        # Thin at its edge, where the light comes through; dark in the middle.
-        middle = smooth(thick, 0.15, 0.95)[..., None]
-        body = np.array(s["edge"], np.float32) * (1 - middle) + np.array(s["core"], np.float32) * middle
-        body = body * (1.0 + facing[..., None] * (1.2 - middle))
-        # Far clouds take the colour of the air in front of them.
-        body = body * (1 - 0.55 * height**4) + behind * (0.55 * height**4)
-        edge = smooth(thick, 0.0, 0.30)[..., None]
-        sky = behind * (1 - edge) + body * edge
-        return self.up(np.clip(sky, 0, 1).astype(np.float32))
-
-
 class Camera:
-    """How far the picture moved since the first frame, from the shift
-    between each two frames (phase correlation on a small grey copy)."""
+    """Whether the picture was cut between two frames: then they have no
+    shift in common (phase correlation on a small grey copy)."""
 
     def __init__(self):
         self.before = None
@@ -191,15 +97,12 @@ def probe(src):
 
 
 def main() -> int:
-    if len(sys.argv) < 7:
+    if len(sys.argv) < 6:
         print(__doc__, file=sys.stderr)
         return 2
-    model, src, out, style = sys.argv[1:5]
-    start, count = float(sys.argv[5]), int(sys.argv[6])
-    threads = int(sys.argv[7]) if len(sys.argv) > 7 else 8
-    if style != "clear" and style not in Clouds.STYLES:
-        print(f"no such sky: {style}", file=sys.stderr)
-        return 2
+    model, src, out = sys.argv[1:4]
+    start, count = float(sys.argv[4]), int(sys.argv[5])
+    threads = int(sys.argv[6]) if len(sys.argv) > 6 else 8
     try:
         width, height, rate, fps = probe(src)
     except (subprocess.CalledProcessError, IndexError, KeyError, ValueError, ZeroDivisionError):
@@ -215,16 +118,9 @@ def main() -> int:
     decode = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-nostdin", *seek, "-i", src, "-an", *limit, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
         stdout=subprocess.PIPE)
-    if style == "clear":
-        codec = ["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "22", "-row-mt", "1",
-                 "-cpu-used", "5", "-auto-alt-ref", "0"]
-        pixels = "rgba"
-    else:
-        # (A key frame every half second: it is cut and scrubbed like any clip.)
-        codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "15", "-pix_fmt", "yuv420p",
-                 "-g", str(max(1, round(fps / 2))), "-color_primaries", "bt709", "-color_trc", "bt709",
-                 "-colorspace", "bt709", "-movflags", "+faststart"]
-        pixels = "rgb24"
+    codec = ["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "22", "-row-mt", "1",
+             "-cpu-used", "5", "-auto-alt-ref", "0"]
+    pixels = "rgba"
     encode = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", pixels, "-s", f"{width}x{height}",
          "-r", rate, "-i", "-", *codec, out],
@@ -244,12 +140,6 @@ def main() -> int:
     up = Resize(small_w, small_h, mid_w, mid_h)
     to_full = Resize(mid_w, mid_h, width, height)
     to_track = Resize(small_w, small_h, 192, 108)
-    clouds = Clouds(style, width, height, fps) if style != "clear" else None
-    if clouds is not None:
-        look = clouds.style
-        # Saturation, tint and gain of the rest of the picture as one sum per point.
-        grade = (np.eye(3, dtype=np.float32) * look["sat"] + LUMA[None, :] * (1.0 - look["sat"]))
-        grade = grade * (np.array(look["tint"], np.float32) * look["gain"])[:, None]
     camera = Camera()
     # The model looks at about fifteen frames a second; in between its last mark is fitted to each frame.
     every = max(1, round(fps / 15))
@@ -268,7 +158,7 @@ def main() -> int:
             # brightness does: blue. A white sky and a blue one both have
             # it; leaves in the sun, bark and skin have little.
             blue_small = np.ascontiguousarray(small[..., 2])
-            moved, cut = camera.step(to_track(grey_small))
+            _, cut = camera.step(to_track(grey_small))
             if mark is None or cut or frames % every == 0:
                 x = (to_model(mid) - MEAN) / STD
                 found = session.run(None, {feed: np.ascontiguousarray(x.transpose(2, 0, 1)[None])})[0][0, 0]
@@ -299,29 +189,11 @@ def main() -> int:
             near = smooth(up(box(mark, 3)), 0.08, 0.40)
             matte = smooth(np.maximum(matte, like * near), 0.04, 0.96)
 
-            if clouds is None:
-                alpha = 255 - (to_full(matte) * 255.0 + 0.5).astype(np.uint8)
-                # (Below 2 of 255 nothing can be seen: empty, so that it packs well.)
-                alpha[alpha < 2] = 0
-                cut_out = np.dstack([np.where(alpha[..., None] > 0, rgb, 0), alpha])
-                encode.stdin.write(cut_out.tobytes())
-            else:
-                sky = clouds.draw(frames, moved)
-                # At the edges the new sky is darkened by what the picture has
-                # there (a branch stays a branch); well inside it stands alone.
-                grey = cv2.transform(mid, LUMA[None, :])
-                kept = np.clip(grey / np.maximum(cv2.transform(colour, LUMA[None, :]), 0.05), 0, 1)
-                inside = smooth(up(box(mark, 4)), 0.80, 0.98)
-                weight_sky = to_full((kept + (1.0 - kept) * inside) * matte)
-                matte_full = to_full(matte)
-                # The rest of the picture in the new light.
-                result = cv2.transform(rgb.astype(np.float32), grade * (1.0 / 255.0))
-                result *= (1.0 - matte_full)[..., None]
-                sky *= weight_sky[..., None]
-                result += sky
-                np.clip(result, 0.0, 1.0, out=result)
-                result *= 255.0
-                encode.stdin.write(result.astype(np.uint8).tobytes())
+            alpha = 255 - (to_full(matte) * 255.0 + 0.5).astype(np.uint8)
+            # (Below 2 of 255 nothing can be seen: empty, so that it packs well.)
+            alpha[alpha < 2] = 0
+            cut_out = np.dstack([np.where(alpha[..., None] > 0, rgb, 0), alpha])
+            encode.stdin.write(cut_out.tobytes())
             frames += 1
             print(f"frame {frames}", flush=True)
     except BrokenPipeError:

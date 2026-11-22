@@ -42,7 +42,7 @@
         coreutils
         curl # fetches the matting model on its first use
         sgMatte # "Cut out the person"
-        sgSky # "Replace the sky"
+        sgSky # "Remove the sky"
       ];
 
       # Cutting a person out of a video (docs/spikes/s8-matte.md): Robust
@@ -121,7 +121,7 @@
           ${pkgs.lib.concatMapStringsSep "\n" take picked}
         '';
 
-      # Another sky for a clip (docs/spikes/s9-sky.md): a model marks the
+      # The sky of a clip made transparent (docs/spikes/s9-sky.md): a model marks the
       # sky, the rest is sums on pictures, for which OpenCV is ten times
       # as fast as plain numpy.
       sgSky = pkgs.writeShellScriptBin "sg-sky" ''

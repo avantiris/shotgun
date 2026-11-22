@@ -262,15 +262,12 @@ pub fn cut_out(
     }
 }
 
-/// A part of a video with another sky (`sg-sky`: a model marks the sky,
-/// the new one is drawn; docs/spikes/s9-sky.md). `sky`: storm, sunset,
-/// night, or clear for a transparent one. `frames` from `from_secs` on.
-#[allow(clippy::too_many_arguments)]
+/// A part of a video with its sky transparent (`sg-sky`: a model marks
+/// the sky; docs/spikes/s9-sky.md). `frames` from `from_secs` on.
 pub fn sky(
     model: &Path,
     src: &Path,
     out: &Path,
-    sky: &str,
     from_secs: f64,
     frames: i64,
     cancel: &Cancel,
@@ -281,7 +278,7 @@ pub fn sky(
     let mut cmd = Command::new("sg-sky");
     // Half of the machine: the editor stays usable while it runs.
     let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2));
-    cmd.arg(model).arg(src).arg(&tmp).arg(sky);
+    cmd.arg(model).arg(src).arg(&tmp);
     cmd.arg(format!("{from_secs:.6}")).arg(frames.to_string()).arg(threads.to_string());
     let result = run_lines(cmd, cancel, |line| {
         if let Some(done) = line.strip_prefix("frame ").and_then(|n| n.trim().parse::<f32>().ok())
@@ -297,6 +294,63 @@ pub fn sky(
             Err(e)
         }
     }
+}
+
+/// A part of a video as a file of its own, to be handed to a model
+/// (sg-project `ai`): `frames` from `from_secs` on, without sound, upright,
+/// at most 1920 points on its longer side, as H.264 that anything reads.
+pub fn part(
+    src: &Path,
+    out: &Path,
+    from_secs: f64,
+    frames: i64,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        if from_secs > 0.0 {
+            cmd.args(["-ss", &format!("{from_secs:.6}")]);
+        }
+        cmd.arg("-i").arg(src).args(["-an", "-frames:v", &frames.to_string()]);
+        cmd.args([
+            "-vf",
+            "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1",
+        ]);
+        cmd.args(["-c:v", "libx264", "-preset", "fast", "-crf", "17", "-pix_fmt", "yuv420p"]);
+        cmd.args(["-movflags", "+faststart", "-f", "mp4"]);
+    })
+}
+
+/// What a model gave back for a part, made to stand in for it: the
+/// part's size, frame rate and exactly its `frames` (a shorter answer
+/// holds its last picture), cut and scrubbed like any clip.
+#[allow(clippy::too_many_arguments)]
+pub fn fit(
+    src: &Path,
+    out: &Path,
+    width: u32,
+    height: u32,
+    rate: Rate,
+    frames: i64,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    let filter = format!(
+        "fps={}/{},scale={width}:{height}:flags=lanczos,setsar=1,tpad=stop_mode=clone:stop=-1",
+        rate.num(),
+        rate.den()
+    );
+    // (A key frame every half second.)
+    let key_every = (rate.num() as f64 / rate.den() as f64 / 2.0).round().max(1.0);
+    ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        cmd.arg("-i").arg(src).args(["-an", "-vf", &filter, "-frames:v", &frames.to_string()]);
+        cmd.args(["-c:v", "libx264", "-preset", "fast", "-crf", "15", "-pix_fmt", "yuv420p"]);
+        cmd.args(["-g", &format!("{key_every}")]);
+        cmd.args(["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]);
+        cmd.args(["-movflags", "+faststart", "-f", "mp4"]);
+    })
 }
 
 /// 540p all-intra H.264 proxy for scrubbing.

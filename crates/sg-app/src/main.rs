@@ -156,7 +156,12 @@ enum UserEvent {
         id: AssetId,
         result: Result<(u8, bool), String>,
     },
-    /// A part of a video with another sky was made: where it is.
+    /// Which models change a clip by a sentence, and the file they are written in.
+    AiServices {
+        file: String,
+        services: Result<Vec<sg_project::ai::Service>, String>,
+    },
+    /// A part of a video was made anew: where it is.
     Sky {
         root: PathBuf,
         name: String,
@@ -693,17 +698,34 @@ impl App {
                         self.pending_jobs -= 1;
                     }
                 }
-                Command::Sky { root, asset, sky, src_in, span, rate } => {
+                Command::LoadAiServices => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let file = sg_project::ai::file();
+                        let services = match &file {
+                            Some(file) => sg_project::ai::services(file),
+                            None => Err("there is no home folder to keep the file in".to_owned()),
+                        };
+                        let file = file.map(|file| file.display().to_string()).unwrap_or_default();
+                        let _ = proxy.send_event(UserEvent::AiServices { file, services });
+                    });
+                }
+                Command::Part { root, asset, how, src_in, span, rate } => {
                     self.pending_jobs += 1;
                     self.local_jobs += 1;
                     let job = u64::MAX - self.local_jobs;
                     let cancel = sg_media::Cancel::new();
                     self.local_cancels.insert(job, cancel.clone());
                     let library = sg_project::library_dir();
-                    // One at a time: each uses half of the machine.
+                    // One at a time of those done on this machine: each uses
+                    // much of it. A service on the network is only waited for.
+                    let local = match &how {
+                        sg_ui::Part::NoSky => true,
+                        sg_ui::Part::Sentence { service, .. } => service.is_local(),
+                    };
                     let turn = self.sky_turn.clone();
                     let spawned = std::thread::Builder::new().name("sg-sky".into()).spawn(move || {
-                        let name = sg_project::analysis::sky_name(&asset, sky, src_in, span);
+                        let name = how.name(&asset, src_in, span);
                         let label = asset.label.clone();
                         let mut last = -2i32;
                         let mut progress = |stage: &'static str, fraction: Option<f32>| {
@@ -714,16 +736,31 @@ impl App {
                                 let _ = proxy.send_event(UserEvent::Import(event));
                             }
                         };
-                        progress("waiting for another sky", None);
-                        let held = turn.lock();
+                        progress("waiting for its turn", None);
+                        let held = local.then(|| turn.lock());
                         let result = if cancel.is_cancelled() {
                             Err("cancelled".to_owned())
                         } else {
-                            progress("another sky", Some(0.0));
-                            let mut made = |fraction: f32| progress("another sky", Some(fraction));
-                            sg_project::analysis::replace_sky(
-                                &library, &root, &asset, sky, src_in, span, rate, &cancel, &mut made,
-                            )
+                            match &how {
+                                sg_ui::Part::NoSky => {
+                                    progress("removing the sky", Some(0.0));
+                                    let mut made = |fraction: f32| progress("removing the sky", Some(fraction));
+                                    sg_project::analysis::remove_sky(
+                                        &library, &root, &asset, src_in, span, rate, &cancel, &mut made,
+                                    )
+                                }
+                                sg_ui::Part::Sentence { service, sentence } => sg_project::ai::change(
+                                    &root,
+                                    &asset,
+                                    service,
+                                    sentence,
+                                    src_in,
+                                    span,
+                                    rate,
+                                    &cancel,
+                                    &mut progress,
+                                ),
+                            }
                             .map_err(|e| e.to_string())
                         };
                         drop(held);
@@ -1537,12 +1574,16 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.job_done();
             }
+            UserEvent::AiServices { file, services } => {
+                self.shell.ai_services_loaded(file, services);
+                self.job_done();
+            }
             UserEvent::Sky { root, name, label, result } => {
                 let here = self.shell.session().is_some_and(|session| session.root == root);
                 match result {
                     Ok(path) if !here => {
                         self.shell.notify(format!(
-                            "Another sky for {label} was made after its project was closed. The file is {}.",
+                            "A part of {label} was made anew after its project was closed. The file is {}.",
                             path.display()
                         ));
                     }
@@ -1552,9 +1593,9 @@ impl ApplicationHandler<UserEvent> for App {
                         self.run_commands(commands);
                     }
                     Err(e) => {
-                        self.shell.sky_failed(&name);
+                        self.shell.part_failed(&name);
                         if e != "cancelled" {
-                            self.shell.report_error(format!("Another sky for {label} could not be made: {e}"));
+                            self.shell.report_error(format!("The part of {label} could not be made anew: {e}"));
                         }
                     }
                 }
