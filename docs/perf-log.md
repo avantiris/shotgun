@@ -490,6 +490,8 @@ a bridged Windows plugin, how the delay of hand play feels.
 | Three 4K60 layers playing (`scripts/bench-m5.sh`, at 2f43b5b) | 1796 frames, 0 late | 0 late | pass |
 | Film exports (`scripts/bench-m6.sh`, at 2f43b5b): 1080p60 vertical / share copy / GIF | 3.0x / 1.45x / 1.1x realtime, files probe as before | >= realtime | pass |
 | The input heard through a track's stages on the realtime thread (hidden run, two null sinks, block of 256) | 0 xruns in 6 s | 0 | pass |
+| Five minutes with a copy of his project open: the song played once, the input heard throughout through his voice track's stages, the chain's picture open (at 92348f1) | 0 xruns, 0 underruns, worst callback 109 us, memory steady at 124 MB from 30 s to 270 s | 0 underruns | pass |
+| Worst callback with the input heard through a full voice chain / heard as it arrives (6 s each) | 83 us / 14 us of 5333 | none set | |
 
 Not measured tonight: the worst callback time with the input heard
 through a track's stages (it adds a leveller and a compressor to the
