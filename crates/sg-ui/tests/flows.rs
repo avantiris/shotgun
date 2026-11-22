@@ -1237,6 +1237,58 @@ fn a_sequence_gets_a_tempo_and_clips_snap_to_its_beats() {
 }
 
 #[test]
+fn setting_a_voice_up_says_how_the_beat_sits_against_it() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    click(&mut harness, "+ Track");
+    click(&mut harness, "Audio track");
+    harness.run_steps(3);
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let audio: Vec<_> =
+        project.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Audio).map(|t| t.id).collect();
+    let heard = sg_media::voice::VoiceStats {
+        loudness_db: -26.0,
+        loud_db: -14.0,
+        peak_db: -9.0,
+        noise_db: None,
+        hum_db: None,
+        hiss_db: None,
+        pitch_hz: Some(112.0),
+        steadiness: 0.2,
+        bands_db: [-30.0, 0.0, 0.0, 0.0, -8.0, -9.0],
+        sibilance_db: None,
+        key: None,
+        seconds: 42.0,
+    };
+    let root = harness.state().root.clone();
+    // The recording on the other track is at -10 dB, its fader at 0: 7 dB over a voice set to -17.
+    harness.state_mut().shell.heard_beside(vec![(audio[1], -10.0)]);
+    harness.state_mut().shell.voice_measured(
+        &root,
+        audio[0],
+        Some(sg_media::voice::VoiceStyle::RapLead),
+        Ok(heard),
+        None,
+    );
+    harness.run_steps(3);
+    assert!(harness.query_by_label_contains("A2 now plays 7 dB over the voice: its fader at about -11 dB").is_some());
+    // Said, not done: its fader is where it was.
+    let project = harness.state().shell.session().unwrap().project().clone();
+    assert_eq!(project.sequences[0].track(audio[1]).unwrap().mix.gain_db, 0.0);
+    // A beat that sits a few dB under the voice is not talked about.
+    harness.state_mut().shell.heard_beside(vec![(audio[1], -21.0)]);
+    harness.state_mut().shell.voice_measured(
+        &root,
+        audio[0],
+        Some(sg_media::voice::VoiceStyle::RapLead),
+        Ok(heard),
+        None,
+    );
+    harness.run_steps(3);
+    assert!(harness.query_by_label_contains("now plays").is_none());
+}
+
+#[test]
 fn a_strip_is_set_up_for_the_voice_on_its_track_by_listening() {
     let mut harness = editor();
     place(&mut harness, "first take");

@@ -207,6 +207,10 @@ pub enum Command {
         parts: Vec<(AssetId, i64, i64)>,
         /// How loud each of them is set to play (linear): what the stages get.
         gains: Vec<f32>,
+        /// The other tracks that sound, each with its parts and their
+        /// gains: how loud they are is told beside the voice
+        /// ([`Shell::heard_beside`]).
+        beside: Vec<(sg_core::TrackId, Vec<(AssetId, i64, i64)>, Vec<f32>)>,
     },
     /// Start playing and recording sound into a file in this project;
     /// when it ends, [`Shell::take_recorded`] is told.
@@ -395,6 +399,8 @@ pub struct Shell {
     takes: Vec<(PathBuf, i64)>,
     /// The track that takes the recording in progress, and the timeline sample it was asked for at.
     record_onto: Option<(sg_core::TrackId, i64)>,
+    /// How loud the tracks beside the voice that is being listened to are.
+    beside_levels: Vec<(sg_core::TrackId, f32)>,
     /// The timeline sample the take in progress is to end at: the end of
     /// the looped stretch, if one was on when the recording began.
     record_until: Option<i64>,
@@ -773,7 +779,8 @@ impl Shell {
         };
         let frame = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(12, 6));
         egui::Panel::bottom("banner").frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
+            // (Over several lines if it is long: what "Voice" has to say does not fit one.)
+            ui.horizontal_wrapped(|ui| {
                 // Beside the news of an export: the way to the file.
                 let file = self.exported.as_ref().filter(|(_, notice)| *notice == text).map(|(path, _)| path.clone());
                 ui.label(egui::RichText::new(text).color(colour));
@@ -1593,7 +1600,31 @@ impl Shell {
             .take(512)
             .map(|c| found.props_of(c.id).map_or(1.0, |props| 10f32.powf(props.gain_db.at(0) / 20.0)))
             .collect();
-        Some(Command::MeasureVoice { root: session.root.clone(), track, style, parts, gains })
+        // The tracks that play under it (at most four, the lowest ones
+        // first as the timeline shows them): their recordings, to tell
+        // how they sit against the voice.
+        let sequence = project.sequences.first()?;
+        let beside = sequence
+            .tracks
+            .iter()
+            .filter(|t| {
+                t.kind == sg_core::TrackKind::Audio
+                    && t.id != track
+                    && !t.mix.voice
+                    && !t.mix.mute
+                    && !t.clips.is_empty()
+            })
+            .take(4)
+            .map(|t| {
+                let clips = || t.clips.iter().filter(|c| c.asset != AssetId(0)).take(64);
+                let parts = clips().map(|c| (c.asset, c.src_in, c.len)).collect();
+                let gains =
+                    clips().map(|c| t.props_of(c.id).map_or(1.0, |p| 10f32.powf(p.gain_db.at(0) / 20.0))).collect();
+                (t.id, parts, gains)
+            })
+            .filter(|(_, parts, _): &(_, Vec<(AssetId, i64, i64)>, Vec<f32>)| !parts.is_empty())
+            .collect();
+        Some(Command::MeasureVoice { root: session.root.clone(), track, style, parts, gains, beside })
     }
 
     /// A strip that was set up by listening follows its track: when other
@@ -1633,6 +1664,13 @@ impl Shell {
         }
     }
 
+    /// How loud the recordings on the tracks beside a voice are (decibels,
+    /// before their faders): told just before [`Shell::voice_measured`],
+    /// which says how they sit against the voice.
+    pub fn heard_beside(&mut self, levels: Vec<(sg_core::TrackId, f32)>) {
+        self.beside_levels = levels;
+    }
+
     /// The voice on a track was listened to: its strip is set for the
     /// style asked for, or the one that fits. One undo step.
     pub fn voice_measured(
@@ -1644,6 +1682,7 @@ impl Shell {
         fitted: Option<sg_media::voice::Suggestion>,
     ) {
         self.editor.mixer.listening = None;
+        let beside = std::mem::take(&mut self.beside_levels);
         let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
         let stats = match result {
             Ok(stats) => stats,
@@ -1696,6 +1735,29 @@ impl Shell {
                 }
                 if stats.peak_db > -0.3 {
                     advice += " The take clips: turn the input down for the next one.";
+                }
+                // How the loudest track beside it sits against the voice as it
+                // is set now: a beat is usually 3 to 6 dB under a rap voice.
+                // (Said, not done: the faders of the other tracks are his.)
+                let (_, voice_db) = style.aims();
+                let voice_db = voice_db + (mix.gain_db - set.gain_db);
+                let loudest = beside
+                    .iter()
+                    .filter_map(|(id, raw)| {
+                        let other = project.sequences.first()?.track(*id)?;
+                        Some((other.name.clone(), raw + other.mix.gain_db, *raw))
+                    })
+                    .max_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((name, now, raw)) = loudest {
+                    let under = voice_db - now;
+                    if !(1.0..=9.0).contains(&under) {
+                        let fader = (voice_db - 4.0 - raw).clamp(-60.0, 6.0);
+                        let how =
+                            if under > 0.0 { format!("{under:.0} dB under") } else { format!("{:.0} dB over", -under) };
+                        advice += &format!(
+                            " {name} now plays {how} the voice: its fader at about {fader:.0} dB puts it 4 dB under."
+                        );
+                    }
                 }
                 session.notice = Some(format!(
                     "{} set up as {}: heard {:.0} s at {:.0} dB{pitch}{noise}.{room}{advice} Undo takes it back.",

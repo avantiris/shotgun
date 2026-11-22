@@ -216,6 +216,11 @@ unchanged.
     records (whose "pauses" are the tail of a room, 30 to 38 dB under the
     voice) every one had ended at 100 % for nothing; they end at about
     half now, his noisy takes still at 100 %.
+  - "Voice" also says how the loudest other track sits against the
+    voice as it is now set, when that is not 1 to 9 dB under it, and
+    which fader position would put it 4 dB under. It does not move that
+    fader (`PROPOSED`): on a copy of his project the beat, at a fader of
+    -29 dB, was 24 dB under the voice after the set-up.
   - The compressor has a make-up gain (0 to 24 dB, `comp_makeup_db`),
     which the set-up uses instead of pushing the fader to its end.
   - The leveller can be given the level it levels to (`level_ref_db`

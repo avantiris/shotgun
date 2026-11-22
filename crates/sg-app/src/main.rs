@@ -90,6 +90,8 @@ enum UserEvent {
         result: Result<sg_media::voice::VoiceStats, String>,
         /// The settings that were found for it.
         fitted: Option<sg_media::voice::Suggestion>,
+        /// How loud the recordings on the tracks beside it are.
+        beside: Vec<(sg_core::TrackId, f32)>,
     },
     /// The global folder as read, and what was just done there.
     Global(Result<Vec<sg_project::global::GlobalEntry>, String>, Option<String>),
@@ -389,7 +391,7 @@ impl App {
                         importer.cancel(job);
                     }
                 }
-                Command::MeasureVoice { root, track, style, parts, gains } => {
+                Command::MeasureVoice { root, track, style, parts, gains, beside } => {
                     self.pending_jobs += 1;
                     let cancel = sg_media::Cancel::new();
                     let spawned = std::thread::Builder::new().name("sg-analysis".into()).spawn(move || {
@@ -404,7 +406,15 @@ impl App {
                             Ok((stats, set)) => (Ok(stats), Some(set)),
                             Err(e) => (Err(e), None),
                         };
-                        let _ = proxy.send_event(UserEvent::Voice { root, track, style, result, fitted });
+                        // (How loud what plays beside it is: for a word on the balance.)
+                        let beside = beside
+                            .into_iter()
+                            .filter_map(|(id, parts, gains)| {
+                                let level = sg_project::analysis::level(&root, &parts, &gains, &cancel).ok()??;
+                                Some((id, level))
+                            })
+                            .collect();
+                        let _ = proxy.send_event(UserEvent::Voice { root, track, style, result, fitted, beside });
                     });
                     if spawned.is_err() {
                         self.pending_jobs -= 1;
@@ -1314,7 +1324,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Script(step, ack) => self.script_step(step, ack),
             UserEvent::Import(event) => self.import_event(event),
-            UserEvent::Voice { root, track, style, result, fitted } => {
+            UserEvent::Voice { root, track, style, result, fitted, beside } => {
+                self.shell.heard_beside(beside);
                 self.shell.voice_measured(&root, track, style, result, fitted);
                 self.job_done();
             }

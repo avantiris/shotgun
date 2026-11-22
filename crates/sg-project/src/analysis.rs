@@ -32,6 +32,24 @@ pub fn voice(
         .ok_or_else(|| ToolError::other("there is too little sound on this track to listen to"))
 }
 
+/// How loud the sounding parts of some stretches of assets are, in
+/// decibels below full scale (their mean power; pauses left out). For
+/// telling how a beat sits against a voice. `None` for silence.
+pub fn level(
+    root: &Path,
+    parts: &[(AssetId, i64, i64)],
+    gains: &[f32],
+    cancel: &Cancel,
+) -> Result<Option<f32>, ToolError> {
+    let sound = voice_sound(root, parts, gains, cancel)?;
+    let powers: Vec<f64> = sound
+        .chunks(4800)
+        .map(|part| part.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / part.len().max(1) as f64)
+        .filter(|power| *power > 1e-5)
+        .collect();
+    Ok((!powers.is_empty()).then(|| (10.0 * (powers.iter().sum::<f64>() / powers.len() as f64).log10()) as f32))
+}
+
 /// The sound [`voice`] listens to: the stretches one after the other,
 /// mono at 48 kHz, four minutes at most.
 ///
