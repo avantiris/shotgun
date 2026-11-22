@@ -1,40 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232427"/>
+      <stop offset="1" stop-color="#09090a"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#e9ebef"/>
+      <stop offset="1" stop-color="#d4d6da"/>
     </linearGradient>
-    <!-- Across the gun, from its back to its belly (in the gun's own coordinates). -->
-    <linearGradient id="body" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="0" y2="210">
-      <stop offset="0" stop-color="#3a3d45"/>
-      <stop offset="0.35" stop-color="#1b1d21"/>
-      <stop offset="1" stop-color="#050506"/>
-    </linearGradient>
-    <linearGradient id="shine" gradientUnits="userSpaceOnUse" x1="0" y1="44" x2="0" y2="96">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.38"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-    <path id="gun" d="M760,52 L250,48 C180,52 90,62 0,84 L0,196 C70,196 150,150 215,128 C232,150 238,190 250,206 L292,206 C296,180 300,150 316,132 L400,132 L410,150 L600,150 L610,118 L760,118 Z"/>
-    <!-- The cut: what the program does. Two halves of the plane with a slanted gap between them. -->
-    <clipPath id="rear"><polygon points="-50,-50 626,-50 706,300 -50,300"/></clipPath>
-    <clipPath id="front"><polygon points="642,-50 900,-50 900,300 722,300"/></clipPath>
-    <clipPath id="tileclip"><rect x="16" y="16" width="480" height="480" rx="108"/></clipPath>
-    <filter id="blur" x="-20%" y="-60%" width="140%" height="220%"><feGaussianBlur stdDeviation="9"/></filter>
-    <g id="pieces">
-      <g clip-path="url(#rear)"><use href="#gun"/></g>
-      <g transform="translate(10,-20)"><g clip-path="url(#front)"><use href="#gun"/></g></g>
-    </g>
+    <radialGradient id="bore" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#000000"/>
+      <stop offset="1" stop-color="#1c1d20"/>
+    </radialGradient>
   </defs>
   <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#tile)"/>
-  <g clip-path="url(#tileclip)">
-    <!-- The shadow on the floor: the same shape laid flat, seen in perspective, soft. -->
-    <g transform="translate(268,404) matrix(1,0,-0.25,0.30,0,0) rotate(-28) scale(0.56) translate(-380,-127)" fill="#0b0c0e" opacity="0.26" filter="url(#blur)">
-      <use href="#pieces"/>
-    </g>
-    <g transform="translate(256,226) rotate(-28) scale(0.6) translate(-380,-127)">
-      <use href="#pieces" fill="url(#body)"/>
-      <use href="#pieces" fill="url(#shine)"/>
-    </g>
-  </g>
-  <rect x="16.5" y="16.5" width="479" height="479" rx="107.5" fill="none" stroke="#111214" stroke-opacity="0.12"/>
+  <rect x="16.5" y="16.5" width="479" height="479" rx="107.5" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+  <!-- The muzzle of a double-barrelled shotgun, seen from the front: two bores in one face. -->
+  <rect x="72" y="158" width="368" height="196" rx="98" fill="url(#face)"/>
+  <circle cx="170" cy="256" r="68" fill="url(#bore)"/>
+  <circle cx="342" cy="256" r="68" fill="url(#bore)"/>
 </svg>
