@@ -1292,7 +1292,8 @@ fn setting_a_voice_up_says_how_the_beat_sits_against_it() {
         seconds: 42.0,
     };
     let root = harness.state().root.clone();
-    // The recording on the other track is at -10 dB, its fader at 0: 7 dB over a voice set to -17.
+    // The recording on the other track is at -10 dB, its fader at 0, and it ducks 3 dB
+    // under this voice: 4 dB over a voice set to -17.
     harness.state_mut().shell.heard_beside(vec![(audio[1], -10.0)]);
     harness.state_mut().shell.voice_measured(
         &root,
@@ -1302,7 +1303,7 @@ fn setting_a_voice_up_says_how_the_beat_sits_against_it() {
         None,
     );
     harness.run_steps(3);
-    assert!(harness.query_by_label_contains("A2 now plays 7 dB over the voice: its fader at about -11 dB").is_some());
+    assert!(harness.query_by_label_contains("A2 now plays 4 dB over the voice: its fader at about -8 dB").is_some());
     // Said, not done: its fader is where it was.
     let project = harness.state().shell.session().unwrap().project().clone();
     assert_eq!(project.sequences[0].track(audio[1]).unwrap().mix.gain_db, 0.0);

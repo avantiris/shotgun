@@ -325,7 +325,7 @@ pub(crate) struct MonitorChain {
 impl MonitorChain {
     /// (One writer: the thread that owns the engine.)
     fn set(&self, chain: Option<(f32, Tone)>) {
-        self.seq.fetch_add(1, Ordering::AcqRel);
+        self.seq.fetch_add(1, Ordering::SeqCst);
         let mut values = [0u32; 16];
         if let Some((low_cut_hz, tone)) = chain {
             let numbers = [
@@ -351,20 +351,21 @@ impl MonitorChain {
             values[15] = u32::from_le_bytes([tone.order[4], tone.order[5], tone.order[6], tone.order[7]]);
         }
         for (slot, value) in self.values.iter().zip(values) {
-            slot.store(value, Ordering::Relaxed);
+            slot.store(value, Ordering::SeqCst);
         }
-        self.seq.fetch_add(1, Ordering::AcqRel);
+        self.seq.fetch_add(1, Ordering::SeqCst);
     }
 
     /// What is set now, with the counter it was read at; `None` while it
     /// is being written (the reader keeps what it had).
     pub(crate) fn get(&self) -> Option<(u32, Option<(f32, Tone)>)> {
-        let before = self.seq.load(Ordering::Acquire);
+        // (In one order for every processor: the values are not read after the second look at the counter.)
+        let before = self.seq.load(Ordering::SeqCst);
         if !before.is_multiple_of(2) {
             return None;
         }
-        let values: [u32; 16] = std::array::from_fn(|n| self.values[n].load(Ordering::Relaxed));
-        if self.seq.load(Ordering::Acquire) != before {
+        let values: [u32; 16] = std::array::from_fn(|n| self.values[n].load(Ordering::SeqCst));
+        if self.seq.load(Ordering::SeqCst) != before {
             return None;
         }
         let number = |n: usize| f32::from_bits(values[n]);

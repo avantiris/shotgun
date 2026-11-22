@@ -1750,7 +1750,10 @@ impl Shell {
                     .iter()
                     .filter_map(|(id, raw)| {
                         let other = project.sequences.first()?.track(*id)?;
-                        Some((other.name.clone(), raw + other.mix.gain_db, *raw))
+                        // (While the voice sounds it is turned down by what it ducks:
+                        // what it was set to, or what this set-up has just given it.)
+                        let ducked = if other.mix.duck_db > 0.0 { other.mix.duck_db } else { set.duck_db };
+                        Some((other.name.clone(), raw + other.mix.gain_db - ducked, *raw - ducked))
                     })
                     .max_by(|a, b| a.1.total_cmp(&b.1));
                 if let Some((name, now, raw)) = loudest {
@@ -2265,11 +2268,16 @@ impl Shell {
         self.spent_takes.push(path);
         // (What was drawn while it was made gives way to the clip. How loud
         // it got is kept: a take that reached full scale is said to have.)
-        let loudest =
-            self.editor.timeline.live_take.take().map_or(0.0, |live| live.peaks.iter().copied().fold(0.0, f32::max));
+        let live = self.editor.timeline.live_take.take();
         match session.place_take(&asset, start, self.record_onto.take(), self.record_until.take()) {
             Ok(Some((track, clip))) => {
                 self.editor.timeline.select_only(track, &clip);
+                // (Of the stretch that became the clip: what was played before and after a punch does not count.)
+                let loudest = live.map_or(0.0, |live| {
+                    let bucket = |at: i64| ((at - live.from) / crate::timeline::LiveTake::BUCKET).max(0) as usize;
+                    let (first, last) = (bucket(clip.start), bucket(clip.end()).min(live.peaks.len()));
+                    live.peaks.get(first..last.max(first)).map_or(0.0, |part| part.iter().copied().fold(0.0, f32::max))
+                });
                 let clipped = if loudest >= 0.985 {
                     " It reached full scale and is cut off there: turn the input down and record it again."
                 } else {

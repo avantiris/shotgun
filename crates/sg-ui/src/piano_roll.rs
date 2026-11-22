@@ -1197,11 +1197,20 @@ impl PianoRoll {
                 let Some(notes) = other.notes.get(&theirs.id) else { continue };
                 let (offset, their_length) = span_of(sequence, &theirs);
                 let shift = ((theirs.start - clip.start) as f64 / samples_per_tick).round() as i64;
-                for note in in_view(notes, offset, their_length).0.into_iter().take(budget) {
-                    budget = budget.saturating_sub(1);
+                // (As `in_view` shows them, without a copy of the clip's notes each frame.)
+                for note in notes.iter() {
+                    let (start, end) =
+                        ((note.start - offset).max(0), (note.start - offset + note.len).min(their_length));
+                    if end <= start {
+                        continue;
+                    }
+                    if budget == 0 {
+                        break;
+                    }
+                    budget -= 1;
                     let rect = Rect::from_min_max(
-                        pos2(x_of(note.start + shift), y_of(note.pitch as f32) + 3.0),
-                        pos2(x_of(note.start + shift + note.len) - 1.0, y_of(note.pitch as f32) + row_h - 3.0),
+                        pos2(x_of(start + shift), y_of(note.pitch as f32) + 3.0),
+                        pos2(x_of(end + shift) - 1.0, y_of(note.pitch as f32) + row_h - 3.0),
                     );
                     if rect.intersects(lanes) {
                         lanes_painter.rect_filled(rect, theme::RADIUS, ghost);

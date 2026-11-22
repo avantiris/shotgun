@@ -510,19 +510,35 @@ impl Session {
     /// Puts an earlier take back where it was recorded: the clip goes
     /// from its takes track onto the track it came from, over what is
     /// there, and what it covers there takes its place among the takes.
-    /// One undo step. `false` if the track it came from is gone.
-    pub fn use_take(&mut self, takes: sg_core::TrackId, clip: Clip) -> Result<bool, OpError> {
+    /// One undo step. If it cannot be done, why not.
+    pub fn use_take(&mut self, takes: sg_core::TrackId, clip: Clip) -> Result<Option<&'static str>, OpError> {
+        const GONE: &str = "The track this take came from is gone.";
         let project = self.project().clone();
-        let Some(sequence) = project.sequences.first() else { return Ok(false) };
+        let Some(sequence) = project.sequences.first() else { return Ok(Some(GONE)) };
         let Some(home) = sequence.track(takes).and_then(|track| Session::takes_of(sequence, track)) else {
-            return Ok(false);
+            return Ok(Some(GONE));
         };
+        // What lies there now is kept among the takes as far as it is a
+        // plain recording. Anything else (a note clip, a stretched clip, one
+        // whose volume moves) would only be removed: then nothing is done.
+        let lost = sequence.track(home).is_some_and(|lane| {
+            lane.clips.range(clip.start, clip.end()).any(|there| {
+                there.asset == sg_core::AssetId(0)
+                    || lane.props_of(there.id).is_some_and(|props| props.speed != (1, 1) || props.gain_db.is_animated())
+            })
+        });
+        if lost {
+            return Ok(Some(
+                "In this take's place lies a note clip, or a clip that is stretched or has a moving volume: \
+                 move that away first.",
+            ));
+        }
         let props = sequence
             .track(takes)
             .and_then(|track| track.props_of(clip.id))
             .map(|props| sg_core::ClipProps::clone(props));
         let back = Clip { id: self.ids.clip(), ..clip };
-        let Some(overwrite) = Op::overwrite(sequence, home, back, self.ids.clip()) else { return Ok(false) };
+        let Some(overwrite) = Op::overwrite(sequence, home, back, self.ids.clip()) else { return Ok(Some(GONE)) };
         let mut ops = vec![Op::RemoveClip { seq: sequence.id, track: takes, start: clip.start }];
         ops.extend(self.keep_covered_but(sequence, home, clip.start, clip.end(), Some(clip.id)));
         ops.push(overwrite);
@@ -530,7 +546,7 @@ impl Session {
             ops.push(Op::SetClipProps { seq: sequence.id, track: home, clip: back.id, props: Some(Box::new(props)) });
         }
         self.apply(Op::Batch(ops), None)?;
-        Ok(true)
+        Ok(None)
     }
 
     /// Adds a track: video on top, audio at the bottom.

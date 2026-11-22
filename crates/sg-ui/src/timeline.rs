@@ -340,12 +340,15 @@ enum Wave {
 
 /// The loudest moment of the stretch of its asset a clip plays (linear,
 /// 1 is full scale), from the asset's peaks; `None` for silence.
-fn loudest(peaks: &Peaks, clip: &Clip) -> Option<f32> {
+///
+/// `speed`: how many times as fast as recorded the clip plays (it then
+/// plays that many times its length of the recording).
+fn loudest(peaks: &Peaks, clip: &Clip, speed: f64) -> Option<f32> {
     let per = peaks.sample_rate as f64 / SAMPLE_RATE as f64;
     let block = peaks.block_len(0) as f64;
     let first = (clip.src_in.max(0) as f64 * per / block).floor() as usize;
-    let last =
-        ((((clip.src_in.max(0) + clip.len) as f64 * per / block).ceil() as usize).max(first + 1)).min(peaks.blocks(0));
+    let played = clip.src_in.max(0) as f64 + clip.len as f64 * speed.max(0.01);
+    let last = (((played * per / block).ceil() as usize).max(first + 1)).min(peaks.blocks(0));
     let mut peak = 0.0f32;
     for at in first..last {
         for channel in 0..peaks.channels as usize {
@@ -866,8 +869,8 @@ impl Timeline {
                         .clicked()
                 {
                     match session.use_take(track.id, clip) {
-                        Ok(true) => self.selection.clear(),
-                        Ok(false) => *error = Some("The track this take came from is gone.".to_owned()),
+                        Ok(None) => self.selection.clear(),
+                        Ok(Some(why)) => *error = Some(why.to_owned()),
                         Err(e) => *error = Some(e.to_string()),
                     }
                     ui.close();
@@ -917,13 +920,35 @@ impl Timeline {
                             )
                             .clicked()
                     {
-                        let op = Op::SetClip {
+                        let mut ops = vec![Op::SetClip {
                             seq: sequence.id,
                             track: track.id,
                             start: clip.start,
                             clip: Clip { asset: other, ..clip },
+                        }];
+                        // Picture and sound of a take are known as one by being of the
+                        // same asset; after this they are not. So that they still move
+                        // and are cut together, they become a group (if they are in none).
+                        let partners = Timeline::partners(sequence, track, &clip);
+                        let grouped = |sel: &Sel| {
+                            sequence.track(sel.track).and_then(|t| t.props_of(sel.id)).is_some_and(|p| p.group != 0)
                         };
-                        if let Err(e) = session.apply(op, None) {
+                        let all: Vec<Sel> = std::iter::once(this).chain(partners).collect();
+                        if all.len() > 1 && !all.iter().any(grouped) {
+                            let group = session.new_clip_id().0.max(1);
+                            for member in &all {
+                                let props = sequence.track(member.track).and_then(|t| t.props_of(member.id));
+                                let mut props = props.map_or_else(ClipProps::default, |p| ClipProps::clone(p));
+                                props.group = group;
+                                ops.push(Op::SetClipProps {
+                                    seq: sequence.id,
+                                    track: member.track,
+                                    clip: member.id,
+                                    props: Some(Box::new(props)),
+                                });
+                            }
+                        }
+                        if let Err(e) = session.apply(Op::Batch(ops), None) {
                             *error = Some(e.to_string());
                         }
                         ui.close();
@@ -971,10 +996,17 @@ impl Timeline {
                             }
                         }
                         // As loud as it can be without clipping: its loudest moment 1 dB below full scale.
-                        let peak = sequence.track(first.track).and_then(|t| t.clips.iter().find(|c| c.id == first.id)).and_then(
-                            |clip| match self.waves.get(&clip.asset) {
-                                Some(Wave::Ready(peaks)) => loudest(peaks, &clip),
-                                _ => None,
+                        // (Not for a clip whose speed changes along it: where its loudest moment is then is not worked out.)
+                        let peak = sequence.track(first.track).and_then(|t| Some((t, t.clips.at(first.start)?))).and_then(
+                            |(t, clip)| {
+                                let props = t.props_of(clip.id);
+                                let speed = props.map_or(1.0, |p| p.speed.0 as f64 / p.speed.1.max(1) as f64);
+                                match self.waves.get(&clip.asset) {
+                                    Some(Wave::Ready(peaks)) if props.is_none_or(|p| !p.ramp.is_animated()) => {
+                                        loudest(peaks, &clip, speed)
+                                    }
+                                    _ => None,
+                                }
                             },
                         );
                         let button = ui.add_enabled(peak.is_some(), egui::Button::new("Loudest moment to -1 dB"));

@@ -394,7 +394,7 @@ impl AssetsPanel {
                                     ui.add(egui::DragValue::new(&mut self.stretch.1).range(50.0..=200.0).speed(0.2).fixed_decimals(1).suffix(" %"))
                                         .on_hover_text("A beat at 90 beats a minute played at 95: 105.6 % (95 / 90)");
                                 });
-                                let changed = self.stretch.0 != 0.0 || (self.stretch.1 - 100.0).abs() > 0.05;
+                                let changed = self.stretch.0.round() != 0.0 || (self.stretch.1 - 100.0).abs() > 0.05;
                                 if ui.add_enabled(changed, egui::Button::new("Make the copy")).clicked() {
                                     out.push(AssetRequest::Stretch(self.stretch.0.round(), self.stretch.1 / 100.0));
                                     ui.close();

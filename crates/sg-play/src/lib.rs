@@ -1335,8 +1335,11 @@ pub fn fit_voice(
         {
             set.denoise = before;
             helps = false;
+            // (What follows must be measured with it back where it was.)
+            settled = false;
         }
-        if noisy && helps && set.denoise < 1.0 && !last {
+        // (Not on the last passes: a step must be seen to help, and be taken back if it does not.)
+        if noisy && helps && set.denoise < 1.0 && pass + 2 < PASSES {
             stepped = Some((set.denoise, clear.unwrap_or(0.0)));
             set.denoise = (set.denoise + 0.25).min(1.0);
             settled = false;

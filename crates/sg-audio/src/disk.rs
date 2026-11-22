@@ -576,6 +576,10 @@ impl Disk {
                         && b.warp.is_empty()
                         && a.src_in + a.len == b.src_in
                         && a.gain == b.gain
+                        && a.fade_out == 0
+                        && b.fade_in == 0
+                        && a.gain_keys.is_empty()
+                        && b.gain_keys.is_empty()
                 };
                 let ease = self.mix.ease_edges;
                 let eased = (

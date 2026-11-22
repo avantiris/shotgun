@@ -218,7 +218,7 @@ pub fn stretch(
         name += &format!(" {semitones:+} st");
     }
     if (tempo - 1.0).abs() > 1e-4 {
-        name += &format!(" {:.0} pct", tempo * 100.0);
+        name += &format!(" {:.1} pct", tempo * 100.0);
     }
     let out = folder.join(format!("{name}.flac"));
     let seconds = sound.samples as f64 / sound.sample_rate.max(1) as f64;

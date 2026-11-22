@@ -1785,8 +1785,13 @@ fn player_lines(player: &Player) -> Vec<String> {
         line("play start", &s.play_start_ms),
         format!("playback   {} frames, {} late   cache {} MB", s.played, s.dropped, s.cache_bytes >> 20),
         format!(
-            "audio      quantum {}  delay {}  xruns {}  underruns {}  rt policy {}",
-            s.audio.quantum, s.audio.delay_frames, s.audio.xruns, s.audio.underruns, s.audio.sched_policy
+            "audio      quantum {}  delay {}  xruns {}  underruns {}  rt policy {}  worst callback {} us",
+            s.audio.quantum,
+            s.audio.delay_frames,
+            s.audio.xruns,
+            s.audio.underruns,
+            s.audio.sched_policy,
+            s.audio.process_max_ns / 1000
         ),
     ];
     lines.extend(s.decode_error.map(|e| format!("decode error: {e}")));

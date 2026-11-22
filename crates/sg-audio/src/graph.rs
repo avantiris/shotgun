@@ -700,7 +700,18 @@ impl Rt {
             self.monitor_set = set;
         }
         if let (true, Some((low_cut_hz, tone))) = (heard, &self.monitor_set.1) {
+            // (An input gone digitally silent would let the filters' memory
+            // decay into numbers the processor is very slow with: a level
+            // far below anything heard keeps them out of there.)
+            for sample in block.iter_mut() {
+                *sample += 1e-18;
+            }
             self.monitor_fx.process(block, *low_cut_hz, 0.0, tone);
+            // One bad sample must not stay in the filters for good.
+            if block.iter().any(|sample| !sample.is_finite()) {
+                block.fill(0.0);
+                self.monitor_fx = crate::fx::TrackFx::new(false, false);
+            }
         }
         if heard {
             for (frame, own) in out.chunks_exact_mut(2).zip(block.chunks_exact(2)) {
