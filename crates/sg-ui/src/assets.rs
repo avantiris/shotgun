@@ -46,6 +46,8 @@ pub enum AssetRequest {
     Remove,
     /// Cut the person out of the selected video: a new asset with a transparent background.
     CutOut,
+    /// A copy of the selected video out of focus: a new asset.
+    Blurred,
     /// A copy of the selected asset's sound at another pitch (semitones)
     /// and tempo (times as fast): a new asset.
     Stretch(f32, f32),
@@ -414,6 +416,19 @@ impl AssetsPanel {
                                 .clicked()
                         {
                             out.push(AssetRequest::CutOut);
+                            ui.close();
+                        }
+                        if moving
+                            && ui
+                                .button("A copy out of focus")
+                                .on_hover_text(
+                                    "Makes a blurred copy of this video. Under a cut-out of the same video (the person \
+                                     on a track above, this below, at the same time) the person stands out as with \
+                                     a camera whose background is out of focus.",
+                                )
+                                .clicked()
+                        {
+                            out.push(AssetRequest::Blurred);
                             ui.close();
                         }
                         if ui.button("Show in folder").on_hover_text("Opens the file manager where its file is").clicked() {

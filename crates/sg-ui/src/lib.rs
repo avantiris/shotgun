@@ -165,6 +165,11 @@ pub enum Command {
         semitones: f32,
         tempo: f32,
     },
+    /// Make a copy of a video asset out of focus; it arrives as a new asset.
+    Blurred {
+        root: PathBuf,
+        asset: Arc<Asset>,
+    },
     /// Make the stabilised copy of an asset if it is not there yet.
     Stabilise {
         root: PathBuf,
@@ -367,6 +372,8 @@ pub enum DevStep {
     Scale(u8, u8),
     /// Put the film looks that come with the program among the project's tables.
     BuiltinLooks,
+    /// Make a copy of the selected video out of focus.
+    Blurred,
     /// Cut the person out of the selected asset.
     CutOut,
     /// A copy of the selected asset's sound: semitones up, times as fast.
@@ -690,6 +697,18 @@ impl Shell {
                             asset.label
                         ));
                         commands.push(Command::Stretch { root: session.root.clone(), asset, semitones, tempo });
+                    }
+                }
+                AssetRequest::Blurred => {
+                    let asset = self
+                        .editor
+                        .assets
+                        .selected
+                        .and_then(|id| self.session.as_ref()?.project().assets.get(&id).cloned());
+                    if let (Some(asset), Some(session)) = (asset, &mut self.session) {
+                        session.notice =
+                            Some(format!("Making a copy of {} out of focus: it arrives as a new asset.", asset.label));
+                        commands.push(Command::Blurred { root: session.root.clone(), asset });
                     }
                 }
                 AssetRequest::CutOut => {
@@ -1267,6 +1286,19 @@ impl Shell {
             DevStep::BuiltinLooks => {
                 if let Some(session) = &self.session {
                     commands.push(Command::AddBuiltinLooks { root: session.root.clone() });
+                }
+            }
+            DevStep::Blurred => {
+                let asset = self
+                    .editor
+                    .assets
+                    .selected
+                    .and_then(|id| self.session.as_ref()?.project().assets.get(&id).cloned());
+                match (asset, &self.session) {
+                    (Some(asset), Some(session)) => {
+                        commands.push(Command::Blurred { root: session.root.clone(), asset })
+                    }
+                    _ => self.error = Some("blurred: no asset is selected".to_owned()),
                 }
             }
             DevStep::CutOut => {

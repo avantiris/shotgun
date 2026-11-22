@@ -584,6 +584,42 @@ impl App {
                         self.pending_jobs -= 1;
                     }
                 }
+                Command::Blurred { root, asset } => {
+                    self.pending_jobs += 1;
+                    self.local_jobs += 1;
+                    let job = u64::MAX - self.local_jobs;
+                    let cancel = sg_media::Cancel::new();
+                    self.local_cancels.insert(job, cancel.clone());
+                    let spawned = std::thread::Builder::new().name("sg-blur".into()).spawn(move || {
+                        let label = asset.label.clone();
+                        let mut last = -1i32;
+                        let mut progress = |fraction: f32| {
+                            if (fraction * 100.0) as i32 != last {
+                                last = (fraction * 100.0) as i32;
+                                let event = ImportEvent::Progress {
+                                    job,
+                                    label: label.clone(),
+                                    stage: "blurring",
+                                    fraction: Some(fraction),
+                                };
+                                let _ = proxy.send_event(UserEvent::Import(event));
+                            }
+                        };
+                        progress(0.0);
+                        let result = sg_project::analysis::blurred(&root, &asset, &cancel, &mut progress)
+                            .map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Import(ImportEvent::Finished { job }));
+                        let _ = proxy.send_event(UserEvent::Made {
+                            root,
+                            label: asset.label.clone(),
+                            what: "put out of focus",
+                            result,
+                        });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
+                }
                 Command::CutOut { asset, .. } if !self.stabilising.insert(asset.id) => {}
                 Command::CutOut { root, asset } => {
                     self.pending_jobs += 1;

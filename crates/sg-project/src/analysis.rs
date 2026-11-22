@@ -227,6 +227,25 @@ pub fn stretch(
     Ok(out)
 }
 
+/// A copy of a video asset out of focus, written into the project's
+/// cache; returns where it is, to be imported like any other file.
+pub fn blurred(
+    root: &Path,
+    asset: &sg_core::Asset,
+    cancel: &Cancel,
+    progress: &mut dyn FnMut(f32),
+) -> Result<PathBuf, ToolError> {
+    let video = asset.video.as_ref().filter(|v| !v.is_still()).ok_or_else(|| ToolError::other("it is not a video"))?;
+    let folder = root.join(".shotgun/cache/blurred");
+    std::fs::create_dir_all(&folder)?;
+    let out = folder.join(format!("{} blurred.mp4", sg_core::text::slug(&asset.label)));
+    let conform = cache::conform(root, asset.id, false);
+    let source = if conform.is_file() { conform } else { root.join(&asset.file) };
+    let seconds = video.frames as f64 * video.rate.den() as f64 / video.rate.num() as f64;
+    sg_media::derive::blurred(&source, &out, video.height, seconds, cancel, progress)?;
+    Ok(out)
+}
+
 /// Where the model that cuts people out is kept: once per library, not per project.
 const MATTE_MODEL: &str = "_models/rvm_mobilenetv3_fp32.onnx";
 /// Where it comes from (the authors' release) and what it must be (SHA-256).

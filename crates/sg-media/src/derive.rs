@@ -192,6 +192,25 @@ fn webm_codec(src: &Path, cancel: &Cancel) -> Option<String> {
     crate::tool::run_output(probe, cancel).ok().map(|name| name.trim().to_owned())
 }
 
+/// A copy of a video out of focus (a wide Gaussian blur), without sound:
+/// what goes behind a cut-out of the same video to make the person stand
+/// out, as a lens with a wide aperture would.
+pub fn blurred(
+    src: &Path,
+    out: &Path,
+    height: u32,
+    total_secs: f64,
+    cancel: &Cancel,
+    progress: Progress<'_>,
+) -> Result<(), ToolError> {
+    // (As wide as a fiftieth of the picture's height, twice over: soft, with no boxes in it.)
+    let filter = format!("gblur=sigma={:.1}:steps=2", (height as f32 / 50.0).max(2.0));
+    ffmpeg_to(out, total_secs, cancel, progress, |cmd| {
+        cmd.arg("-i").arg(src).args(["-an", "-vf", &filter]);
+        cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"]);
+    })
+}
+
 /// A copy of a file's sound at another pitch, another tempo or both
 /// (ffmpeg's rubberband filter: the one changes without the other), as
 /// FLAC. `pitch`: the ratio of the frequencies (2 is an octave up);

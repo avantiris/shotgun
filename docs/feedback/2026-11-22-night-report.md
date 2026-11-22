@@ -131,6 +131,9 @@ pitch bend; freezing a track.
 - For a clip that is already on the timeline: right-click it, "Show only
   the person (the cut-out)". It switches in place; its sound stays. Then
   put the new background on a track below it.
+- "A copy out of focus" in the same menu makes a blurred copy of the
+  video; with the cut-out on the track above it, the background looks out
+  of focus (checked on the same clip).
 - It runs **on your machine** (a model called Robust Video Matting, on
   the CPU). Nothing is uploaded. The model file (15 MB) is fetched once
   from its authors' page and checked before use.

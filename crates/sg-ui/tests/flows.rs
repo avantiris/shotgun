@@ -1058,6 +1058,13 @@ fn the_person_is_cut_out_of_a_video_from_its_menu() {
     );
     assert_eq!(harness.state().shell.error_shown(), None);
     assert!(harness.query_by_label_contains("Cutting the person out of first take").is_some());
+    // And a copy out of focus, to put behind the cut-out.
+    right_click(&mut harness, "first take");
+    click(&mut harness, "A copy out of focus");
+    harness.run_steps(2);
+    assert!(
+        harness.state().commands.iter().any(|c| matches!(c, Command::Blurred { asset, .. } if asset.id == AssetId(1)))
+    );
 }
 
 #[test]
