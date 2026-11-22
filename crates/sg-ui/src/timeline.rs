@@ -952,6 +952,18 @@ impl Timeline {
                     self.renaming = Some((track.id, track.name.clone(), true));
                     ui.close();
                 }
+                // Up and down among the tracks of its kind (pictures stay above sound).
+                let at = sequence.tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
+                for (label, to) in [("up", at.checked_sub(1)), ("down", Some(at + 1))] {
+                    let neighbour = to.and_then(|to| sequence.tracks.get(to)).filter(|other| other.kind == track.kind);
+                    let button = ui.add_enabled(neighbour.is_some(), egui::Button::new(format!("Move track {} {label}", track.name)));
+                    if let (true, Some(to)) = (button.clicked(), to) {
+                        if let Err(e) = session.apply(Op::MoveTrack { seq: sequence.id, id: track.id, index: to }, None) {
+                            *error = Some(e.to_string());
+                        }
+                        ui.close();
+                    }
+                }
                 let empty = track.clips.is_empty();
                 let button = ui.add_enabled(empty, egui::Button::new(format!("Remove track {}", track.name)));
                 if button.on_disabled_hover_text("Only an empty track can be removed.").clicked() {
@@ -2362,6 +2374,22 @@ impl Timeline {
         frame: f64,
         error: &mut Option<String>,
     ) {
+        self.add_notes(session, sequence, track, frame, None, Vec::new(), error);
+    }
+
+    /// A note clip with these notes in it, as long as they need (in whole
+    /// bars; `None`: two bars) from the bar `frame` lies in.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_notes(
+        &mut self,
+        session: &mut Session,
+        sequence: &Sequence,
+        track: &Arc<Track>,
+        frame: f64,
+        ticks: Option<i64>,
+        notes: Vec<sg_core::Note>,
+        error: &mut Option<String>,
+    ) {
         let lane = Lane::of(track, sequence);
         let fps = sequence.rate.num() as f64 / sequence.rate.den() as f64;
         let beat = sequence.tempo.map_or(fps / 2.0, |t| t.frames_per_beat(sequence.rate));
@@ -2369,7 +2397,9 @@ impl Timeline {
         let bar = beat * per_bar;
         let origin = sequence.tempo.map_or(0.0, |t| t.origin_frames(sequence.rate));
         let from = if sequence.tempo.is_some() { ((frame - origin) / bar).floor() * bar + origin } else { frame };
-        let (start, mut len) = (lane.units(from.max(0.0).round() as i64), lane.units((bar * 2.0).round() as i64));
+        let bars =
+            ticks.map_or(2.0, |ticks| (ticks as f64 / (sg_core::TICKS_PER_BEAT as f64 * per_bar)).ceil().max(1.0));
+        let (start, mut len) = (lane.units(from.max(0.0).round() as i64), lane.units((bar * bars).round() as i64));
         if let Some(next) = track.clips.first_at_or_after(start) {
             len = len.min(next.start - start);
         }
@@ -2380,7 +2410,7 @@ impl Timeline {
         let clip = Clip { id: session.new_clip_id(), asset: AssetId(0), start, len, src_in: 0 };
         let made = Op::Batch(vec![
             Op::InsertClip { seq: sequence.id, track: track.id, clip },
-            Op::SetClipNotes { seq: sequence.id, track: track.id, clip: clip.id, notes: Some(Vec::new()) },
+            Op::SetClipNotes { seq: sequence.id, track: track.id, clip: clip.id, notes: Some(notes) },
         ]);
         match session.apply(made, None) {
             Ok(()) => {

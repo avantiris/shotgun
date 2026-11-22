@@ -20,7 +20,7 @@ Given at 00:35, to be worked on unattended until 08:00. No questions: decisions 
 - Said: "optimize the full UI by making a more unified theme in a sense that buttons right now look a bit like GTK buttons, chose a style like a very \"edge based style\" or a very modern style but do not do this GTK like rounded button style from now. Give the buttons some feedback and some little details that it just looks more professional and finetuned."
 - Kind: workflow
 - Area: other
-- Status: fixed (this commit)
+- Status: fixed (f4a3810)
 - Now: one look for every control (`docs/spec/07-ui-keybinds.md`, "The look"): flat, one-pixel borders, nearly square corners, a lit border when pointed at, the accent while pressed.
 - Verified: screenshots of library, editor, mixer, chain, export popover in a hidden run. A matter of taste: his to judge.
 

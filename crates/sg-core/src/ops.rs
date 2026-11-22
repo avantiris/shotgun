@@ -52,6 +52,13 @@ pub enum Op {
         index: usize,
         track: TrackHeader,
     },
+    /// Moves a track, with everything on it, to `index` among the tracks
+    /// (0 is the top of the timeline).
+    MoveTrack {
+        seq: SequenceId,
+        id: TrackId,
+        index: usize,
+    },
     /// Removes a track, which must have no clips left.
     RemoveTrack {
         seq: SequenceId,
@@ -231,6 +238,7 @@ impl Op {
             Op::SetTrackName { .. } => "rename track",
             Op::AddTrack { .. } => "add track",
             Op::RemoveTrack { .. } => "remove track",
+            Op::MoveTrack { .. } => "move track",
             Op::InsertClip { .. } => "add clip",
             Op::RemoveClip { .. } => "remove clip",
             Op::SetClip { .. } => "trim or move clip",
@@ -438,6 +446,13 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             check_index(*index, s.tracks.len())?;
             s.tracks.insert(*index, Arc::new(Track::from(track.clone())));
             Ok(Op::RemoveTrack { seq: *seq, id: track.id })
+        }),
+        Op::MoveTrack { seq, id, index } => with_sequence(p, *seq, |s| {
+            let from = s.tracks.iter().position(|t| t.id == *id).ok_or(OpError::NoTrack(*id))?;
+            check_index(*index, s.tracks.len().saturating_sub(1))?;
+            let track = s.tracks.remove(from);
+            s.tracks.insert(*index, track);
+            Ok(Op::MoveTrack { seq: *seq, id: *id, index: from })
         }),
         Op::RemoveTrack { seq, id } => with_sequence(p, *seq, |s| {
             let index = s.tracks.iter().position(|t| t.id == *id).ok_or(OpError::NoTrack(*id))?;
@@ -776,6 +791,25 @@ pub(crate) mod tests {
         let (again, _) = apply(&back, &redo).unwrap();
         assert_eq!(again, after, "redo of {op:?}");
         after
+    }
+
+    #[test]
+    fn a_track_moves_among_the_others_with_what_is_on_it_and_back() {
+        let p = base();
+        let order = |p: &Project| p.sequences[0].tracks.iter().map(|t| t.id).collect::<Vec<_>>();
+        let before = order(&p);
+        assert!(before.len() >= 2);
+        let (first, last) = (before[0], before[before.len() - 1]);
+        let (moved, back) = apply(&p, &Op::MoveTrack { seq: SEQ, id: first, index: before.len() - 1 }).unwrap();
+        assert_eq!(order(&moved).last(), Some(&first));
+        assert_eq!(order(&moved)[before.len() - 2], last);
+        // Everything on it went along: the tracks are the same ones.
+        assert!(Arc::ptr_eq(&moved.sequences[0].tracks[before.len() - 1], &p.sequences[0].tracks[0]));
+        let (again, _) = apply(&moved, &back).unwrap();
+        assert_eq!(order(&again), before);
+        // No such place, no such track.
+        assert!(apply(&p, &Op::MoveTrack { seq: SEQ, id: first, index: before.len() }).is_err());
+        assert!(apply(&p, &Op::MoveTrack { seq: SEQ, id: TrackId(9_999), index: 0 }).is_err());
     }
 
     #[test]

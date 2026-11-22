@@ -2356,6 +2356,93 @@ fn a_new_track_is_made_from_the_bar_above_the_timeline() {
 }
 
 #[test]
+fn a_midi_file_becomes_tracks_of_notes_and_a_note_clip_is_written_as_one() {
+    let mut harness = editor();
+    let root = harness.state().root.clone();
+    // A dropped .mid file is read as notes, not imported as media.
+    let commands = harness.state_mut().shell.incoming(sg_ui::Incoming::Paths(vec!["/somewhere/beat.MID".into()]));
+    assert!(matches!(&commands[..], [Command::ReadMidi { path, .. }] if path.to_str() == Some("/somewhere/beat.MID")));
+    // What was read: five beats of notes at 90 beats a minute.
+    let written = [
+        sg_core::Note { start: 0, len: 480, pitch: 36, velocity: 110 },
+        sg_core::Note { start: 960, len: 480, pitch: 38, velocity: 90 },
+        sg_core::Note { start: 4 * 960, len: 960, pitch: 36, velocity: 110 },
+    ];
+    let bytes = sg_core::midi::write(&written, Some(90_000), "Drums");
+    harness.state_mut().shell.midi_read(&root, "beat.mid", Ok(bytes));
+    harness.run_steps(3);
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let sequence = &project.sequences[0];
+    // The sequence had no tempo: it has the file's now. A new track, named as in the file,
+    // with one clip of two bars (five beats need two) holding the notes.
+    assert_eq!(sequence.tempo.map(|t| t.milli_bpm), Some(90_000));
+    let track = sequence.tracks.iter().find(|t| t.name == "Drums").expect("a track named after the file's");
+    let clip = track.clips.iter().next().unwrap();
+    assert_eq!(clip.len, 8 * 48_000 * 60 / 90);
+    assert_eq!(track.notes.get(&clip.id).map(|n| Vec::clone(n)), Some(written.to_vec()));
+    assert_eq!(harness.state().shell.error_shown(), None);
+    // Its piano roll is open: "To MIDI" asks for a file with these notes and the tempo.
+    click(&mut harness, "To MIDI");
+    harness.run_steps(2);
+    let file = harness.state().commands.iter().find_map(|c| match c {
+        Command::WriteExport { stem, extension, bytes, .. } if extension == "mid" => {
+            Some((stem.clone(), bytes.clone()))
+        }
+        _ => None,
+    });
+    let (stem, bytes) = file.expect("a file to write");
+    assert_eq!(stem, "drums");
+    let read = sg_core::midi::parse(&bytes).unwrap();
+    assert_eq!((read.milli_bpm, read.tracks[0].notes.clone()), (Some(90_000), written.to_vec()));
+    // Something that is no MIDI file says so.
+    harness.state_mut().shell.midi_read(&root, "broken.mid", Ok(b"not midi".to_vec()));
+    assert!(harness.state().shell.error_shown().is_some_and(|e| e.contains("broken.mid")));
+}
+
+#[test]
+fn the_arrow_keys_move_the_selected_notes_up_down_and_along() {
+    let mut harness = editor();
+    let notes = |harness: &Harness<'_, App>| -> Vec<sg_core::Note> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+        let clip = track.clips.iter().next().unwrap();
+        track.notes.get(&clip.id).map(|n| Vec::clone(n)).unwrap_or_default()
+    };
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    let roll = harness.get_by_label("Piano roll").rect();
+    // Two notes; the second one stays selected after it is written... both are taken with Ctrl+A.
+    for x in [140.0, 260.0] {
+        pointer(&mut harness, egui::pos2(roll.left() + 46.0 + x, roll.top() + 90.0), egui::PointerButton::Primary);
+    }
+    let before = notes(&harness);
+    assert_eq!(before.len(), 2);
+    harness.key_press_modifiers(Modifiers::CTRL, Key::A);
+    harness.run_steps(2);
+    // Up twice and an octave down, then a sixteenth later and a beat earlier... which
+    // the first note has no room for: nothing moves then.
+    harness.key_press(Key::ArrowUp);
+    harness.key_press(Key::ArrowUp);
+    harness.run_steps(2);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
+    harness.run_steps(2);
+    harness.key_press(Key::ArrowRight);
+    harness.run_steps(2);
+    let moved = notes(&harness);
+    for (was, is) in before.iter().zip(&moved) {
+        assert_eq!((is.pitch as i32, is.start, is.len), (was.pitch as i32 - 10, was.start + 240, was.len));
+    }
+    let first = moved.iter().map(|n| n.start).min().unwrap();
+    for _ in 0..=first / 960 {
+        harness.key_press_modifiers(Modifiers::SHIFT, Key::ArrowLeft);
+        harness.run_steps(2);
+    }
+    assert_eq!(notes(&harness).iter().map(|n| n.start).min(), Some(first % 960), "stops at the clip's start");
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
 fn the_piano_roll_goes_on_after_the_clip_erases_under_the_right_button_and_selects_with_a_box() {
     let mut harness = editor();
     let notes = |harness: &Harness<'_, App>| -> Vec<sg_core::Note> {
@@ -2558,6 +2645,33 @@ fn the_playhead_is_moved_in_the_piano_rolls_ruler_and_the_assets_panel_is_put_aw
 fn project_clips(harness: &Harness<'_, App>, asset: AssetId) -> usize {
     let project = harness.state().shell.session().unwrap().project().clone();
     project.sequences[0].tracks.iter().map(|t| t.clips.iter().filter(|c| c.asset == asset).count()).sum()
+}
+
+#[test]
+fn a_track_is_moved_up_and_down_among_those_of_its_kind() {
+    let mut harness = editor();
+    click(&mut harness, "+ Track");
+    click(&mut harness, "Audio track");
+    harness.run_steps(3);
+    let names = |harness: &Harness<'_, App>| tracks(harness).into_iter().map(|t| t.1).collect::<Vec<_>>();
+    assert_eq!(names(&harness), ["V1", "A1", "A2"]);
+    // A2 goes above A1, and back with one undo. It cannot go above the picture track.
+    let on_second = on_timeline(&harness, 40.0, 2);
+    pointer(&mut harness, on_second, egui::PointerButton::Secondary);
+    click(&mut harness, "Move track A2 up");
+    harness.run_steps(3);
+    assert_eq!(names(&harness), ["V1", "A2", "A1"]);
+    let on_first = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_first, egui::PointerButton::Secondary);
+    click(&mut harness, "Move track A2 up");
+    harness.run_steps(3);
+    assert_eq!(names(&harness), ["V1", "A2", "A1"], "a sound track stays below the pictures");
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(names(&harness), ["V1", "A1", "A2"]);
+    assert_eq!(harness.state().shell.error_shown(), None);
 }
 
 #[test]

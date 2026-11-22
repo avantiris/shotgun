@@ -140,6 +140,17 @@ enum UserEvent {
         label: String,
         result: Result<(), String>,
     },
+    /// A MIDI file as read.
+    MidiFile {
+        root: PathBuf,
+        name: String,
+        result: Result<Vec<u8>, String>,
+    },
+    /// A file written into the exports folder: its path.
+    Written {
+        root: PathBuf,
+        result: Result<String, String>,
+    },
     LutImported {
         root: PathBuf,
         result: Result<String, String>,
@@ -437,6 +448,41 @@ impl App {
                     self.reads.run(move || {
                         let result = sg_project::analysis::import_lut(&root, &path).map_err(|e| e.to_string());
                         let _ = proxy.send_event(UserEvent::LutImported { root, result });
+                    });
+                }
+                Command::ReadMidi { root, path } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        // (A MIDI file is small; anything else of that name is not read whole.)
+                        let result = match std::fs::metadata(&path) {
+                            Ok(found) if found.len() > 16 << 20 => Err("it is too large to be a MIDI file".to_owned()),
+                            _ => std::fs::read(&path).map_err(|e| e.to_string()),
+                        };
+                        let _ = proxy.send_event(UserEvent::MidiFile { root, name, result });
+                    });
+                }
+                Command::WriteExport { root, stem, extension, bytes } => {
+                    self.pending_jobs += 1;
+                    self.io.run(move || {
+                        let folder = root.join("exports");
+                        let free = (1..10_000)
+                            .map(|n| {
+                                folder.join(if n == 1 {
+                                    format!("{stem}.{extension}")
+                                } else {
+                                    format!("{stem}-{n}.{extension}")
+                                })
+                            })
+                            .find(|path| !path.exists());
+                        let result = match free {
+                            Some(path) => std::fs::create_dir_all(&folder)
+                                .and_then(|()| std::fs::write(&path, &bytes))
+                                .map(|()| path.to_string_lossy().into_owned())
+                                .map_err(|e| e.to_string()),
+                            None => Err("no free name is left".to_owned()),
+                        };
+                        let _ = proxy.send_event(UserEvent::Written { root, result });
                     });
                 }
                 Command::ImportFont { root, path } => {
@@ -1200,6 +1246,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::LookSaved { root, result } => {
                 self.shell.look_saved(&root, result);
+                self.job_done();
+            }
+            UserEvent::MidiFile { root, name, result } => {
+                self.shell.midi_read(&root, &name, result);
+                self.job_done();
+            }
+            UserEvent::Written { root, result } => {
+                self.shell.file_written(&root, result);
                 self.job_done();
             }
             UserEvent::LutImported { root, result } => {

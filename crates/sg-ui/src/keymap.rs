@@ -52,8 +52,11 @@ pub enum Action {
     Transition,
     /// The same with a dip to black.
     Blackout,
-    /// Move the selected clips by this many frames.
+    /// Move the selected clips by this many frames (in the piano roll:
+    /// the selected notes by a sixteenth, or by a beat for ten).
     Nudge(i8),
+    /// Move the selected notes of the piano roll up or down by this many semitones.
+    Pitch(i8),
     /// Show the whole sequence in the timeline.
     FitTimeline,
     /// Show or hide the colour panel.
@@ -181,6 +184,10 @@ pub const KEYMAP: &[Binding] = &[
     bind(Scope::Editor, false, false, Key::ArrowRight, Action::Nudge(1)),
     bind(Scope::Editor, false, true, Key::ArrowLeft, Action::Nudge(-10)),
     bind(Scope::Editor, false, true, Key::ArrowRight, Action::Nudge(10)),
+    bind(Scope::Editor, false, false, Key::ArrowUp, Action::Pitch(1)),
+    bind(Scope::Editor, false, false, Key::ArrowDown, Action::Pitch(-1)),
+    bind(Scope::Editor, false, true, Key::ArrowUp, Action::Pitch(12)),
+    bind(Scope::Editor, false, true, Key::ArrowDown, Action::Pitch(-12)),
     bind(Scope::Editor, true, false, Key::V, Action::Paste),
     bind(Scope::Editor, false, false, Key::Backspace, Action::Delete),
     bind(Scope::Editor, false, false, Key::Delete, Action::Delete),
@@ -400,6 +407,11 @@ pub fn describe(action: Action) -> Option<(&'static str, &'static str)> {
         Action::Marker => ("Cutting", "marker at the playhead (again: remove it)"),
         Action::Nudge(1) => ("Cutting", "selected clips one frame later (left: earlier; Shift: ten frames)"),
         Action::Nudge(_) => return None,
+        Action::Pitch(1) => (
+            "Making",
+            "in the piano roll: the selected notes a semitone up (down: lower; Shift: an octave; left and right: a sixteenth, Shift: a beat)",
+        ),
+        Action::Pitch(_) => return None,
         Action::Undo => ("Cutting", "undo"),
         Action::Redo => ("Cutting", "redo"),
         Action::InsertAsset => ("Making", "put the selected asset on the timeline"),

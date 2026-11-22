@@ -119,6 +119,20 @@ pub enum Command {
         root: PathBuf,
         path: PathBuf,
     },
+    /// Read a MIDI file; answered with [`Shell::midi_read`].
+    ReadMidi {
+        root: PathBuf,
+        path: PathBuf,
+    },
+    /// Write a file into the project's exports folder under a name that
+    /// is free (`stem`, a number if needed, `extension`); answered with
+    /// [`Shell::file_written`].
+    WriteExport {
+        root: PathBuf,
+        stem: String,
+        extension: String,
+        bytes: Vec<u8>,
+    },
     /// Copy a font file into `assets/font/`; answered with [`Shell::font_imported`].
     ImportFont {
         root: PathBuf,
@@ -472,6 +486,13 @@ impl Shell {
         if let Some(path) = self.reveal.take() {
             commands.push(Command::Reveal { path });
         }
+        // The open note clip as a MIDI file, asked for in the piano roll.
+        if let Some((stem, bytes)) = self.editor.piano.midi_request.take()
+            && let Some(session) = &self.session
+        {
+            let root = session.root.clone();
+            commands.push(Command::WriteExport { root, stem, extension: "mid".to_owned(), bytes });
+        }
         let mut asset_requests = Vec::new();
         let mut transport = Vec::new();
         let mut scenario_choice = None;
@@ -772,6 +793,18 @@ impl Shell {
                 }
             }
             // While the piano roll is open these mean its notes.
+            Action::Pitch(semitones) => {
+                if let Some(session) = self.session.as_mut().filter(|_| self.editor.piano.is_open()) {
+                    self.editor.piano.shift_selected(session, semitones, 0, &mut self.error);
+                }
+            }
+            Action::Nudge(steps) if self.editor.piano.is_open() && self.editor.piano.has_selection() => {
+                // A sixteenth; with Shift (ten steps) a beat.
+                let ticks = if steps.abs() >= 10 { 960 } else { 240 } * steps.signum() as i64;
+                if let Some(session) = &mut self.session {
+                    self.editor.piano.shift_selected(session, 0, ticks, &mut self.error);
+                }
+            }
             Action::Paste | Action::PasteClips if self.editor.piano.is_open() => {
                 if let Some(session) = &mut self.session {
                     self.editor.piano.paste(session, &mut self.error);
@@ -1617,6 +1650,14 @@ impl Shell {
                 ImportSource::Path(path) if is_table(&ImportSource::Path(path.clone())) => {
                     Command::ImportLut { root: root.clone(), path }
                 }
+                // Nor are notes: a MIDI file becomes note clips.
+                ImportSource::Path(path)
+                    if path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("mid") || e.eq_ignore_ascii_case("midi")) =>
+                {
+                    Command::ReadMidi { root: root.clone(), path }
+                }
                 // Nor are fonts.
                 ImportSource::Path(path)
                     if path
@@ -2441,6 +2482,78 @@ impl Shell {
                 self.error = Some(format!("The font was not taken: {e}."));
                 Vec::new()
             }
+        }
+    }
+
+    /// A MIDI file was read: each of its tracks that has notes becomes a
+    /// new track with a note clip from the bar the playhead is in. A
+    /// sequence without a tempo takes the file's.
+    pub fn midi_read(&mut self, root: &std::path::Path, name: &str, result: Result<Vec<u8>, String>) {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        let file = match result.and_then(|bytes| sg_core::midi::parse(&bytes).map_err(|e| e.to_string())) {
+            Ok(file) if !file.tracks.is_empty() => file,
+            Ok(_) => {
+                self.error = Some(format!("{name} has no notes in it."));
+                return;
+            }
+            Err(e) => {
+                self.error = Some(format!("{name} could not be read: {e}."));
+                return;
+            }
+        };
+        let Some(seq) = session.project().sequences.first().map(|s| s.id) else { return };
+        let had_tempo = session.project().sequences.first().is_some_and(|s| s.tempo.is_some());
+        if let (false, Some(milli_bpm)) = (had_tempo, file.milli_bpm) {
+            let tempo = sg_core::Tempo { milli_bpm: milli_bpm.clamp(20_000, 400_000), ..sg_core::Tempo::DEFAULT };
+            if let Err(e) = session.apply(Op::SetTempo { id: seq, tempo: Some(tempo) }, None) {
+                self.error = Some(e.to_string());
+                return;
+            }
+        }
+        let (tracks, length) = (file.tracks.len().min(16), file.length());
+        let mut notes = 0;
+        for part in file.tracks.into_iter().take(16) {
+            if let Err(e) = session.add_track(sg_core::TrackKind::Audio) {
+                self.error = Some(e.to_string());
+                return;
+            }
+            let project = session.project().clone();
+            let Some(sequence) = project.sequences.first() else { return };
+            let Some(track) = sequence.tracks.iter().rev().find(|t| t.kind == sg_core::TrackKind::Audio) else {
+                return;
+            };
+            if let Some(name) = part.name.filter(|name| name.chars().count() <= 40) {
+                let _ = session.apply(Op::SetTrackName { seq, track: track.id, name }, None);
+            }
+            notes += part.notes.len();
+            let at = self.playhead.max(0) as f64;
+            // (All as long as the longest: they belong together.)
+            self.editor.timeline.add_notes(session, sequence, track, at, Some(length), part.notes, &mut self.error);
+        }
+        let tempo = match (had_tempo, file.milli_bpm) {
+            (false, Some(bpm)) => {
+                format!(" The sequence now has its tempo, {:.0} beats a minute.", bpm as f32 / 1000.0)
+            }
+            (true, Some(_)) => " They play at the sequence's tempo, not the file's.".to_owned(),
+            _ => String::new(),
+        };
+        session.notice = Some(format!(
+            "{name}: {notes} notes on {tracks} new track(s), played by the built-in instrument until a plugin is put on \
+             (Mixer, on the strip).{tempo}"
+        ));
+    }
+
+    /// A file asked for with [`Command::WriteExport`] was written (or not).
+    pub fn file_written(&mut self, root: &std::path::Path, result: Result<String, String>) {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        match result {
+            Ok(path) => {
+                let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned());
+                let notice = format!("Written: {} in the project's exports folder.", name.unwrap_or_default());
+                session.notice = Some(notice.clone());
+                self.exported = Some((path, notice));
+            }
+            Err(e) => self.error = Some(format!("The file could not be written: {e}.")),
         }
     }
 

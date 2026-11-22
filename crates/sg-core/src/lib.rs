@@ -9,6 +9,7 @@ pub mod clips;
 pub mod colour;
 pub mod history;
 pub mod ids;
+pub mod midi;
 pub mod model;
 pub mod ops;
 pub mod props;

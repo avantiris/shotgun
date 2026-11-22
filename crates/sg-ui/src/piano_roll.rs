@@ -93,6 +93,9 @@ pub struct PianoRoll {
     /// The playhead should go to this sequence frame (a press or a drag in
     /// the ruler); taken by the editor.
     pub seek_request: Option<i64>,
+    /// The notes of the open clip as a MIDI file to be written: a name
+    /// for it and its bytes; taken by the shell.
+    pub midi_request: Option<(String, Vec<u8>)>,
     /// Notes being recorded: pitch, the timeline sample its key went down at, and how hard.
     sounding: Vec<(u8, i64, u8)>,
     /// Undo group of the recording pass in progress.
@@ -393,6 +396,45 @@ impl PianoRoll {
         true
     }
 
+    pub fn has_selection(&self) -> bool {
+        !self.selected.is_empty()
+    }
+
+    /// Moves the selected notes up or down the keys and along the time
+    /// (the arrow keys), all by the same amount or, if one of them would
+    /// leave the keyboard or go before the clip's start, not at all.
+    /// One undo step. Returns whether notes were selected.
+    pub fn shift_selected(
+        &mut self,
+        session: &mut Session,
+        semitones: i8,
+        ticks: i64,
+        error: &mut Option<String>,
+    ) -> bool {
+        let Some((project, track, clip, mut notes, _)) = self.stored(session).filter(|_| !self.selected.is_empty())
+        else {
+            return false;
+        };
+        let fits = |n: &Note| (0..=127).contains(&(n.pitch as i16 + semitones as i16)) && n.start + ticks >= 0;
+        if !self.selected.iter().all(fits) {
+            return true;
+        }
+        let shifted =
+            |n: &Note| Note { pitch: (n.pitch as i16 + semitones as i16) as u8, start: n.start + ticks, ..*n };
+        let mut moved = Vec::with_capacity(self.selected.len());
+        for note in &self.selected {
+            if let Some(index) = notes.iter().position(|n| n == note) {
+                notes[index] = shifted(note);
+                moved.push(notes[index]);
+            }
+        }
+        self.selected = moved;
+        if let Some(sequence) = project.sequences.first() {
+            Self::commit(session, sequence, track, clip, notes, error);
+        }
+        true
+    }
+
     /// Selects every note of the clip (Ctrl+A).
     pub fn select_all(&mut self, session: &Session) {
         if let Some((.., notes, _)) = self.stored(session) {
@@ -598,6 +640,15 @@ impl PianoRoll {
                     self.toggle_record();
                 }
                 if ui
+                    .button("To MIDI")
+                    .on_hover_text("Writes the notes of this clip as a MIDI file into the project's exports folder")
+                    .clicked()
+                {
+                    let name = sequence.track(track_id).map_or("notes".to_owned(), |t| sg_core::text::slug(&t.name));
+                    let tempo = sequence.tempo.map(|tempo| tempo.milli_bpm);
+                    self.midi_request = Some((name.clone(), sg_core::midi::write(&stored, tempo, &name)));
+                }
+                if ui
                     .button("Quantise")
                     .on_hover_text(
                         "Moves the start of every note (of the selected ones, if some are) to the nearest line \
@@ -643,6 +694,8 @@ impl PianoRoll {
                      every note it is drawn over. A note after the clip's end makes the clip longer.\n\
                      Ctrl + click adds to the selection, Ctrl + drag (or \"Select\") draws a box, Ctrl + A takes \
                      all; Ctrl + C and Ctrl + V repeat the selected notes after themselves.\n\
+                     Arrow keys move the selected notes: up and down a semitone (Shift: an octave), left and \
+                     right a sixteenth (Shift: a beat).\n\
                      Wheel: up and down the keys. Shift + wheel: along the time. Ctrl + wheel: zoom along the \
                      time. Alt + wheel: higher or lower rows. Middle button: drag the view.\n\
                      A press or a drag in the strip with the bar numbers moves the playhead.",
