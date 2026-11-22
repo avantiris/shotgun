@@ -22,7 +22,7 @@ one works.
   `master-1043-3be2378`, from the binary cache; nothing was built).
 - Model: Wan 2.1 VACE 1.3B (Apache 2.0), the smallest open model that
   takes a video as its guide. Files in `/disk/shotgun-dev/models/wan`
-  (10.6 GB, of which the first is of no use):
+  (9.9 GB, of which the first file is of no use):
   - `wan2.1-vace-1.3b-q8_0.gguf` (calcuis): **does not load** in this
     build ("tensor vace_patch_embedding.weight not in model metadata").
   - `wan2.1_vace_1.3B_fp16.safetensors` (Comfy-Org, 4.3 GB): loads.
