@@ -816,6 +816,42 @@ mod tests {
     }
 
     #[test]
+    fn compressor_and_leveller_turn_a_steady_tone_down_without_bending_it() {
+        // A follower that rode each cycle of a low voice would add harmonics:
+        // what is not the tone itself, after a second, as a share of it.
+        let distortion = |tone: &Tone, hz: f32| {
+            let n = SAMPLE_RATE as usize * 2;
+            let mut block: Vec<f32> = (0..n)
+                .flat_map(|i| {
+                    let v = 0.3 * (2.0 * std::f32::consts::PI * hz * i as f32 / SAMPLE_RATE as f32).sin();
+                    [v, v]
+                })
+                .collect();
+            let mut fx = TrackFx::new(false, false);
+            for part in block.chunks_mut(1024) {
+                fx.process(part, 0.0, 0.0, tone);
+            }
+            let w = 2.0 * std::f64::consts::PI * hz as f64 / SAMPLE_RATE as f64;
+            let (mut s, mut c, mut total, mut len) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for (i, v) in block[n..].iter().step_by(2).enumerate() {
+                s += *v as f64 * (w * i as f64).sin();
+                c += *v as f64 * (w * i as f64).cos();
+                total += (*v as f64) * (*v as f64);
+                len += 1.0;
+            }
+            let tone_itself = 2.0 * (s * s + c * c) / len;
+            ((total - tone_itself).max(0.0) / tone_itself.max(1e-12)).sqrt() as f32
+        };
+        let squeezed = Tone { threshold_db: -24.0, ratio: 4.0, voice: true, ..Tone::default() };
+        let levelled = Tone { level: 1.0, level_ref_db: -24.0, ..Tone::default() };
+        for hz in [100.0, 170.0, 400.0] {
+            // (Measured 2026-11-22: 0.7 %, 0.4 %, 0.2 % for the compressor on a voice track; none for the leveller.)
+            assert!(distortion(&squeezed, hz) < 0.01, "compressor at {hz} Hz: {}", distortion(&squeezed, hz));
+            assert!(distortion(&levelled, hz) < 0.002, "leveller at {hz} Hz: {}", distortion(&levelled, hz));
+        }
+    }
+
+    #[test]
     fn the_stages_run_in_the_order_the_track_has_them_in() {
         // A loud tone through compressor and saturation: squeezed first it
         // reaches the saturation quieter and is rounded less than the other way round.

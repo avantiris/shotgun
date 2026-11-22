@@ -945,7 +945,7 @@ pub(crate) mod tests {
     /// An op on the two test tracks, valid or not. `pick` selects an
     /// existing clip where one is needed.
     pub(crate) fn any_op() -> impl Strategy<Value = (u8, bool, i64, i64, usize, u64)> {
-        (0u8..13, any::<bool>(), 0i64..2000, 1i64..60, any::<usize>(), 1u64..u64::MAX)
+        (0u8..16, any::<bool>(), 0i64..2000, 1i64..60, any::<usize>(), 1u64..u64::MAX)
     }
 
     pub(crate) fn make_op(p: &Project, (kind, video, a, b, pick, id): (u8, bool, i64, i64, usize, u64)) -> Op {
@@ -961,9 +961,23 @@ pub(crate) mod tests {
                     hidden: pick % 3 == 0,
                     eq_mid_hz: 500.0 + a as f32,
                     comp_threshold_db: -(a % 40) as f32,
+                    comp_makeup_db: (b % 24) as f32 / 2.0,
+                    level_ref_db: -(a % 60) as f32 / 2.0,
+                    // (The usual order, or with two stages changed over.)
+                    order: {
+                        let mut order = crate::STAGE_ORDER;
+                        order.swap(pick % 8, (pick / 8) % 8);
+                        order
+                    },
                     ..TrackSettings::default()
                 };
                 Op::SetTrackMix { seq: SEQ, track, mix }
+            }
+            // Tracks change places and names; the project has words.
+            (13, _) => Op::MoveTrack { seq: SEQ, id: track, index: pick % 3 },
+            (14, _) => Op::SetTrackName { seq: SEQ, track, name: format!("T{}", b % 7) },
+            (15, _) => {
+                Op::SetLyrics { text: if pick % 3 == 0 { String::new() } else { format!("line {a}\nline {b}") } }
             }
             (8, _) => Op::SetMasterGain { id: SEQ, db: (b - 30) as f32 / 4.0 },
             (9, _) => {
