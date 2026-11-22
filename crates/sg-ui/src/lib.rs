@@ -358,6 +358,8 @@ pub enum DevStep {
     Lut(String),
     /// Make the selected asset the hero of its scenario.
     Hero,
+    /// Show a scale in the piano roll: its root (0 is C) and 1 for minor, 0 for major.
+    Scale(u8, u8),
     /// Cut the person out of the selected asset.
     CutOut,
     /// A copy of the selected asset's sound: semitones up, times as fast.
@@ -1254,6 +1256,7 @@ impl Shell {
                     _ => self.error = Some("stretch: no asset is selected".to_owned()),
                 }
             }
+            DevStep::Scale(root, minor) => self.editor.piano.scale = Some((root % 12, minor != 0)),
             DevStep::CutOut => {
                 let asset = self
                     .editor

@@ -406,7 +406,8 @@ impl Mixer {
         // "Chain": one track, the one the selection points at unless another was chosen here.
         let only = self.chain.then(|| {
             let wanted = self.chain_track.filter(|id| tracks.iter().any(|t| t.id == *id));
-            wanted.or(tracks.first().map(|t| t.id))
+            // (Nothing chosen: a voice track if there is one, since that is whose chain is looked at most.)
+            wanted.or(tracks.iter().find(|t| t.mix.voice).map(|t| t.id)).or(tracks.first().map(|t| t.id))
         });
         let only = only.flatten();
         self.watching = only.and_then(|id| tracks.iter().position(|t| t.id == id));

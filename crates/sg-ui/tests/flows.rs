@@ -2677,6 +2677,30 @@ fn the_arrow_keys_move_the_selected_notes_up_down_and_along() {
 }
 
 #[test]
+fn a_scale_is_chosen_in_the_piano_rolls_corner() {
+    let mut harness = editor();
+    let on_audio = on_timeline(&harness, 40.0, 1);
+    pointer(&mut harness, on_audio, egui::PointerButton::Secondary);
+    click(&mut harness, "Add note clip here");
+    // "Key" above the keys: a root and major or minor; the corner then says which.
+    click(&mut harness, "Scale: Key");
+    click(&mut harness, "Scale of A");
+    click(&mut harness, "Minor");
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Scale: Am").is_some());
+    // It is a help for the eye only: a note is written as before, in the scale or not.
+    // (The first click beside the menu closes it.)
+    let roll = harness.get_by_label("Piano roll").rect();
+    for _ in 0..2 {
+        pointer(&mut harness, egui::pos2(roll.left() + 46.0 + 500.0, roll.top() + 150.0), egui::PointerButton::Primary);
+    }
+    let project = harness.state().shell.session().unwrap().project().clone();
+    let track = project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone();
+    assert_eq!(track.notes.values().next().map(|n| n.len()), Some(1));
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
 fn the_lane_under_the_piano_roll_sets_how_hard_notes_are_struck() {
     let mut harness = editor();
     let notes = |harness: &Harness<'_, App>| -> Vec<sg_core::Note> {

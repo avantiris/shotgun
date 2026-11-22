@@ -97,6 +97,9 @@ pub struct PianoRoll {
     pub seek_request: Option<i64>,
     /// The undo group of the pull through the velocity lane that is in progress.
     velocity_group: Option<u64>,
+    /// The scale whose keys are shown as the ones to play: its root (0 is
+    /// C) and whether it is minor. A setting of the view, not of the project.
+    pub scale: Option<(u8, bool)>,
     /// The notes of the open clip as a MIDI file to be written: a name
     /// for it and its bytes; taken by the shell.
     pub midi_request: Option<(String, Vec<u8>)>,
@@ -207,6 +210,8 @@ impl PianoRoll {
             copied_span: self.copied_span,
             keys: self.keys,
             octave: self.octave,
+            // (The scale is the song's: it stays from clip to clip.)
+            scale: self.scale,
             played,
             ..PianoRoll::default()
         };
@@ -1116,6 +1121,19 @@ impl PianoRoll {
             let black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
             let line = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), row_h));
             painter.rect_filled(line.with_min_x(lanes.left()), 0.0, if black { theme::BG } else { theme::PANEL });
+            // With a scale chosen: the rows of keys outside it are dimmed,
+            // the rows of its root faintly marked, so that what fits is
+            // seen without knowing the keys (feedback N2.4).
+            if let Some((root, minor)) = self.scale {
+                let step = (pitch - root as i32).rem_euclid(12);
+                let steps: [i32; 7] = if minor { [0, 2, 3, 5, 7, 8, 10] } else { [0, 2, 4, 5, 7, 9, 11] };
+                let lane = line.with_min_x(lanes.left());
+                if !steps.contains(&step) {
+                    painter.rect_filled(lane, 0.0, Color32::from_black_alpha(110));
+                } else if step == 0 {
+                    painter.rect_filled(lane, 0.0, theme::ACCENT.gamma_multiply(0.07));
+                }
+            }
             let key = Rect::from_min_size(pos2(body.left(), y), vec2(KEYS_W - 2.0, row_h - 1.0));
             painter.rect_filled(key, 1.0, if black { Color32::from_gray(24) } else { Color32::from_gray(200) });
             // A key with a recording of its own says which (a drum kit reads by name, not by pitch).
@@ -1271,6 +1289,57 @@ impl PianoRoll {
                 vec![pos2(x - 5.0, ruler.bottom() - 9.0), pos2(x + 5.0, ruler.bottom() - 9.0), pos2(x, ruler.bottom())];
             ruler_painter.add(egui::Shape::convex_polygon(handle, theme::ACCENT, Stroke::NONE));
         }
+        // In the corner above the keys: the scale.
+        let corner = Rect::from_min_max(body.min, pos2(lanes.left() - 1.0, lanes.top()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(corner), |ui| {
+            ui.spacing_mut().button_padding = vec2(3.0, 0.0);
+            ui.spacing_mut().interact_size.y = corner.height();
+            let said = match self.scale {
+                Some((root, minor)) => format!("{}{}", NAMES[root as usize % 12], if minor { "m" } else { "" }),
+                None => "Key".to_owned(),
+            };
+            let button = egui::Button::new(RichText::new(&said).size(9.5)).min_size(corner.size());
+            // (Open until clicked beside: root and kind are two choices.)
+            let stays =
+                egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            let menu = egui::containers::menu::MenuButton::from_button(button).config(stays);
+            let (response, _) = menu.ui(ui, |ui| {
+                ui.set_min_width(190.0);
+                ui.label(
+                    RichText::new(
+                        "Shows the keys of a scale: the rows outside it are dimmed. Nothing is changed or forbidden.",
+                    )
+                    .size(11.0)
+                    .color(theme::DIM),
+                );
+                if ui.selectable_label(self.scale.is_none(), "No scale").clicked() {
+                    self.scale = None;
+                    ui.close();
+                }
+                let (root, minor) = self.scale.unwrap_or((0, true));
+                ui.horizontal(|ui| {
+                    for (label, is_minor) in [("Major", false), ("Minor", true)] {
+                        if ui.selectable_label(self.scale.is_some() && minor == is_minor, label).clicked() {
+                            self.scale = Some((root, is_minor));
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+                    for (n, name) in NAMES.iter().enumerate() {
+                        let chosen = ui.selectable_label(self.scale.is_some() && root as usize == n, *name);
+                        chosen.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Scale of {name}"))
+                        });
+                        if chosen.clicked() {
+                            self.scale = Some((n as u8, minor));
+                        }
+                    }
+                });
+            });
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Scale: {said}")));
+            response.on_hover_text("The scale whose keys are shown as the ones to play");
+        });
         if let Some(pos) = pointer.filter(|p| lanes.contains(*p) && response.hovered()) {
             let label = name_of(pitch_at(pos.y));
             painter.text(pos + vec2(12.0, -12.0), Align2::LEFT_BOTTOM, label, FontId::proportional(10.0), theme::TEXT);

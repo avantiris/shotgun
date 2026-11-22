@@ -292,6 +292,10 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
 - **The other tracks' notes** are seen faintly behind those of the open
   clip in the piano roll (where their clips lie over it; not of muted
   tracks). They cannot be touched there.
+- **A scale in the piano roll.** "Key" in the corner above the keys: a
+  root and major or minor. The rows outside the scale are dimmed and the
+  root's rows faintly marked; nothing is forbidden or moved. A setting of
+  the view that stays from clip to clip, not part of the project.
 - **A velocity lane** under the piano roll: a bar per note, as high as
   the note is struck hard. A press or a pull through the lane sets the
   notes under it (of the selected ones if some of those are there); one
