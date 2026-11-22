@@ -170,6 +170,17 @@ pub enum Command {
         root: PathBuf,
         asset: Arc<Asset>,
     },
+    /// Make a part of a video with another sky; the file is then taken in
+    /// like a dropped one, and [`Shell::sky_failed`] is told if it could not be made.
+    Sky {
+        root: PathBuf,
+        asset: Box<Asset>,
+        sky: sg_project::analysis::Sky,
+        /// Where the part begins in the video and how long it is, in the sequence's frames.
+        src_in: i64,
+        span: i64,
+        rate: sg_core::Rate,
+    },
     /// Find the key an asset's music is in; answered with [`Shell::key_found`].
     FindKey {
         root: PathBuf,
@@ -381,6 +392,8 @@ pub enum DevStep {
     Blurred,
     /// Find the key of the selected asset's music.
     FindKey,
+    /// Give the selected clip another sky (storm, sunset, night, clear).
+    Sky(String),
     /// Cut the person out of the selected asset.
     CutOut,
     /// A copy of the selected asset's sound: semitones up, times as fast.
@@ -423,6 +436,8 @@ pub struct Shell {
     dropped_at: Option<(i64, Option<usize>, usize)>,
     /// Recorded takes being imported: the file and the timeline sample it starts at.
     takes: Vec<(PathBuf, i64)>,
+    /// Clips that wait for a part of their video with another sky.
+    skies: Vec<PendingSky>,
     /// The track that takes the recording in progress, and the timeline sample it was asked for at.
     record_onto: Option<(sg_core::TrackId, i64)>,
     /// How loud the tracks beside the voice that is being listened to are.
@@ -606,6 +621,9 @@ impl Shell {
                 }
                 if std::mem::take(&mut self.editor.clip_panel.fonts_request) {
                     commands.push(Command::LoadFonts { root: root.clone() });
+                }
+                if let Some((track, clip, sky)) = self.editor.timeline.sky_request.take() {
+                    commands.extend(self.ask_for_sky(track, clip, sky));
                 }
                 if let Some(id) = self.editor.timeline.beat_request.take() {
                     commands.push(Command::LoadBeats { root: root.clone(), id });
@@ -1316,6 +1334,19 @@ impl Shell {
                     _ => self.error = Some("blurred: no asset is selected".to_owned()),
                 }
             }
+            DevStep::Sky(word) => {
+                let sky = sg_project::analysis::Sky::from_word(&word);
+                let chosen = self.session.as_ref().and_then(|session| {
+                    let sequence = session.project().sequences.first()?.clone();
+                    // (The picture of the selected take, not its sound.)
+                    let (track, clip) = self.editor.timeline.selected_picture(&sequence)?;
+                    Some((track.id, clip, sky?))
+                });
+                match chosen {
+                    Some(request) => self.editor.timeline.sky_request = Some(request),
+                    None => self.error = Some("sky: no clip is selected, or no such sky".to_owned()),
+                }
+            }
             DevStep::FindKey => {
                 if let (Some(id), Some(session)) = (self.editor.assets.selected, &self.session) {
                     commands.push(Command::FindKey { root: session.root.clone(), id });
@@ -1974,6 +2005,7 @@ impl Shell {
         }
         // A recorded take goes where it was played; anything else where it was dropped.
         if let Some(id) = placed
+            && !self.place_sky(id)
             && !self.place_take(id)
         {
             self.place_dropped(id);
@@ -1985,6 +2017,16 @@ impl Shell {
             self.editor.assets.set_poster(ctx, id, rgba);
         }
     }
+}
+
+/// A clip that waits for its new sky: the name the part will have as an
+/// asset, the clip, and where in the video the part begins.
+struct PendingSky {
+    name: String,
+    seq: sg_core::SequenceId,
+    track: sg_core::TrackId,
+    clip: sg_core::ClipId,
+    src_in: i64,
 }
 
 /// The asset that stands for a project in the library: what its topmost
@@ -2837,6 +2879,98 @@ impl Shell {
             }
             Err(e) => self.error = Some(format!("The file could not be written: {e}.")),
         }
+    }
+
+    /// A clip is to get another sky: the part of its video that it shows
+    /// is made anew (a job), and when that arrives the clip shows it.
+    fn ask_for_sky(
+        &mut self,
+        track: sg_core::TrackId,
+        clip: sg_core::Clip,
+        sky: sg_project::analysis::Sky,
+    ) -> Option<Command> {
+        let session = self.session.as_mut()?;
+        let project = session.project().clone();
+        let sequence = project.sequences.first()?;
+        let asset = project.assets.get(&clip.asset)?;
+        let props = sequence.track(track)?.props_of(clip.id);
+        // (As much of the source as the clip plays, at its speed.)
+        let span = props.map_or(clip.len, |props| props.source_offset(clip.len)).max(1);
+        let name = sg_project::analysis::sky_name(asset, sky, clip.src_in, span);
+        // Made before (the same part, the same sky): it is there already.
+        if let Some(made) = project.assets.values().find(|other| other.label == name) {
+            let made = made.id;
+            self.skies.push(PendingSky { name, seq: sequence.id, track, clip: clip.id, src_in: clip.src_in });
+            self.place_sky(made);
+            return None;
+        }
+        let waiting = self.skies.iter().any(|pending| pending.name == name);
+        self.skies.push(PendingSky { name, seq: sequence.id, track, clip: clip.id, src_in: clip.src_in });
+        session.notice = Some(format!(
+            "Another sky for this clip ({}): it is being made, see the jobs above the assets, and the clip shows it \
+             when it is done. About a minute for four seconds of 1080p at 60 frames a second; the first time, the model (176 MB) is fetched.",
+            sky.label().to_lowercase()
+        ));
+        (!waiting).then(|| Command::Sky {
+            root: session.root.clone(),
+            asset: Box::new(Asset::clone(asset)),
+            sky,
+            src_in: clip.src_in,
+            span,
+            rate: sequence.rate,
+        })
+    }
+
+    /// An asset arrived: if it is a part with another sky that clips wait
+    /// for, they show it now (each one undo step). True if it was one.
+    fn place_sky(&mut self, id: AssetId) -> bool {
+        let Some(session) = &mut self.session else { return false };
+        let Some(label) = session.project().assets.get(&id).map(|asset| asset.label.clone()) else { return false };
+        let (waiting, rest): (Vec<PendingSky>, Vec<PendingSky>) =
+            std::mem::take(&mut self.skies).into_iter().partition(|pending| pending.name == label);
+        self.skies = rest;
+        if waiting.is_empty() {
+            return false;
+        }
+        for pending in waiting {
+            let project = session.project().clone();
+            // The clip as it is now: it may have been moved or trimmed
+            // meanwhile, and shows the new sky as far as the part reaches.
+            let found = project.sequence(pending.seq).and_then(|sequence| {
+                let track = sequence.track(pending.track)?;
+                let clip = track.clips.iter().find(|clip| clip.id == pending.clip)?;
+                Some((sequence, track, clip))
+            });
+            let outcome = match found {
+                Some((sequence, track, clip)) if clip.src_in >= pending.src_in => {
+                    crate::timeline::Timeline::swap_asset(
+                        session,
+                        sequence,
+                        track,
+                        clip,
+                        id,
+                        clip.src_in - pending.src_in,
+                    )
+                    .map_err(|e| e.to_string())
+                }
+                _ => Err("its clip is no longer where it was; the new sky is among the assets".to_owned()),
+            };
+            match outcome {
+                Ok(()) => {
+                    session.notice = Some(
+                        "The clip has its new sky. Its menu has \"The sky as it was\"; undo also takes it back."
+                            .to_owned(),
+                    )
+                }
+                Err(e) => self.error = Some(format!("{label}: {e}.")),
+            }
+        }
+        true
+    }
+
+    /// A part with another sky could not be made: nothing waits for it any more.
+    pub fn sky_failed(&mut self, name: &str) {
+        self.skies.retain(|pending| pending.name != name);
     }
 
     /// The key of an asset's music was found (or not): the piano roll

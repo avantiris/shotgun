@@ -1121,6 +1121,65 @@ fn a_clip_is_swapped_between_a_video_and_its_cut_out() {
 }
 
 #[test]
+fn a_clip_is_given_another_sky_and_gets_its_own_back() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    let picture = |harness: &Harness<'_, App>| -> (u128, i64, i64, i64) {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let clip = project.sequences[0].tracks[0].clips.iter().next().unwrap();
+        (clip.asset.0, clip.start, clip.len, clip.src_in)
+    };
+    let before = picture(&harness);
+    let on_picture = on_timeline(&harness, 100.0, 0);
+    pointer(&mut harness, on_picture, egui::PointerButton::Secondary);
+    click(&mut harness, "Another sky (AI)");
+    click(&mut harness, "Dark storm clouds");
+    harness.run_steps(2);
+    // The application is asked for the part of the video the clip shows.
+    let asked = harness.state().commands.iter().find_map(|c| match c {
+        Command::Sky { asset, sky, src_in, span, .. } => Some((asset.clone(), *sky, *src_in, *span)),
+        _ => None,
+    });
+    let (asset, sky, src_in, span) = asked.expect("the sky was asked for");
+    assert_eq!((asset.id, sky, src_in, span), (AssetId(1), sg_project::analysis::Sky::Storm, before.3, before.2));
+    assert!(harness.query_by_label_contains("Another sky for this clip").is_some());
+    assert_eq!(picture(&harness), before);
+    // The part arrives under the name the job gives it: the clip shows it, from its beginning.
+    let name = sg_project::analysis::sky_name(&asset, sky, src_in, span);
+    assert_eq!(name, "first-take storm sky 0-600");
+    let root = harness.state().root.clone();
+    let mut part = take(7, &name);
+    part.audio = None;
+    harness.state_mut().shell.import_event(ImportEvent::Usable { job: 7, root, asset: Box::new(part) });
+    harness.run_steps(2);
+    assert_eq!(picture(&harness), (7, before.1, before.2, 0));
+    // (Its sound is still that of the video, where it was.)
+    assert_eq!(clips(&harness, 1), vec![(0, 480_000)]);
+    // The clip can have the sky as it was again; a clip with another sky is not offered one more.
+    // (What was said at the bottom has moved the timeline.)
+    let on_picture = on_timeline(&harness, 100.0, 0);
+    pointer(&mut harness, on_picture, egui::PointerButton::Secondary);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("The sky as it was").is_some());
+    assert!(harness.query_by_label("Another sky (AI)").is_none());
+    click(&mut harness, "The sky as it was");
+    harness.run_steps(2);
+    assert_eq!(picture(&harness), before);
+    // Asked for once more, the part that is there already is used at once: no second job.
+    let jobs = |harness: &Harness<'_, App>| {
+        harness.state().commands.iter().filter(|c| matches!(c, Command::Sky { .. })).count()
+    };
+    let made = jobs(&harness);
+    pointer(&mut harness, on_picture, egui::PointerButton::Secondary);
+    click(&mut harness, "Another sky (AI)");
+    click(&mut harness, "Dark storm clouds");
+    harness.run_steps(2);
+    assert_eq!(jobs(&harness), made);
+    assert_eq!(picture(&harness), (7, before.1, before.2, 0));
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
 fn a_copy_of_an_assets_sound_at_another_pitch_or_tempo_is_asked_for_from_its_menu() {
     let mut harness = editor();
     right_click(&mut harness, "first take");

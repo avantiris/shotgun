@@ -36,6 +36,7 @@
         coreutils
         curl # fetches the matting model on its first use
         sgMatte # "Cut out the person"
+        sgSky # "Replace the sky"
       ] ++ musicTools;
 
       # Cutting a person out of a video (docs/spikes/s8-matte.md): Robust
@@ -113,6 +114,13 @@
           }
           ${pkgs.lib.concatMapStringsSep "\n" take picked}
         '';
+
+      # Another sky for a clip (docs/spikes/s9-sky.md): a model marks the
+      # sky, the rest is sums on pictures, for which OpenCV is ten times
+      # as fast as plain numpy.
+      sgSky = pkgs.writeShellScriptBin "sg-sky" ''
+        exec ${pkgs.python3.withPackages (p: [ p.onnxruntime p.numpy p.opencv4 ])}/bin/python3 -I ${./tools/sg-sky.py} "$@"
+      '';
 
       # Windows plugins: Native Access / Kontakt and the bridge to them.
       musicTools = [

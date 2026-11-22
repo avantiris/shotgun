@@ -203,6 +203,8 @@ pub struct Timeline {
     grid_for: Option<(AssetId, i8)>,
     /// The song whose beats should be loaded; taken by the shell.
     pub beat_request: Option<AssetId>,
+    /// A clip is to get another sky ("Another sky" in its menu); taken by the shell.
+    pub sky_request: Option<(TrackId, Clip, sg_project::analysis::Sky)>,
     /// What the grid of a sequence with a tempo is made of.
     pub grid_step: GridStep,
     /// The audio track recordings go onto ("R" in its header), if one is marked.
@@ -282,6 +284,7 @@ impl Default for Timeline {
             grid: Arc::default(),
             grid_for: None,
             beat_request: None,
+            sky_request: None,
             grid_step: GridStep::Auto,
             record_track: None,
             renaming: None,
@@ -467,6 +470,48 @@ impl Timeline {
 
     fn is_selected(&self, track: TrackId, clip: &Clip) -> bool {
         self.selection.iter().any(|s| s.track == track && s.start == clip.start && s.id == clip.id)
+    }
+
+    /// Makes `clip` show another asset from `src_in` on, in the same place
+    /// and time (a cut-out of its video, a part of it with another sky,
+    /// and back), as one undo step.
+    pub(crate) fn swap_asset(
+        session: &mut Session,
+        sequence: &Sequence,
+        track: &Track,
+        clip: Clip,
+        other: AssetId,
+        src_in: i64,
+    ) -> Result<(), sg_core::OpError> {
+        let mut ops = vec![Op::SetClip {
+            seq: sequence.id,
+            track: track.id,
+            start: clip.start,
+            clip: Clip { asset: other, src_in, ..clip },
+        }];
+        // Picture and sound of a take are known as one by being of the
+        // same asset; after this they are not. So that they still move
+        // and are cut together, they become a group (if they are in none).
+        let this = Sel { track: track.id, start: clip.start, id: clip.id };
+        let partners = Timeline::partners(sequence, track, &clip);
+        let grouped =
+            |sel: &Sel| sequence.track(sel.track).and_then(|t| t.props_of(sel.id)).is_some_and(|p| p.group != 0);
+        let all: Vec<Sel> = std::iter::once(this).chain(partners).collect();
+        if all.len() > 1 && !all.iter().any(grouped) {
+            let group = session.new_clip_id().0.max(1);
+            for member in &all {
+                let props = sequence.track(member.track).and_then(|t| t.props_of(member.id));
+                let mut props = props.map_or_else(ClipProps::default, |p| ClipProps::clone(p));
+                props.group = group;
+                ops.push(Op::SetClipProps {
+                    seq: sequence.id,
+                    track: member.track,
+                    clip: member.id,
+                    props: Some(Box::new(props)),
+                });
+            }
+        }
+        session.apply(Op::Batch(ops), None)
     }
 
     /// The clips on other tracks that belong to `clip`: same asset, same
@@ -920,38 +965,46 @@ impl Timeline {
                             )
                             .clicked()
                     {
-                        let mut ops = vec![Op::SetClip {
-                            seq: sequence.id,
-                            track: track.id,
-                            start: clip.start,
-                            clip: Clip { asset: other, ..clip },
-                        }];
-                        // Picture and sound of a take are known as one by being of the
-                        // same asset; after this they are not. So that they still move
-                        // and are cut together, they become a group (if they are in none).
-                        let partners = Timeline::partners(sequence, track, &clip);
-                        let grouped = |sel: &Sel| {
-                            sequence.track(sel.track).and_then(|t| t.props_of(sel.id)).is_some_and(|p| p.group != 0)
-                        };
-                        let all: Vec<Sel> = std::iter::once(this).chain(partners).collect();
-                        if all.len() > 1 && !all.iter().any(grouped) {
-                            let group = session.new_clip_id().0.max(1);
-                            for member in &all {
-                                let props = sequence.track(member.track).and_then(|t| t.props_of(member.id));
-                                let mut props = props.map_or_else(ClipProps::default, |p| ClipProps::clone(p));
-                                props.group = group;
-                                ops.push(Op::SetClipProps {
-                                    seq: sequence.id,
-                                    track: member.track,
-                                    clip: member.id,
-                                    props: Some(Box::new(props)),
-                                });
-                            }
-                        }
-                        if let Err(e) = session.apply(Op::Batch(ops), None) {
+                        if let Err(e) = Timeline::swap_asset(session, sequence, track, clip, other, clip.src_in) {
                             *error = Some(e.to_string());
                         }
                         ui.close();
+                    }
+                    // Another sky for this clip (10-ai.md): the part of the video it
+                    // shows is made anew with the sky replaced, and the clip then shows
+                    // that. A clip that has one can have the sky as it was again.
+                    let asset = project.assets.get(&clip.asset);
+                    let original = asset.and_then(|asset| {
+                        let (slug, src_in) = sg_project::analysis::sky_origin(&asset.label)?;
+                        let original = project.assets.values().find(|other| sg_core::text::slug(&other.label) == slug)?;
+                        Some((original.id, src_in))
+                    });
+                    if let Some((original, src_in)) = original {
+                        if ui
+                            .button("The sky as it was")
+                            .on_hover_text("This clip shows a part of its video with another sky: back to the video itself.")
+                            .clicked()
+                        {
+                            let back = Timeline::swap_asset(session, sequence, track, clip, original, clip.src_in + src_in);
+                            if let Err(e) = back {
+                                *error = Some(e.to_string());
+                            }
+                            ui.close();
+                        }
+                    } else if asset.is_some_and(|a| a.kind == sg_core::AssetKind::Video && a.video.as_ref().is_some_and(|v| !v.is_still()))
+                    {
+                        ui.menu_button("Another sky (AI)", |ui| {
+                            for sky in sg_project::analysis::Sky::ALL {
+                                let tip = "Finds the sky in this clip and puts another one there, drawn by Shotgun and moving \
+                                           with the camera; the rest of the picture is graded to fit. Done on this machine by a \
+                                           model that marks sky; nothing is sent anywhere. About a minute for four seconds of \
+                                           1080p. A plain bright wall can be taken for sky: use it on clips that show sky.";
+                                if ui.button(sky.label()).on_hover_text(tip).clicked() {
+                                    self.sky_request = Some((track.id, clip, sky));
+                                    ui.close();
+                                }
+                            }
+                        });
                     }
                     ui.menu_button("Scenario", |ui| {
                         use crate::session::ScenarioChoice;
@@ -2624,6 +2677,15 @@ impl Timeline {
         let track = sequence.track(sel.track)?;
         let clip = track.clips.get(sel.start).filter(|c| c.id == sel.id)?;
         Some((track.clone(), clip))
+    }
+
+    /// The first selected clip that is on a video track.
+    pub fn selected_picture(&self, sequence: &Sequence) -> Option<(Arc<Track>, Clip)> {
+        self.selection.iter().find_map(|sel| {
+            let track = sequence.track(sel.track).filter(|track| track.kind == TrackKind::Video)?;
+            let clip = track.clips.get(sel.start).filter(|c| c.id == sel.id)?;
+            Some((track.clone(), clip))
+        })
     }
 
     /// First and last frame covered by the selected clips.

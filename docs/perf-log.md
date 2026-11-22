@@ -498,3 +498,12 @@ through a track's stages (it adds a leveller and a compressor to the
 callback: two logarithms and two powers per frame). The picture of the
 chain costs ten passes over each block of one track on the disk thread
 while its window is open.
+
+## 2026-11-22: another sky for a clip (F17.2)
+
+- `sg-sky <model> src.mp4 out.mp4 storm 112 180 8` on his 1080p59.94
+  video, the machine in use (load 5 to 8): 180 frames in 48.0 s, about
+  4 frames a second. No budget covers it (a background job); written
+  down so that a GPU path has something to beat.
+- Export of the project with the changed clip (`sg-bench export <project> master`):
+  11321 frames in 63.4 s, 2.98 times realtime, as before.

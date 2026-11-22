@@ -151,6 +151,13 @@ enum UserEvent {
         id: AssetId,
         result: Result<(u8, bool), String>,
     },
+    /// A part of a video with another sky was made: where it is.
+    Sky {
+        root: PathBuf,
+        name: String,
+        label: String,
+        result: Result<PathBuf, String>,
+    },
     /// A video with the person cut out was made: where it is.
     CutOut {
         root: PathBuf,
@@ -242,6 +249,8 @@ struct App {
     local_cancels: std::collections::HashMap<u64, sg_media::Cancel>,
     /// Assets whose stabilised copy is being made.
     stabilising: std::collections::HashSet<AssetId>,
+    /// Held by the one job that is making another sky.
+    sky_turn: std::sync::Arc<std::sync::Mutex<()>>,
     /// Scratch for the level meters read each frame.
     meters: Vec<f32>,
     /// Stops the running export.
@@ -674,6 +683,47 @@ impl App {
                             label: asset.label.clone(),
                             result,
                         });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
+                }
+                Command::Sky { root, asset, sky, src_in, span, rate } => {
+                    self.pending_jobs += 1;
+                    self.local_jobs += 1;
+                    let job = u64::MAX - self.local_jobs;
+                    let cancel = sg_media::Cancel::new();
+                    self.local_cancels.insert(job, cancel.clone());
+                    let library = sg_project::library_dir();
+                    // One at a time: each uses half of the machine.
+                    let turn = self.sky_turn.clone();
+                    let spawned = std::thread::Builder::new().name("sg-sky".into()).spawn(move || {
+                        let name = sg_project::analysis::sky_name(&asset, sky, src_in, span);
+                        let label = asset.label.clone();
+                        let mut last = -2i32;
+                        let mut progress = |stage: &'static str, fraction: Option<f32>| {
+                            let percent = fraction.map_or(-1, |f| (f * 100.0) as i32);
+                            if percent != last {
+                                last = percent;
+                                let event = ImportEvent::Progress { job, label: label.clone(), stage, fraction };
+                                let _ = proxy.send_event(UserEvent::Import(event));
+                            }
+                        };
+                        progress("waiting for another sky", None);
+                        let held = turn.lock();
+                        let result = if cancel.is_cancelled() {
+                            Err("cancelled".to_owned())
+                        } else {
+                            progress("another sky", Some(0.0));
+                            let mut made = |fraction: f32| progress("another sky", Some(fraction));
+                            sg_project::analysis::replace_sky(
+                                &library, &root, &asset, sky, src_in, span, rate, &cancel, &mut made,
+                            )
+                            .map_err(|e| e.to_string())
+                        };
+                        drop(held);
+                        let _ = proxy.send_event(UserEvent::Import(ImportEvent::Finished { job }));
+                        let _ = proxy.send_event(UserEvent::Sky { root, name, label, result });
                     });
                     if spawned.is_err() {
                         self.pending_jobs -= 1;
@@ -1482,6 +1532,29 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.job_done();
             }
+            UserEvent::Sky { root, name, label, result } => {
+                let here = self.shell.session().is_some_and(|session| session.root == root);
+                match result {
+                    Ok(path) if !here => {
+                        self.shell.notify(format!(
+                            "Another sky for {label} was made after its project was closed. The file is {}.",
+                            path.display()
+                        ));
+                    }
+                    // Taken into the project like a file that was dropped; the clip that waits for it then shows it.
+                    Ok(path) => {
+                        let commands = self.shell.incoming(sg_ui::Incoming::Paths(vec![path]));
+                        self.run_commands(commands);
+                    }
+                    Err(e) => {
+                        self.shell.sky_failed(&name);
+                        if e != "cancelled" {
+                            self.shell.report_error(format!("Another sky for {label} could not be made: {e}"));
+                        }
+                    }
+                }
+                self.job_done();
+            }
             UserEvent::CutOut { root, id, label, result } => {
                 self.stabilising.remove(&id);
                 let here = self.shell.session().is_some_and(|session| session.root == root);
@@ -1743,6 +1816,7 @@ fn main() -> anyhow::Result<()> {
         meters: vec![0.0; sg_play::MAX_METERS],
         local_jobs: 0,
         local_cancels: std::collections::HashMap::new(),
+        sky_turn: Default::default(),
         export_cancel: None,
         library,
         repaint_at: None,

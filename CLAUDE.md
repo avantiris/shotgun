@@ -13,7 +13,7 @@ DAW planned inside the same app. Rust, wgpu/Vulkan, FFmpeg, PipeWire.
 | `docs/spec/08-milestones.md` | to find what to build next and the definition of done |
 | `docs/spec/03,05,06,07` | when working on bundle/git, colour, audio, UI/keys |
 | `docs/spec/09-daw.md` | before any music work (stage 3): what was decided, design, milestones M11 to M16 |
-| `docs/spec/10-ai.md` | before any work on AI features for the picture: what exists (cutting a person out), what is planned, how a hosted service would be used |
+| `docs/spec/10-ai.md` | before any work on AI features for the picture: what exists (cutting a person out, another sky for a clip), what is planned, how a hosted service would be used |
 | `docs/spikes/*.md` | before choosing a crate or approach: measured decisions live here and override the specs where they differ |
 
 Statements in specs marked `PROPOSED` are my design, not user decisions: fine
