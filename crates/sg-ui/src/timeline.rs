@@ -855,6 +855,23 @@ impl Timeline {
             if let Some((track, clip)) = self.menu_clip.and_then(|(row, clip)| Some((sequence.tracks.get(row)?, clip)))
             {
                 let this = Sel { track: track.id, start: clip.start, id: clip.id };
+                // An earlier take, kept on its track's takes track: back into its place.
+                if let Some(home) = Session::takes_of(sequence, track).and_then(|id| sequence.track(id))
+                    && ui
+                        .button(format!("Use this take on {}", home.name))
+                        .on_hover_text(
+                            "Puts this take back where it was recorded, over what is there now; what it covers \
+                             comes here in its stead.",
+                        )
+                        .clicked()
+                {
+                    match session.use_take(track.id, clip) {
+                        Ok(true) => self.selection.clear(),
+                        Ok(false) => *error = Some("The track this take came from is gone.".to_owned()),
+                        Err(e) => *error = Some(e.to_string()),
+                    }
+                    ui.close();
+                }
                 let partners = Timeline::partners(sequence, track, &clip);
                 let kind_of = |sel: &Sel| sequence.track(sel.track).map(|t| t.kind);
                 let all: Vec<Sel> = std::iter::once(this).chain(partners.iter().copied()).collect();

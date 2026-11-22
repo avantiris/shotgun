@@ -93,7 +93,8 @@ Each has a headless test; the ones marked * also ran in the real program.
 - **Arrow keys on notes**: up/down a semitone (Shift: octave), left/right
   a sixteenth (Shift: a beat).
 - **Takes are kept** *: what a new take covers goes onto a muted track
-  beside it ("A3 takes") instead of being gone.
+  beside it ("A3 takes") instead of being gone. Right-click a kept take,
+  "Use this take on A3", to swap it back in.
 - **Punching in** *: with a looped stretch on (L), a take replaces only
   that stretch, however early you start playing.
 - **Another pitch or tempo** *: in an asset's menu; makes a copy of a beat

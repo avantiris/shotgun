@@ -486,8 +486,11 @@ chain second version, M16 mixing and mastering.
     take replaces only that stretch, however early the playing starts
     and however long it goes on. Checked: headless flows. Not checked: in
     the app with sound.
-  - Still to do: choosing between takes in one lane (they are on tracks
-    of their own now, to be dragged or soloed).
+    An earlier take is chosen again from its menu on the takes track,
+    "Use this take on <track>": it goes back into its place, and what
+    it covers there takes its place among the takes (one undo step).
+  - Still to do: takes shown in one lane under the track (they are on
+    tracks of their own).
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
   - Built 2026-11-20:
     - `sg-plug`: every plugin runs in a process of its own

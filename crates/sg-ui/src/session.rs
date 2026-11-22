@@ -413,6 +413,19 @@ impl Session {
     /// is none with room. Recordings at their own speed only: a note clip
     /// or a stretched clip is not a take. Nothing covered: no ops.
     fn keep_covered(&mut self, sequence: &sg_core::Sequence, track: sg_core::TrackId, from: i64, to: i64) -> Vec<Op> {
+        self.keep_covered_but(sequence, track, from, to, None)
+    }
+
+    /// [`Session::keep_covered`], counting the clip `leaving` (which the
+    /// same step takes off its takes track) as not being in the way.
+    fn keep_covered_but(
+        &mut self,
+        sequence: &sg_core::Sequence,
+        track: sg_core::TrackId,
+        from: i64,
+        to: i64,
+        leaving: Option<sg_core::ClipId>,
+    ) -> Vec<Op> {
         let Some(lane) = sequence.track(track) else { return Vec::new() };
         let plain = |clip: &Clip| {
             clip.asset != sg_core::AssetId(0)
@@ -451,7 +464,9 @@ impl Session {
         let name = format!("{} takes", lane.name);
         // A takes track of this one that is free there; else a new one.
         let free = sequence.tracks.iter().find(|t| {
-            t.kind == TrackKind::Audio && t.name.starts_with(&name) && t.clips.range(from, to).next().is_none()
+            t.kind == TrackKind::Audio
+                && t.name.starts_with(&name)
+                && t.clips.range(from, to).all(|clip| Some(clip.id) == leaving)
         });
         let mut ops = Vec::new();
         let onto = match free {
@@ -477,6 +492,45 @@ impl Session {
             }
         }
         ops
+    }
+
+    /// The track an earlier take on `takes` (a track named "<name> takes")
+    /// came from, if it is still there.
+    pub fn takes_of(sequence: &sg_core::Sequence, takes: &sg_core::Track) -> Option<sg_core::TrackId> {
+        let at = takes.name.rfind(" takes")?;
+        // ("A1 takes" and "A1 takes 2" are both A1's.)
+        let rest = &takes.name[at + " takes".len()..];
+        if !rest.trim().chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let name = &takes.name[..at];
+        sequence.tracks.iter().find(|t| t.kind == TrackKind::Audio && t.name == name && t.id != takes.id).map(|t| t.id)
+    }
+
+    /// Puts an earlier take back where it was recorded: the clip goes
+    /// from its takes track onto the track it came from, over what is
+    /// there, and what it covers there takes its place among the takes.
+    /// One undo step. `false` if the track it came from is gone.
+    pub fn use_take(&mut self, takes: sg_core::TrackId, clip: Clip) -> Result<bool, OpError> {
+        let project = self.project().clone();
+        let Some(sequence) = project.sequences.first() else { return Ok(false) };
+        let Some(home) = sequence.track(takes).and_then(|track| Session::takes_of(sequence, track)) else {
+            return Ok(false);
+        };
+        let props = sequence
+            .track(takes)
+            .and_then(|track| track.props_of(clip.id))
+            .map(|props| sg_core::ClipProps::clone(props));
+        let back = Clip { id: self.ids.clip(), ..clip };
+        let Some(overwrite) = Op::overwrite(sequence, home, back, self.ids.clip()) else { return Ok(false) };
+        let mut ops = vec![Op::RemoveClip { seq: sequence.id, track: takes, start: clip.start }];
+        ops.extend(self.keep_covered_but(sequence, home, clip.start, clip.end(), Some(clip.id)));
+        ops.push(overwrite);
+        if let Some(props) = props {
+            ops.push(Op::SetClipProps { seq: sequence.id, track: home, clip: back.id, props: Some(Box::new(props)) });
+        }
+        self.apply(Op::Batch(ops), None)?;
+        Ok(true)
     }
 
     /// Adds a track: video on top, audio at the bottom.

@@ -1978,6 +1978,17 @@ fn a_take_goes_onto_the_track_marked_for_recording_over_what_is_there() {
     };
     assert_eq!(kept(&harness), [("A1 takes".to_owned(), true, vec![(1, 96_000, 96_000, 96_000)])]);
     assert_eq!(tracks(&harness).len(), 3);
+    // The earlier take is chosen again from its menu: it goes back into its place
+    // on A1, and the newer one takes its place among the takes.
+    let on_kept = on_timeline(&harness, 40.0, 2) + vec2(180.0, 0.0);
+    pointer(&mut harness, on_kept, egui::PointerButton::Secondary);
+    click(&mut harness, "Use this take on A1");
+    harness.run_steps(3);
+    assert_eq!(on_a1(&harness), [(1, 0, 96_000, 0), (1, 96_000, 96_000, 96_000), (1, 192_000, 288_000, 192_000)]);
+    assert_eq!(kept(&harness), [("A1 takes".to_owned(), true, vec![(9, 96_000, 96_000, 48_000)])]);
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(on_a1(&harness), [(1, 0, 96_000, 0), (9, 96_000, 96_000, 48_000), (1, 192_000, 288_000, 192_000)]);
     // One undo: the track is as it was, and the takes track is gone again.
     harness.key_press(Key::Z);
     harness.run_steps(3);
