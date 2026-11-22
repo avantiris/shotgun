@@ -485,8 +485,14 @@ a bridged Windows plugin, how the delay of hand play feels.
 | The same, the model alone at 1080p / 960x540 / 640x360 (`spikes/s8-matte/rvm.py`) | 8.3 / 12.6 / 22.8 frames a second | none set | |
 | Lossless copy a cut-out is played from (utvideo with transparency), 1080p60 | 77 MB per second of video | none set | |
 | Export of a 4 s 1080p sequence with a cut-out over a clip (`sg-bench export ... master`) | 1.85x realtime, 175 frames a second in the render pass | >= realtime | pass |
+| Audio engine on a null sink, 20 s (`scripts/bench-m3.sh`, at 02b55af) | 0 xruns, 0 underruns, worst callback 66 us | 0 underruns | pass |
+| Full-quality frame after a seek, 4K60 HEVC, 1 s GOP (the same) | p95 337 ms | 150 ms p95 | MISS (as before) |
+| Three 4K60 layers playing (`scripts/bench-m5.sh`, at 2f43b5b) | 1796 frames, 0 late | 0 late | pass |
+| Film exports (`scripts/bench-m6.sh`, at 2f43b5b): 1080p60 vertical / share copy / GIF | 3.0x / 1.45x / 1.1x realtime, files probe as before | >= realtime | pass |
+| The input heard through a track's stages on the realtime thread (hidden run, two null sinks, block of 256) | 0 xruns in 6 s | 0 | pass |
 
-Not measured tonight: playback budgets (M3, M5) with the stages' new
-parts (fourth-order low cut, make-up, the taps for the chain's picture);
-the picture of the chain costs ten passes over each block of one track
-on the disk thread while its window is open.
+Not measured tonight: the worst callback time with the input heard
+through a track's stages (it adds a leveller and a compressor to the
+callback: two logarithms and two powers per frame). The picture of the
+chain costs ten passes over each block of one track on the disk thread
+while its window is open.
