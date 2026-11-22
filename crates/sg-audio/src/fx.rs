@@ -296,6 +296,11 @@ impl DeEsser {
 }
 
 /// The clean-up and tone of one track.
+///
+/// Built without noise reduction and pitch correction
+/// (`TrackFx::new(false, false)`), `process` neither allocates nor waits:
+/// that is what lets the monitored input run through it on the realtime
+/// thread. Keep it so.
 pub struct TrackFx {
     /// The low cut: per channel, its two sections.
     filters: [[HighPass; 2]; 2],

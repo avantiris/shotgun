@@ -452,7 +452,17 @@ chain second version, M16 mixing and mastering.
     of that shows the delay): heard 312 frames (6.5 ms) late, the meter
     at the burst's level, 0 xruns; and in the app the same way. Not
     checked: a real interface, whose converters add their own delay.
-    Not built: the input through the track's own chain (it is heard dry).
+    The input through the track's own chain (night of 2026-11-22,
+    `PROPOSED`): with "Hear" on and a track marked "R", the input is
+    heard through that track's low cut, equaliser, de-esser, leveller,
+    compressor (with make-up) and saturation, in the track's order, on
+    the realtime thread (those stages neither allocate nor wait). Left
+    out: noise reduction and pitch correction (they would make the voice
+    late in the ear), plugins, the fader, reverb and echo. The take is
+    recorded as it arrives, as before. Checked in the app with two null
+    sinks, a 200 Hz tone as the input: heard at -30.1 dB flat, at -85.9
+    dB with the track's low cut at 1 kHz, at -18.1 dB with 12 dB of
+    make-up; 0 xruns. Not checked: with a microphone and ears.
   - Recording onto a track (2026-11-21): "R" in an audio track's header
     marks it as the one that takes recordings. A take then goes there,
     over what is in its place (clips it covers go, clips it reaches into

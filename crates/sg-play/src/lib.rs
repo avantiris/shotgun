@@ -59,6 +59,8 @@ enum Command {
     PluginEditor(u64),
     /// Have the plugins' states written to their files, then reply.
     SavePlugins(crossbeam_channel::Sender<()>),
+    /// The stages the monitored input is heard through.
+    MonitorChain(Option<Box<sg_core::TrackSettings>>),
     /// The metronome on or off.
     Click(bool),
     /// The audio track (its id) whose instrument is played by hand, or none.
@@ -341,6 +343,12 @@ impl Player {
     /// to hear it. `None` closes it again.
     pub fn monitor(&self, input: Option<(Option<String>, bool)>) {
         self.send(Command::Monitor(input));
+    }
+
+    /// The settings of the track whose stages the monitored input is heard
+    /// through (the one that takes the recording); `None`: as it arrives.
+    pub fn monitor_chain(&self, mix: Option<sg_core::TrackSettings>) {
+        self.send(Command::MonitorChain(mix.map(Box::new)));
     }
 
     /// What the de-esser, the compressor and the ducking of each audio
@@ -684,6 +692,9 @@ impl State {
                 self.looping = range;
                 // (A recording is one pass: it is not looped under.)
                 self.audio.set_loop(range.filter(|_| self.recording.is_none()));
+            }
+            Command::MonitorChain(mix) => {
+                self.audio.monitor_chain(mix.map(|mix| (mix.low_cut_hz, tone_of(&mix))));
             }
             Command::Monitor(None) => self.listening = None,
             Command::Monitor(Some((source, hear))) => {

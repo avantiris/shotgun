@@ -295,9 +295,7 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
 Still missing from what a DAW is expected to have: automation of a
 track's fader and of plugin parameters over time; choosing between
 takes in one lane; freezing a track
-to a file; hearing the input through the track's own chain (the stages
-run half a second ahead of what is heard, so this needs another kind of
-stage); pitch bend; stretching a clip on the timeline without a change
+to a file; pitch bend; stretching a clip on the timeline without a change
 of pitch (a copy of an asset can be made at another tempo).
 
 ## Open

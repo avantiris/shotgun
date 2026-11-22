@@ -225,6 +225,9 @@ pub enum Command {
     /// Open the sound input (`None` inside: the system's default) to show
     /// its level and, with the flag, to hear it; `None`: close it.
     Monitor(Option<(Option<String>, bool)>),
+    /// Hear the input through the stages of a track with these settings
+    /// (the one marked for recording); `None`: as it arrives.
+    MonitorChain(Option<Box<sg_core::TrackSettings>>),
     /// Play the stretch between these timeline samples over and over, or
     /// (`None`) play on as usual.
     Loop(Option<(i64, i64)>),
@@ -407,6 +410,8 @@ pub struct Shell {
     spent_takes: Vec<PathBuf>,
     /// What the application was last told about monitoring the input.
     monitor: Option<(Option<String>, bool)>,
+    /// The settings the application was last told to hear the input through.
+    monitor_chain: Option<sg_core::TrackSettings>,
     /// The loop the application was last told of.
     looping: Option<(i64, i64)>,
     /// The track the application was last told is played by hand.
@@ -2110,6 +2115,20 @@ impl Shell {
         if monitor != self.monitor {
             self.monitor = monitor.clone();
             commands.push(Command::Monitor(monitor));
+        }
+        // Heard through the stages of the track marked "R" (feedback N2.1,
+        // M13's "the input through the track's own chain"): what is in the
+        // ear while recording is then close to what the take will be.
+        let chain = (self.editor.monitor && self.editor.hear_input)
+            .then(|| {
+                let sequence = self.session.as_ref()?.project().sequences.first()?.clone();
+                let armed = self.editor.timeline.record_track?;
+                Some(sequence.track(armed)?.mix)
+            })
+            .flatten();
+        if chain != self.monitor_chain {
+            self.monitor_chain = chain;
+            commands.push(Command::MonitorChain(chain.map(Box::new)));
         }
     }
 

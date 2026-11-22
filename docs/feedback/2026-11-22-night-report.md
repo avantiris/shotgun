@@ -109,8 +109,7 @@ keyframes on it.
 
 Still missing, and not built tonight: automation of a track's fader and
 of plugin parameters over time; choosing between takes in one lane;
-hearing your input through the track's chain while recording; pitch
-bend; freezing a track.
+pitch bend; freezing a track.
 
 ## 4. AI on the picture (your point 5)
 
@@ -143,8 +142,14 @@ verified.
 ## 5. Roadmap leftovers (your point 1)
 
 Done tonight from the "still to do" lists: takes kept, a punch-out
-point, the sustain pedal; the stages in another order was done on the
-21st. **Not done**: hearing the input through the chain, pitch bend,
+point, the sustain pedal, and **hearing yourself through the chain**:
+with "Hear" on and a track marked "R", your input is heard through that
+track's low cut, equaliser, de-esser, leveller, compressor and
+saturation (not noise reduction, tune, plugins, reverb or echo: those
+would make you late in your own ear or are not built for it). So the hum
+in your headphones while recording goes with the low cut. Checked with a
+test tone through two private test outputs, not with a microphone. The
+stages in another order was done on the 21st. **Not done**: pitch bend,
 plugin parameters as keyframes, pitch correction by hand per note, LV2,
 loop points in the sampler. Each of these is more than a few hours and I
 did not want to leave one half-built. M11 to M16 stay unticked: none of

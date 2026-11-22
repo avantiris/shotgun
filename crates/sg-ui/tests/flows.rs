@@ -1986,6 +1986,31 @@ fn a_take_goes_onto_the_track_marked_for_recording_over_what_is_there() {
 }
 
 #[test]
+fn the_input_is_heard_through_the_stages_of_the_track_marked_for_recording() {
+    let mut harness = editor();
+    let chains = |harness: &Harness<'_, App>| -> Vec<Option<sg_core::TrackSettings>> {
+        let commands = harness.state().commands.iter();
+        commands
+            .filter_map(|c| if let Command::MonitorChain(mix) = c { Some(mix.as_deref().copied()) } else { None })
+            .collect()
+    };
+    // "Level" and "Hear" on, no track marked: the input is heard as it arrives.
+    harness.state_mut().shell.dev(sg_ui::DevStep::Monitor(false));
+    let asked = harness.state_mut().shell.dev(sg_ui::DevStep::Monitor(true));
+    assert!(!asked.iter().any(|c| matches!(c, Command::MonitorChain(_))));
+    // "R" on A1: through that track's stages, and again whenever they are changed.
+    click(&mut harness, "R");
+    harness.run_steps(2);
+    assert_eq!(chains(&harness).last().map(|mix| mix.is_some()), Some(true));
+    harness.state_mut().shell.dev(sg_ui::DevStep::Mix("0".into(), "makeup".into(), 6.0));
+    harness.run_steps(2);
+    assert_eq!(chains(&harness).last().and_then(|mix| mix.map(|mix| mix.comp_makeup_db)), Some(6.0));
+    // "Hear" off: nothing to hear it through.
+    let off = harness.state_mut().shell.dev(sg_ui::DevStep::Monitor(true));
+    assert!(off.iter().any(|c| matches!(c, Command::MonitorChain(None))));
+}
+
+#[test]
 fn with_a_looped_stretch_a_take_replaces_only_that_stretch() {
     let mut harness = editor();
     place(&mut harness, "first take");

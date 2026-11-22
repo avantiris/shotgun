@@ -416,6 +416,13 @@ pub struct Rt {
     monitor_limbo: Option<Box<rtrb::Consumer<f32>>>,
     /// Mean square of each side of the monitored input over the last second or so of sound.
     monitor_sides: [f32; 2],
+    /// The stages the monitored input is heard through, what they are set
+    /// to (and the counter that was read at), and room to work in. Built
+    /// without noise reduction and pitch correction: nothing in it
+    /// allocates, so it may run here.
+    monitor_fx: crate::fx::TrackFx,
+    monitor_set: (u32, Option<(f32, crate::fx::Tone)>),
+    monitor_block: Vec<f32>,
 }
 
 impl Rt {
@@ -433,6 +440,9 @@ impl Rt {
             monitor: None,
             monitor_limbo: None,
             monitor_sides: [0.0; 2],
+            monitor_fx: crate::fx::TrackFx::new(false, false),
+            monitor_set: (u32::MAX, None),
+            monitor_block: vec![0.0; MAX_BLOCK * 2],
         };
         (rt, slot)
     }
@@ -661,7 +671,7 @@ impl Rt {
         {
             old.commit_all();
         }
-        let take = ring.slots().min(out.len()) & !1;
+        let take = ring.slots().min(out.len()).min(self.monitor_block.len()) & !1;
         let Ok(chunk) = ring.read_chunk(take) else { return };
         let heard = self.shared.monitor_heard.load(Ordering::Relaxed);
         let (a, b) = chunk.as_slices();
@@ -670,19 +680,32 @@ impl Rt {
         // will be: judged from the last seconds, so that it does not flip.
         let lone = crate::record::lone_side(self.monitor_sides.map(f32::sqrt));
         let mut energy = [0.0f32; 2];
-        let mut arriving = a.iter().chain(b);
-        for frame in out.chunks_exact_mut(2) {
-            let (Some(&left), Some(&right)) = (arriving.next(), arriving.next()) else { break };
+        let block = &mut self.monitor_block[..take];
+        let mut arriving = a.iter().chain(b).copied();
+        for frame in block.chunks_exact_mut(2) {
+            let (Some(left), Some(right)) = (arriving.next(), arriving.next()) else { break };
             energy = [energy[0] + left * left, energy[1] + right * right];
             peak = peak.max(left.abs()).max(right.abs());
-            let (left, right) = match lone {
+            (frame[0], frame[1]) = match lone {
                 Some(0) => (left, left),
                 Some(_) => (right, right),
                 None => (left, right),
             };
-            if heard {
-                frame[0] = (frame[0] + left).clamp(-1.0, 1.0);
-                frame[1] = (frame[1] + right).clamp(-1.0, 1.0);
+        }
+        // Through the stages of the track that takes the recording, if it
+        // is to be heard so (new settings are taken when they are whole).
+        if self.shared.monitor_chain.seq() != self.monitor_set.0
+            && let Some(set) = self.shared.monitor_chain.get()
+        {
+            self.monitor_set = set;
+        }
+        if let (true, Some((low_cut_hz, tone))) = (heard, &self.monitor_set.1) {
+            self.monitor_fx.process(block, *low_cut_hz, 0.0, tone);
+        }
+        if heard {
+            for (frame, own) in out.chunks_exact_mut(2).zip(block.chunks_exact(2)) {
+                frame[0] = (frame[0] + own[0]).clamp(-1.0, 1.0);
+                frame[1] = (frame[1] + own[1]).clamp(-1.0, 1.0);
             }
         }
         // (Mean square of each side, eased over about a second; a pause does not undo it.)

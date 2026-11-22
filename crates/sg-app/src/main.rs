@@ -728,6 +728,11 @@ impl App {
                         player.monitor(input.map(|(source, hear)| (named.or(source), hear)));
                     }
                 }
+                Command::MonitorChain(mix) => {
+                    if let Some(player) = &self.player {
+                        player.monitor_chain(mix.map(|mix| *mix));
+                    }
+                }
                 Command::Loop(range) => {
                     if let Some(player) = &self.player {
                         player.set_loop(range);

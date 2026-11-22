@@ -289,6 +289,9 @@ pub(crate) struct Shared {
     pub(crate) monitor_out: std::sync::atomic::AtomicPtr<rtrb::Consumer<f32>>,
     /// The monitored input is added to what is heard.
     pub(crate) monitor_heard: AtomicBool,
+    /// The stages the monitored input is heard through (those of the track
+    /// that takes the recording), if any.
+    pub(crate) monitor_chain: MonitorChain,
     /// Peak level of the input since it was last read (f32 bits).
     pub(crate) input_meter: AtomicU32,
     /// What the stages of each track did, along the timeline: they work
@@ -300,6 +303,92 @@ pub(crate) struct Shared {
     pub(crate) stages: Stages,
     /// The level along the chain of the one track whose chain is on screen.
     pub(crate) scope: scope::Scope,
+}
+
+/// Settings for the stages the monitored input goes through, handed to
+/// the realtime thread without a lock: numbers in atomics behind a
+/// counter that is odd while they are being written. The reader takes
+/// them only when the counter is even and was the same before and after.
+#[derive(Default)]
+pub(crate) struct MonitorChain {
+    seq: AtomicU32,
+    /// 0: no chain. Then the low cut and the tone's numbers as f32 bits,
+    /// "voice" as 0 or 1, and the order four stages to a word.
+    values: [AtomicU32; 16],
+}
+
+impl MonitorChain {
+    /// (One writer: the thread that owns the engine.)
+    fn set(&self, chain: Option<(f32, Tone)>) {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        let mut values = [0u32; 16];
+        if let Some((low_cut_hz, tone)) = chain {
+            let numbers = [
+                low_cut_hz,
+                tone.low_db,
+                tone.mid_db,
+                tone.mid_hz,
+                tone.high_db,
+                tone.threshold_db,
+                tone.ratio,
+                tone.makeup_db,
+                tone.deess,
+                tone.level,
+                tone.level_ref_db,
+                tone.drive,
+            ];
+            values[0] = 1;
+            for (slot, number) in values[1..].iter_mut().zip(numbers) {
+                *slot = number.to_bits();
+            }
+            values[13] = tone.voice as u32;
+            values[14] = u32::from_le_bytes([tone.order[0], tone.order[1], tone.order[2], tone.order[3]]);
+            values[15] = u32::from_le_bytes([tone.order[4], tone.order[5], tone.order[6], tone.order[7]]);
+        }
+        for (slot, value) in self.values.iter().zip(values) {
+            slot.store(value, Ordering::Relaxed);
+        }
+        self.seq.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// What is set now, with the counter it was read at; `None` while it
+    /// is being written (the reader keeps what it had).
+    pub(crate) fn get(&self) -> Option<(u32, Option<(f32, Tone)>)> {
+        let before = self.seq.load(Ordering::Acquire);
+        if !before.is_multiple_of(2) {
+            return None;
+        }
+        let values: [u32; 16] = std::array::from_fn(|n| self.values[n].load(Ordering::Relaxed));
+        if self.seq.load(Ordering::Acquire) != before {
+            return None;
+        }
+        let number = |n: usize| f32::from_bits(values[n]);
+        let (first, second) = (values[14].to_le_bytes(), values[15].to_le_bytes());
+        let chain = (values[0] == 1).then(|| {
+            let tone = Tone {
+                low_db: number(2),
+                mid_db: number(3),
+                mid_hz: number(4),
+                high_db: number(5),
+                threshold_db: number(6),
+                ratio: number(7),
+                makeup_db: number(8),
+                deess: number(9),
+                level: number(10),
+                level_ref_db: number(11),
+                drive: number(12),
+                voice: values[13] == 1,
+                order: [first[0], first[1], first[2], first[3], second[0], second[1], second[2], second[3]],
+                ..Tone::default()
+            };
+            (number(1), tone)
+        });
+        Some((before, chain))
+    }
+
+    pub(crate) fn seq(&self) -> u32 {
+        self.seq.load(Ordering::Acquire)
+    }
 }
 
 /// The slots of the stage readings: [`STAGE_SLOTS`] for each of [`MAX_METERS`] tracks.
@@ -341,6 +430,40 @@ impl Shared {
             };
             slot.store((step as u32 as u64) << 32 | merged, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod monitor_chain_tests {
+    use super::*;
+
+    #[test]
+    fn the_chain_for_the_monitored_input_arrives_as_it_was_set() {
+        let chain = MonitorChain::default();
+        assert_eq!(chain.get().map(|(_, set)| set), Some(None));
+        let tone = Tone {
+            low_db: -2.0,
+            mid_db: 3.5,
+            mid_hz: 450.0,
+            high_db: 1.0,
+            threshold_db: -18.5,
+            ratio: 4.0,
+            makeup_db: 13.6,
+            deess: 0.35,
+            level: 0.6,
+            level_ref_db: -30.2,
+            drive: 0.25,
+            voice: true,
+            order: [0, 1, 2, 3, 4, 6, 5, 7],
+            ..Tone::default()
+        };
+        let before = chain.seq();
+        chain.set(Some((105.0, tone)));
+        let (seq, set) = chain.get().unwrap();
+        assert_ne!(seq, before);
+        assert_eq!(set, Some((105.0, tone)));
+        chain.set(None);
+        assert_eq!(chain.get().map(|(_, set)| set), Some(None));
     }
 }
 
@@ -524,6 +647,15 @@ impl Engine {
         monitor.control = Some(self.control.clone());
         self.send(disk::Control::Monitor(true));
         Ok(monitor)
+    }
+
+    /// The stages the monitored input is heard through, with their low
+    /// cut: those of the track that takes the recording, so that what is
+    /// heard while recording is close to what the take will sound like.
+    /// Noise reduction and pitch correction are left out (they would make
+    /// the voice late in the ear), as are plugins and sends. `None`: as it arrives.
+    pub fn monitor_chain(&self, chain: Option<(f32, Tone)>) {
+        self.shared.monitor_chain.set(chain);
     }
 
     /// Whether the monitored input is heard or only measured.
