@@ -15,10 +15,10 @@ import math
 SIZE = 512
 INK = "#111214"
 
-# Where the corners of the outline's box (0,0)-(1000,300) land in the icon:
+# Where the corners of the outline's box (0,0)-(760,250) land in the icon:
 # the butt near and large at the lower left, the muzzle far and smaller.
-BOX = [(0, 0), (1000, 0), (1000, 300), (0, 300)]
-FLOOR = [(44, 318), (420, 70), (476, 152), (108, 430)]
+BOX = [(0, 0), (760, 0), (760, 250), (0, 250)]
+FLOOR = [(30, 340), (436, 78), (486, 170), (112, 478)]
 
 
 def solve(rows):
@@ -59,50 +59,41 @@ def dense(points, step=6.0):
     return out
 
 
-def arc(cx, cy, r, a0, a1, n=10):
-    return [
-        (cx + r * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
-         cy + r * math.sin(math.radians(a0 + (a1 - a0) * i / n)))
-        for i in range(n + 1)
-    ]
-
-
-def rounded(x0, y0, x1, y1, r):
-    return (
-        arc(x1 - r, y0 + r, r, -90, 0)
-        + arc(x1 - r, y1 - r, r, 0, 90)
-        + arc(x0 + r, y1 - r, r, 90, 180)
-        + arc(x0 + r, y0 + r, r, 180, 270)
-    )
-
-
-# A pump-action shotgun from the side, as four heavy blocks that overlap:
-# what makes it a shotgun and nothing else.
-STOCK = [(330, 66), (40, 100), (0, 124), (0, 236), (30, 258), (90, 258), (250, 196), (330, 196)]
-RECEIVER = rounded(300, 60, 540, 196, 22)
-BARREL = rounded(500, 76, 1000, 146, 20)
-PUMP = rounded(620, 76, 820, 196, 30)
-
-PARTS = [STOCK, RECEIVER, BARREL, PUMP]
-
-
-def paths(project):
+def curve(p0, p1, p2, p3, n=16):
+    """A cubic Bezier curve from p0 to p3 as points (without p0)."""
     out = []
-    for part in PARTS:
-        points = [project(p) for p in dense(part)]
-        d = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in points) + " Z"
-        # (A stroke of the same colour rounds the corners and closes the seams between the blocks.)
-        out.append(f'<path d="{d}"/>')
-    return "\n    ".join(out)
+    for i in range(1, n + 1):
+        t = i / n
+        k = ((1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t * t, t**3)
+        out.append(tuple(sum(w * p[axis] for w, p in zip(k, (p0, p1, p2, p3))) for axis in (0, 1)))
+    return out
+
+
+# A short pump-action shotgun from the side, as one outline, clockwise
+# from the muzzle's upper corner: the barrel's back, the comb, the butt,
+# the stock's belly, the grip, the receiver, the pump and the barrel.
+GUN = (
+    [(760, 52), (250, 48)]
+    + curve((250, 48), (180, 52), (90, 62), (0, 84))
+    + [(0, 196)]
+    + curve((0, 196), (70, 196), (150, 150), (215, 128))
+    + curve((215, 128), (232, 150), (238, 190), (250, 206))
+    + [(292, 206)]
+    + curve((292, 206), (296, 180), (300, 150), (316, 132))
+    + [(400, 132), (410, 150), (600, 150), (610, 118), (760, 118)]
+)
+
+
+def path(project):
+    points = [project(p) for p in dense(GUN)]
+    return "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in points) + " Z"
 
 
 def main():
     project = projection(BOX, FLOOR)
     print(f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SIZE} {SIZE}" width="{SIZE}" height="{SIZE}">
   <rect x="16" y="16" width="480" height="480" rx="108" fill="#ffffff"/>
-  <g fill="{INK}" stroke="{INK}" stroke-width="10" stroke-linejoin="round">
-    {paths(project)}
-  </g>
+  <path d="{path(project)}" fill="{INK}" stroke="{INK}" stroke-width="8" stroke-linejoin="round"/>
   <rect x="16.5" y="16.5" width="479" height="479" rx="107.5" fill="none" stroke="{INK}" stroke-opacity="0.12"/>
 </svg>""")
 
