@@ -103,5 +103,11 @@ pub fn apply(ctx: &egui::Context) {
         style.spacing.window_margin = egui::Margin::same(10);
         // Quick: a control answers the hand at once.
         style.animation_time = 0.07;
+        // Thin bars that take no room from what they scroll and widen under the pointer.
+        style.spacing.scroll = egui::style::ScrollStyle::thin();
+        // The text cursor and what is selected in a field: the accent, not a system blue.
+        style.visuals.text_cursor.stroke = Stroke::new(1.5, ACCENT);
+        // A tooltip comes when the pointer rests, not while it passes.
+        style.interaction.tooltip_delay = 0.45;
     });
 }
