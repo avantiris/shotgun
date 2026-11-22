@@ -292,6 +292,15 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
 - **The other tracks' notes** are seen faintly behind those of the open
   clip in the piano roll (where their clips lie over it; not of muted
   tracks). They cannot be touched there.
+- **The key of a beat.** "Find its key" in the menu of an asset with
+  sound: how much of each of the twelve notes sounds over the piece is
+  held against the shape of each major and minor key
+  (`sg_media::analysis::find_key`). The piano roll then shows that
+  scale, and voice tracks whose pitch correction has no key yet get it
+  (one undo step). A key and its relative can be taken for each other;
+  speech and noise give no key. On his beat: C minor (also in two of its
+  three thirds; C major in the last). Not checked against a known key
+  of real music.
 - **A scale in the piano roll.** "Key" in the corner above the keys: a
   root and major or minor. The rows outside the scale are dimmed and the
   root's rows faintly marked; nothing is forbidden or moved. A setting of

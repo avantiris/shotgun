@@ -281,6 +281,26 @@ fn main() -> anyhow::Result<()> {
             sg_audio::midi::play(client, &notes, std::time::Duration::from_millis(100))
                 .map_err(|e| anyhow::anyhow!("{e}"))
         }
+        // sg-bench key <48 kHz wav>...: the key found in the whole of each file and in each of its thirds.
+        Some("key") => {
+            const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            let said = |key: Option<(u8, bool)>| match key {
+                Some((root, minor)) => {
+                    format!("{} {}", NAMES[root as usize % 12], if minor { "minor" } else { "major" })
+                }
+                None => "none".to_owned(),
+            };
+            for path in std::env::args().skip(2) {
+                let (samples, rate) = sg_media::peaks::read_mono(Path::new(&path), &sg_media::Cancel::new())
+                    .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+                anyhow::ensure!(rate == 48_000, "{path}: {rate} Hz, expected 48000");
+                let third = samples.len() / 3;
+                let parts: Vec<String> =
+                    (0..3).map(|n| said(sg_media::analysis::find_key(&samples[n * third..(n + 1) * third]))).collect();
+                println!("{path}: {} (thirds: {})", said(sg_media::analysis::find_key(&samples)), parts.join(", "));
+            }
+            Ok(())
+        }
         // sg-bench voice <48 kHz wav>...: what listening to a voice measures, and what it would set.
         Some("voice") => {
             for path in std::env::args().skip(2) {

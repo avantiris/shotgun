@@ -79,6 +79,11 @@ pub fn voice_sound(
     Ok(heard)
 }
 
+/// The key an asset's music is in: its root (0 is C) and whether it is minor.
+pub fn key(root: &Path, id: AssetId, cancel: &Cancel) -> Result<(u8, bool), ToolError> {
+    analysis::find_key(&sound(root, id, cancel)?).ok_or_else(|| ToolError::other("no key was found in it"))
+}
+
 /// The beats of an asset's sound: read from the cache, or found and cached.
 pub fn beats(root: &Path, id: AssetId, cancel: &Cancel) -> Result<Beats, ToolError> {
     let file = cache::beats(root, id);

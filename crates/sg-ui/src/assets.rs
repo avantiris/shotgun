@@ -46,6 +46,8 @@ pub enum AssetRequest {
     Remove,
     /// Cut the person out of the selected video: a new asset with a transparent background.
     CutOut,
+    /// Find the key the selected asset's music is in.
+    FindKey,
     /// A copy of the selected video out of focus: a new asset.
     Blurred,
     /// A copy of the selected asset's sound at another pitch (semitones)
@@ -338,6 +340,19 @@ impl AssetsPanel {
                             });
                         }
                         ui.separator();
+                        if asset.audio.is_some()
+                            && ui
+                                .button("Find its key")
+                                .on_hover_text(
+                                    "Listens for the key this music is in (a beat, a song). The piano roll then \
+                                     shows that scale, and the pitch correction of voice tracks that have no key \
+                                     yet is set to it.",
+                                )
+                                .clicked()
+                        {
+                            out.push(AssetRequest::FindKey);
+                            ui.close();
+                        }
                         if asset.audio.is_some()
                             && ui
                                 .button("Use as the song")

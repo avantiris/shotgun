@@ -95,6 +95,10 @@ Each has a headless test; the ones marked * also ran in the real program.
   through the lane to set them.
 - **Other tracks' notes** * show faintly in the piano roll, so the bass
   is seen while the melody is written.
+- **The key of a beat** *: right-click the beat, "Find its key". Yours
+  comes out as C minor. The piano roll then shows that scale and the
+  pitch correction of voice tracks is set to it. I could not check the
+  answer against a known key; tell me if it is wrong.
 - **A scale in the piano roll** *: "Key" in the corner above the keys
   dims the rows that are not in the scale you choose.
 - **Arrow keys on notes**: up/down a semitone (Shift: octave), left/right

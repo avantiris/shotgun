@@ -145,6 +145,12 @@ enum UserEvent {
         what: &'static str,
         result: Result<PathBuf, String>,
     },
+    /// The key of an asset's music.
+    Key {
+        root: PathBuf,
+        id: AssetId,
+        result: Result<(u8, bool), String>,
+    },
     /// A video with the person cut out was made: where it is.
     CutOut {
         root: PathBuf,
@@ -420,6 +426,17 @@ impl App {
                             })
                             .collect();
                         let _ = proxy.send_event(UserEvent::Voice { root, track, style, result, fitted, beside });
+                    });
+                    if spawned.is_err() {
+                        self.pending_jobs -= 1;
+                    }
+                }
+                Command::FindKey { root, id } => {
+                    self.pending_jobs += 1;
+                    let cancel = sg_media::Cancel::new();
+                    let spawned = std::thread::Builder::new().name("sg-analysis".into()).spawn(move || {
+                        let result = sg_project::analysis::key(&root, id, &cancel).map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::Key { root, id, result });
                     });
                     if spawned.is_err() {
                         self.pending_jobs -= 1;
@@ -1386,6 +1403,10 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Voice { root, track, style, result, fitted, beside } => {
                 self.shell.heard_beside(beside);
                 self.shell.voice_measured(&root, track, style, result, fitted);
+                self.job_done();
+            }
+            UserEvent::Key { root, id, result } => {
+                self.shell.key_found(&root, id, result);
                 self.job_done();
             }
             UserEvent::Beats { root, id, beats } => {

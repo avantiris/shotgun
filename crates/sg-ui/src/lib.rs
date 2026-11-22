@@ -170,6 +170,11 @@ pub enum Command {
         root: PathBuf,
         asset: Arc<Asset>,
     },
+    /// Find the key an asset's music is in; answered with [`Shell::key_found`].
+    FindKey {
+        root: PathBuf,
+        id: AssetId,
+    },
     /// Make the stabilised copy of an asset if it is not there yet.
     Stabilise {
         root: PathBuf,
@@ -374,6 +379,8 @@ pub enum DevStep {
     BuiltinLooks,
     /// Make a copy of the selected video out of focus.
     Blurred,
+    /// Find the key of the selected asset's music.
+    FindKey,
     /// Cut the person out of the selected asset.
     CutOut,
     /// A copy of the selected asset's sound: semitones up, times as fast.
@@ -709,6 +716,11 @@ impl Shell {
                         session.notice =
                             Some(format!("Making a copy of {} out of focus: it arrives as a new asset.", asset.label));
                         commands.push(Command::Blurred { root: session.root.clone(), asset });
+                    }
+                }
+                AssetRequest::FindKey => {
+                    if let (Some(id), Some(session)) = (self.editor.assets.selected, &self.session) {
+                        commands.push(Command::FindKey { root: session.root.clone(), id });
                     }
                 }
                 AssetRequest::CutOut => {
@@ -1299,6 +1311,11 @@ impl Shell {
                         commands.push(Command::Blurred { root: session.root.clone(), asset })
                     }
                     _ => self.error = Some("blurred: no asset is selected".to_owned()),
+                }
+            }
+            DevStep::FindKey => {
+                if let (Some(id), Some(session)) = (self.editor.assets.selected, &self.session) {
+                    commands.push(Command::FindKey { root: session.root.clone(), id });
                 }
             }
             DevStep::CutOut => {
@@ -2807,6 +2824,49 @@ impl Shell {
             }
             Err(e) => self.error = Some(format!("The file could not be written: {e}.")),
         }
+    }
+
+    /// The key of an asset's music was found (or not): the piano roll
+    /// shows its scale, and voice tracks whose pitch correction has no
+    /// key yet (it corrects to every semitone) are given it, as one undo step.
+    pub fn key_found(&mut self, root: &std::path::Path, id: AssetId, result: Result<(u8, bool), String>) {
+        let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return };
+        let label = session.project().assets.get(&id).map_or(String::new(), |asset| asset.label.clone());
+        let (key, minor) = match result {
+            Ok(found) => found,
+            Err(e) => {
+                self.error = Some(format!("{label}: {e}."));
+                return;
+            }
+        };
+        self.editor.piano.scale = Some((key, minor));
+        let project = session.project().clone();
+        let Some(sequence) = project.sequences.first() else { return };
+        let ops: Vec<Op> = sequence
+            .tracks
+            .iter()
+            .filter(|t| t.mix.voice && t.mix.tune_scale == 0)
+            .map(|t| {
+                let mix = sg_core::TrackSettings { tune_key: key, tune_scale: if minor { 2 } else { 1 }, ..t.mix };
+                Op::SetTrackMix { seq: sequence.id, track: t.id, mix }
+            })
+            .collect();
+        let voices = ops.len();
+        if voices > 0
+            && let Err(e) = session.apply(Op::Batch(ops), None)
+        {
+            self.error = Some(e.to_string());
+            return;
+        }
+        const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        let name = format!("{} {}", NAMES[key as usize % 12], if minor { "minor" } else { "major" });
+        let tuned = match voices {
+            0 => String::new(),
+            n => format!(" The pitch correction of {n} voice track(s) is set to it."),
+        };
+        session.notice = Some(format!(
+            "{label} is in {name} (or its relative, which has the same notes). The piano roll shows that scale.{tuned}"
+        ));
     }
 
     /// A look-up table was copied into the project (or could not be).

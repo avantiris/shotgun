@@ -468,8 +468,139 @@ pub fn find_beats(samples: &[f32]) -> Option<Beats> {
     Some(Beats { bpm: bpm as f32, beats, steady })
 }
 
+/// The key a piece of music is in: its root (0 is C, ... 11 is B) and
+/// whether it is minor. From how much of each of the twelve notes sounds
+/// over the piece (up to three minutes of it), held against how much of
+/// each note a major or a minor key has (Krumhansl and Kessler's
+/// profiles). `None` for sound that fits no key clearly: speech, drums
+/// alone, silence.
+///
+/// A key and its relative (C major and A minor have the same notes) are
+/// told apart only by which notes weigh more, so that pair can be taken
+/// for each other; the notes shown or corrected to are the same either way.
+pub fn find_key(samples: &[f32]) -> Option<(u8, bool)> {
+    const SIZE: usize = 8192;
+    const HOP: usize = 4096;
+    if samples.len() < SIZE * 4 {
+        return None;
+    }
+    let fft = rustfft::FftPlanner::<f32>::new().plan_fft_forward(SIZE);
+    let window: Vec<f32> =
+        (0..SIZE).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / SIZE as f32).cos()).collect();
+    // The note of each bin between 55 Hz and 2 kHz (below, a bin is wider
+    // than a semitone; above, it is mostly overtones and noise).
+    let hz_per_bin = RATE as f32 / SIZE as f32;
+    let (low, high) = ((55.0 / hz_per_bin).ceil() as usize, (2000.0 / hz_per_bin) as usize);
+    let note_of: Vec<usize> = (0..=high)
+        .map(|bin| {
+            let hz = (bin.max(1) as f32) * hz_per_bin;
+            ((69.0 + 12.0 * (hz / 440.0).log2()).round() as i32).rem_euclid(12) as usize
+        })
+        .collect();
+    let most = samples.len().min(RATE * 180);
+    let mut notes = [0.0f64; 12];
+    let mut buffer = vec![rustfft::num_complex::Complex32::default(); SIZE];
+    for start in (0..most - SIZE).step_by(HOP) {
+        for (slot, (sample, w)) in buffer.iter_mut().zip(samples[start..start + SIZE].iter().zip(&window)) {
+            *slot = rustfft::num_complex::Complex32::new(sample * w, 0.0);
+        }
+        fft.process(&mut buffer);
+        // (Each frame counts by what it holds, loud or not: a quiet bridge is as much of the key as a loud chorus.)
+        let mut frame = [0.0f64; 12];
+        for bin in low..=high {
+            frame[note_of[bin]] += buffer[bin].norm() as f64;
+        }
+        let sum: f64 = frame.iter().sum();
+        if sum > 1e-3 {
+            for (all, own) in notes.iter_mut().zip(frame) {
+                *all += own / sum;
+            }
+        }
+    }
+    if notes.iter().sum::<f64>() <= 0.0 {
+        return None;
+    }
+    const MAJOR: [f64; 12] = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+    const MINOR: [f64; 12] = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+    // How alike two rows of twelve numbers are, from -1 to 1.
+    let alike = |profile: &[f64; 12], root: usize| {
+        let mean = |v: &[f64; 12]| v.iter().sum::<f64>() / 12.0;
+        let (a, b) = (mean(profile), mean(&notes));
+        let (mut both, mut one, mut other) = (0.0, 0.0, 0.0);
+        for step in 0..12 {
+            let (x, y) = (profile[step] - a, notes[(root + step) % 12] - b);
+            both += x * y;
+            one += x * x;
+            other += y * y;
+        }
+        both / (one * other).sqrt().max(1e-12)
+    };
+    let mut best: Option<(f64, u8, bool)> = None;
+    for root in 0..12 {
+        for (minor, profile) in [(false, &MAJOR), (true, &MINOR)] {
+            let score = alike(profile, root);
+            if best.is_none_or(|(top, ..)| score > top) {
+                best = Some((score, root as u8, minor));
+            }
+        }
+    }
+    best.filter(|(score, ..)| *score > 0.5).map(|(_, root, minor)| (root, minor))
+}
+
 #[cfg(test)]
 mod tests {
+    /// Chords, a second each: every note with a few overtones.
+    fn chords(progression: &[&[f32]]) -> Vec<f32> {
+        let mut out = Vec::new();
+        for round in 0..3 {
+            for chord in progression {
+                for i in 0..super::RATE {
+                    let t = (round * progression.len() * super::RATE + i) as f32 / super::RATE as f32;
+                    let fade = (i as f32 / 2000.0).min(1.0) * ((super::RATE - i) as f32 / 2000.0).min(1.0);
+                    let v: f32 = chord
+                        .iter()
+                        .map(|hz| {
+                            (1..=4)
+                                .map(|h| (2.0 * std::f32::consts::PI * hz * h as f32 * t).sin() / h as f32)
+                                .sum::<f32>()
+                        })
+                        .sum();
+                    out.push(0.08 * fade * v);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_key_of_a_piece_is_found_from_its_notes() {
+        let note = |semitones_from_a4: i32| 440.0 * 2f32.powf(semitones_from_a4 as f32 / 12.0);
+        // C major: C, F, G, C (C4 is nine semitones under A4).
+        let (c, e, g, f, a, b, d) = (note(-9), note(-5), note(-2), note(-4), note(0), note(2), note(-7));
+        let major = chords(&[&[c, e, g], &[f, a, note(3)], &[g, b, note(5)], &[c, e, g]]);
+        assert_eq!(super::find_key(&major), Some((0, false)));
+        // A minor with its leading note: Am, Dm, E, Am.
+        let (a3, c4, e4, d4, f4, gs) = (note(-12), c, e, d, f, note(-1));
+        let minor = chords(&[&[a3, c4, e4], &[d4, f4, a], &[e4, gs, b], &[a3, c4, e4]]);
+        assert_eq!(super::find_key(&minor), Some((9, true)));
+        // The same piece three semitones up is in C minor.
+        let shift = |chord: &[f32]| chord.iter().map(|hz| hz * 2f32.powf(3.0 / 12.0)).collect::<Vec<f32>>();
+        let (i, iv, v) = (shift(&[a3, c4, e4]), shift(&[d4, f4, a]), shift(&[e4, gs, b]));
+        assert_eq!(super::find_key(&chords(&[&i, &iv, &v, &i])), Some((0, true)));
+        // Noise and silence are in no key.
+        let mut seed = 0x1357_9bdfu32;
+        let noise: Vec<f32> = (0..super::RATE * 4)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                seed as f32 / u32::MAX as f32 - 0.5
+            })
+            .collect();
+        assert_eq!(super::find_key(&noise), None);
+        assert_eq!(super::find_key(&vec![0.0; super::RATE * 4]), None);
+    }
+
     use super::*;
     use crate::analysis_testdata::{Camera, record, song};
 

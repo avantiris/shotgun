@@ -2976,6 +2976,33 @@ fn a_track_is_moved_up_and_down_among_those_of_its_kind() {
 }
 
 #[test]
+fn the_key_of_a_beat_is_found_and_given_to_the_piano_roll_and_the_voices() {
+    let mut harness = editor();
+    place(&mut harness, "first take");
+    // (A1 is a voice track whose pitch correction has no key yet.)
+    harness.state_mut().shell.dev(sg_ui::DevStep::Mix("0".into(), "voice".into(), 1.0));
+    right_click(&mut harness, "second take");
+    click(&mut harness, "Find its key");
+    harness.run_steps(2);
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::FindKey { id, .. } if *id == AssetId(2))));
+    let root = harness.state().root.clone();
+    harness.state_mut().shell.key_found(&root, AssetId(2), Ok((9, true)));
+    harness.run_steps(3);
+    assert!(harness.query_by_label_contains("second take is in A minor").is_some());
+    let mix = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().mix
+    };
+    assert_eq!((mix(&harness).tune_key, mix(&harness).tune_scale), (9, 2));
+    // One step back; and music in which no key is found says so.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(mix(&harness).tune_scale, 0);
+    harness.state_mut().shell.key_found(&root, AssetId(2), Err("no key was found in it".to_owned()));
+    assert!(harness.state().shell.error_shown().is_some_and(|e| e.contains("no key was found")));
+}
+
+#[test]
 fn an_asset_is_given_tags_in_the_inspector() {
     let mut harness = editor();
     click(&mut harness, "first take");
