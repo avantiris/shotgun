@@ -137,4 +137,4 @@ the script steps `level;hear` (both are needed).
   and `fix` are for what the user of the program notices.
 - Published under AGPL-3.0-only, copyright Avantiris Association
   (`LICENSE`). Only add code, fonts, models and tools whose licence allows
-  that; the icon is drawn by `assets/icon/make.py`.
+  that. The icon is `assets/icon/shotgun.svg`, written by hand.
