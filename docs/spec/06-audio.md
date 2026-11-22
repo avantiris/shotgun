@@ -236,6 +236,13 @@ unchanged.
   - The leveller pushes up in full only what is within 10 dB of the
     average, less down to 20 dB below it and nothing further down: breath
     and room noise came out up to 12 dB louder.
+- The edges of sound clips are brought in and out over 3 ms (144
+  samples; a quarter of the clip at most) on the timeline's mix, in
+  preview and export (`Mix::ease_edges`, night of 2026-11-22,
+  `PROPOSED`): a recording cut where it is not at zero began and ended
+  with a step, a click, and a take punched into another has two such
+  edges. Not where the next clip goes on with the same recording at the
+  same level (a clip cut in two plays as before, to the sample).
 - The stages run in the order the track has them in (`order` in its mix
   settings, each of the eight once; feedback F16.22). The plugins, fader
   and sends stay after them.

@@ -1143,6 +1143,8 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
         stop_at: None,
         click: None,
         true_peak_db: None,
+        // (A timeline is cut wherever the hand falls.)
+        ease_edges: true,
     }
 }
 

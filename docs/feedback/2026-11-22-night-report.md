@@ -98,6 +98,8 @@ Each has a headless test; the ones marked * also ran in the real program.
   that stretch, however early you start playing.
 - **Another pitch or tempo** *: in an asset's menu; makes a copy of a beat
   in another key or at another tempo, each without the other changing.
+- **Cuts in sound no longer click**: every clip's edge is eased over
+  3 ms (not where a cut goes through one recording that plays on).
 - **Tap tempo**: "Tap" beside the tempo.
 - **Move track up / down** in a track's menu.
 - **Sustain pedal** of a MIDI keyboard (not tried with a real pedal).

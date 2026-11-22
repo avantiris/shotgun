@@ -180,6 +180,10 @@ pub struct Mix {
     /// ("true peak") under this many decibels (as -1.0). `None`: it holds
     /// the samples themselves at full scale, as for everything else.
     pub true_peak_db: Option<f32>,
+    /// The edges of clips are brought in and out over 3 ms, so that a
+    /// recording cut where it is not at zero does not click. Off for
+    /// sound that must come out to the sample as it is in its file.
+    pub ease_edges: bool,
 }
 
 impl Default for Mix {
@@ -196,6 +200,7 @@ impl Default for Mix {
             stop_at: None,
             click: None,
             true_peak_db: None,
+            ease_edges: false,
         }
     }
 }

@@ -323,6 +323,41 @@ fn rendered(mix: Mix, frames: usize) -> Vec<f32> {
 }
 
 #[test]
+fn the_edges_of_clips_are_eased_and_a_cut_through_one_recording_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    // A recording that is nowhere at zero: every cut through it is a step.
+    let steady = wav(dir.path(), "steady.wav", 2, 48_000, |_, _| 0.5);
+    let span = |start: i64, len: i64, src_in: i64| ClipSpan {
+        start,
+        len,
+        src_in,
+        wav: steady.clone(),
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        speed: (1, 1),
+        gain_keys: Vec::new(),
+        warp: Vec::new(),
+    };
+    // One clip cut in two at sample 3000 (the second goes on where the first
+    // stops), then a gap, then a clip from elsewhere in the recording.
+    let clips = vec![span(1000, 2000, 0), span(3000, 2000, 2000), span(6000, 2000, 30_000)];
+    let eased = rendered(Mix { tracks: vec![track(clips.clone())], ease_edges: true, ..Mix::default() }, 9000);
+    let left = |out: &[f32], frame: usize| out[frame * 2];
+    // In over 3 ms from nothing, at full level after; no step anywhere.
+    assert!(left(&eased, 1000).abs() < 0.01 && close(left(&eased, 1000 + 144), 0.5), "{}", left(&eased, 1000));
+    let step = (1..9000).map(|n| (left(&eased, n) - left(&eased, n - 1)).abs()).fold(0.0f32, f32::max);
+    assert!(step < 0.5 / 100.0, "{step}");
+    // Across the cut the recording goes on untouched.
+    assert!((2900..3100).all(|n| close(left(&eased, n), 0.5)));
+    // Out to nothing at the end of the second, in again at the third.
+    assert!(left(&eased, 4999).abs() < 0.01 && left(&eased, 6000).abs() < 0.01 && close(left(&eased, 6200), 0.5));
+    // Without the easing (as for sound that must come out as it is): steps.
+    let plain = rendered(Mix { tracks: vec![track(clips)], ..Mix::default() }, 9000);
+    assert!(close(left(&plain, 1000), 0.5) && close(left(&plain, 4999), 0.5));
+}
+
+#[test]
 fn noise_reduction_keeps_the_track_in_time() {
     let dir = tempfile::tempdir().unwrap();
     // Silence, then a click-free burst of a gliding tone starting at 0.5 s.

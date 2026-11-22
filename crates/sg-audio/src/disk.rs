@@ -293,6 +293,8 @@ struct Disk {
 
 /// Frames per entry of the voice level.
 const DUCK_STEP: i64 = 64;
+/// Samples over which a clip's edge is brought in or out: 3 ms.
+const EDGE: i64 = 144;
 const DUCK_SLOTS: usize = 8192;
 
 /// True if going from `a` to `b` needs no new graph: the same clips on the
@@ -302,6 +304,7 @@ const DUCK_SLOTS: usize = 8192;
 fn same_structure(a: &Mix, b: &Mix, notes_too: bool) -> bool {
     a.tracks.len() == b.tracks.len()
         && a.click == b.click
+        && a.ease_edges == b.ease_edges
         && a.echo_samples == b.echo_samples
         && a.bpm == b.bpm
         && a.bar_origin == b.bar_origin
@@ -561,7 +564,28 @@ impl Disk {
                 let from = clip.start.max(start);
                 let to = (clip.start + clip.len).min(end);
                 let out = &mut block[((from - start) * 2) as usize..((to - start) * 2) as usize];
-                render_clip(&wav, &clip, from, out, &mut raw, &mut self.segment);
+                // An edge that is a cut through one recording going on (the
+                // next clip plays what follows) needs no easing; any other does.
+                let clips = &self.feeds[index].clips;
+                let goes_on = |a: &ClipSpan, b: &ClipSpan| {
+                    a.start + a.len == b.start
+                        && a.wav == b.wav
+                        && a.speed == (1, 1)
+                        && b.speed == (1, 1)
+                        && a.warp.is_empty()
+                        && b.warp.is_empty()
+                        && a.src_in + a.len == b.src_in
+                        && a.gain == b.gain
+                };
+                let ease = self.mix.ease_edges;
+                let eased = (
+                    ease && !i
+                        .checked_sub(1)
+                        .and_then(|before| clips.get(before))
+                        .is_some_and(|before| goes_on(before, &clip)),
+                    ease && !clips.get(i + 1).is_some_and(|after| goes_on(&clip, after)),
+                );
+                render_clip(&wav, &clip, from, out, eased, &mut raw, &mut self.segment);
             }
             i += 1;
         }
@@ -1243,7 +1267,20 @@ fn warp_at(warp: &[(i64, f64)], at: i64) -> f64 {
 
 /// Adds the part of `clip` that starts at timeline sample `from` to `out`
 /// (interleaved stereo), with the clip's speed, gain and fades applied.
-fn render_clip(wav: &Wav, clip: &ClipSpan, from: i64, out: &mut [f32], raw: &mut Vec<u8>, segment: &mut Vec<f32>) {
+///
+/// `eased`: whether its start and its end are brought in and out over
+/// [`EDGE`] samples. A recording cut anywhere but at a zero begins or ends
+/// with a step, which is heard as a click; a take punched into another
+/// has two such edges (feedback N2.4: the cuts of a DAW do not click).
+fn render_clip(
+    wav: &Wav,
+    clip: &ClipSpan,
+    from: i64,
+    out: &mut [f32],
+    eased: (bool, bool),
+    raw: &mut Vec<u8>,
+    segment: &mut Vec<f32>,
+) {
     let frames = out.len() / 2;
     let elapsed = from - clip.start;
     segment.clear();
@@ -1284,8 +1321,21 @@ fn render_clip(wav: &Wav, clip: &ClipSpan, from: i64, out: &mut [f32], raw: &mut
         }
     }
     let faded = clip.fade_in > 0 || clip.fade_out > 0;
+    // (Never more than a quarter of a short clip at each end.)
+    let edge = EDGE.min(clip.len / 4).max(1);
+    let (first, last) = (elapsed, elapsed + frames as i64);
+    let at_edge = (eased.0 && first < edge) || (eased.1 && clip.len - last < edge);
     for (i, (o, s)) in out.as_chunks_mut::<2>().0.iter_mut().zip(segment.as_chunks::<2>().0).enumerate() {
         let mut gain = clip.gain;
+        if at_edge {
+            let at = elapsed + i as i64;
+            if eased.0 && at < edge {
+                gain *= at.max(0) as f32 / edge as f32;
+            }
+            if eased.1 && clip.len - at <= edge {
+                gain *= (clip.len - at - 1).max(0) as f32 / edge as f32;
+            }
+        }
         if !clip.gain_keys.is_empty() {
             gain *= 10f32.powf(key_level(&clip.gain_keys, elapsed + i as i64) / 20.0);
         }

@@ -279,6 +279,8 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
   see M13 and M14 in `08-milestones.md`.
 - **A clip at full level.** "Loudest moment to -1 dB" in a sound clip's
   volume menu (normalising: the clip's volume, not its sound, changes).
+- **Cuts that do not click.** The edges of every sound clip are eased
+  over 3 ms, except where a cut goes through one recording that plays on.
 - **Make-up gain** on the compressor (0 to 24 dB).
 - **Another pitch or tempo.** "Another pitch or tempo" in the menu of an
   asset that has sound makes a copy of its sound moved by semitones,
