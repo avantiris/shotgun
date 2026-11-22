@@ -380,7 +380,13 @@ impl Session {
         if let Some((track, _)) = onto {
             let clip = Clip { id: self.ids.clip(), asset: asset.id, start, len, src_in: before };
             let Some(op) = Op::overwrite(sequence, track, clip, self.ids.clip()) else { return Ok(None) };
-            self.apply(op, None)?;
+            // What the take covers is kept (`PROPOSED`, the "takes to choose
+            // between" of M13): the covered stretches of recordings go
+            // onto a muted track beside, "<track> takes", so that an
+            // earlier take is one drag away and not only an undo.
+            let mut ops = self.keep_covered(sequence, track, start, start + len);
+            ops.push(op);
+            self.apply(Op::Batch(ops), None)?;
             return Ok(Some((track, clip)));
         }
         let free =
@@ -400,6 +406,57 @@ impl Session {
         ops.push(Op::InsertClip { seq: sequence.id, track, clip });
         self.apply(Op::Batch(ops), None)?;
         Ok(Some((track, clip)))
+    }
+
+    /// The ops that copy what lies between `from` and `to` on an audio
+    /// track onto a muted track for earlier takes, which is made if there
+    /// is none with room. Recordings at their own speed only: a note clip
+    /// or a stretched clip is not a take. Nothing covered: no ops.
+    fn keep_covered(&mut self, sequence: &sg_core::Sequence, track: sg_core::TrackId, from: i64, to: i64) -> Vec<Op> {
+        let Some(lane) = sequence.track(track) else { return Vec::new() };
+        let plain = |clip: &Clip| {
+            clip.asset != sg_core::AssetId(0)
+                && lane.props_of(clip.id).is_none_or(|props| props.speed == (1, 1) && !props.gain_db.is_animated())
+        };
+        let parts: Vec<Clip> = lane
+            .clips
+            .range(from, to)
+            .filter(plain)
+            .map(|old| {
+                let start = old.start.max(from);
+                let end = old.end().min(to);
+                Clip { id: self.ids.clip(), start, len: end - start, src_in: old.src_in + (start - old.start), ..old }
+            })
+            .filter(|part| part.len > 0)
+            .collect();
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        let seq = sequence.id;
+        let name = format!("{} takes", lane.name);
+        // A takes track of this one that is free there; else a new one.
+        let free = sequence.tracks.iter().find(|t| {
+            t.kind == TrackKind::Audio && t.name.starts_with(&name) && t.clips.range(from, to).next().is_none()
+        });
+        let mut ops = Vec::new();
+        let onto = match free {
+            Some(track) => track.id,
+            None => {
+                let count = sequence.tracks.iter().filter(|t| t.name.starts_with(&name)).count();
+                let (add, id) = self.add_track_op(sequence, TrackKind::Audio, sequence.tracks.len());
+                let name = if count == 0 { name } else { format!("{name} {}", count + 1) };
+                let muted = sg_core::TrackSettings { mute: true, ..lane.mix };
+                ops.extend([
+                    add,
+                    Op::SetTrackName { seq, track: id, name },
+                    // (With the settings of the track it comes from, so that it sounds the same when it is heard.)
+                    Op::SetTrackMix { seq, track: id, mix: muted },
+                ]);
+                id
+            }
+        };
+        ops.extend(parts.into_iter().map(|clip| Op::InsertClip { seq, track: onto, clip }));
+        ops
     }
 
     /// Adds a track: video on top, audio at the bottom.

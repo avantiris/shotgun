@@ -1889,11 +1889,23 @@ fn a_take_goes_onto_the_track_marked_for_recording_over_what_is_there() {
     // It lies on A1 from the playhead on (what was counted in stays in front of the clip's
     // start, in the file), and what was there makes room: before it and after it.
     assert_eq!(on_a1(&harness), [(1, 0, 96_000, 0), (9, 96_000, 96_000, 48_000), (1, 192_000, 288_000, 192_000)]);
-    assert_eq!(tracks(&harness).len(), 2);
-    // One undo: the track is as it was.
+    // What the take covers is not lost: it lies on a muted track of its own, "A1 takes", in its place.
+    let kept = |harness: &Harness<'_, App>| -> Vec<(String, bool, Vec<(u128, i64, i64, i64)>)> {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        let takes = project.sequences[0].tracks.iter().filter(|t| t.name.contains("takes"));
+        takes
+            .map(|t| {
+                (t.name.clone(), t.mix.mute, t.clips.iter().map(|c| (c.asset.0, c.start, c.len, c.src_in)).collect())
+            })
+            .collect()
+    };
+    assert_eq!(kept(&harness), [("A1 takes".to_owned(), true, vec![(1, 96_000, 96_000, 96_000)])]);
+    assert_eq!(tracks(&harness).len(), 3);
+    // One undo: the track is as it was, and the takes track is gone again.
     harness.key_press(Key::Z);
     harness.run_steps(3);
     assert_eq!(on_a1(&harness), [(1, 0, 480_000, 0)]);
+    assert_eq!(tracks(&harness).len(), 2);
 }
 
 #[test]

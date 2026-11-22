@@ -28,12 +28,14 @@ Given at 00:35, to be worked on unattended until 08:00. No questions: decisions 
 - Said: "Implement features expected for a audio DAW I didnt explicitly mention that will eventually be required (not every edgecase is required but like the most basics I missed for now)."
 - Kind: missing
 - Area: audio
-- Status: open
+- Status: partly (e72c89b, 0b1cb7a and the commit after)
+- Built: MIDI files in and out, arrow keys on notes, tracks moved up and down, tap tempo, sustain pedal, takes kept on a muted track, punching into a looped stretch, a clip brought to full level, make-up gain. The list and what is still missing: `docs/spec/09-daw.md`, "Added without being asked for one by one".
+- Verified: headless flows and unit tests for each. None of it was heard or used by a person.
 
 ### N2.5 A way to use AI on the video
 - Said: "If that is somehow possible give me a potential AI integration for the video editor so that I could use AI to enhance the Video (e.g. change background etc) I right now have no idea about what options there are, if possible it should be a local vendored model but if that doesnt work and there is no opensource stuff that is really good then just use an API optional to this provider so I can use it selectively."
 - Kind: idea
 - Area: other
-- Status: a first feature built (this commit); the rest is a plan in `docs/spec/10-ai.md`
+- Status: a first feature built (21def6b); the rest is a plan in `docs/spec/10-ai.md`
 - Now: "Cut out the person (AI)" in a video asset's menu: a local model makes a copy of the video with a transparent background, to put over any other background. A survey of what else is possible locally and through services is in `docs/spikes/s8-ai-survey.md`, measurements in `docs/spikes/s8-matte.md`.
-- Verified: a hidden run from import to the cut-out composited over another clip in the viewer (screenshot), including the model's download and check. On one clip only. Not exported, not seen by a person.
+- Verified: a hidden run from import to the cut-out composited over another clip in the viewer (screenshot), including the model's download and check. On one clip only. Exported once with `sg-bench export` and a frame of the file looked at: the person is over the other clip there too. Not seen by a person.

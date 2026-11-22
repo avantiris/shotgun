@@ -257,6 +257,37 @@ Order changed on 2026-11-20 after his fifth answer: the voice first
 After M12 the vocal chain can be tried on any recorded voice file; after
 M13 on his own recordings; after M14 with a beat from Kontakt.
 
+## Added without being asked for one by one (night of 2026-11-22, feedback N2.4; all `PROPOSED`)
+
+"The basics of a DAW" that were missing, as far as they were built:
+
+- **MIDI files.** A `.mid` file dropped on the window or chosen under
+  "Add" becomes one new track per track of the file that has notes, each
+  with a note clip from the bar the playhead is in. A sequence without a
+  tempo takes the file's. "To MIDI" in the piano roll writes the open
+  clip into the project's exports folder. Channels, controllers and
+  program changes are not read.
+- **Notes by the arrow keys.** In the piano roll: up and down a
+  semitone (Shift: an octave), left and right a sixteenth (Shift: a
+  beat), for the selected notes. Not past the keyboard's ends or the
+  clip's start.
+- **Tracks in another order.** "Move track up / down" in a track's menu,
+  among the tracks of its kind (pictures stay above sound).
+- **Tap tempo.** "Tap" beside the tempo: four clicks or more in time set
+  it, to a whole number of beats a minute.
+- **Sustain pedal**, **takes kept**, **punching into a looped stretch**:
+  see M13 and M14 in `08-milestones.md`.
+- **A clip at full level.** "Loudest moment to -1 dB" in a sound clip's
+  volume menu (normalising: the clip's volume, not its sound, changes).
+- **Make-up gain** on the compressor (0 to 24 dB).
+
+Still missing from what a DAW is expected to have: automation of a
+track's fader and of plugin parameters over time; a lane for the
+velocities of notes; choosing between takes in one lane; freezing a track
+to a file; hearing the input through the track's own chain (the stages
+run half a second ahead of what is heard, so this needs another kind of
+stage); pitch bend; time stretching without a change of pitch.
+
 ## Open
 
 - `OPEN` A raw, untreated vocal take of his: the references are finished vocals; what the chain does to a raw one has only been tried on made-up signals.

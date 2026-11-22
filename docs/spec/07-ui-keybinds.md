@@ -58,7 +58,8 @@ Flat surfaces with hard edges, one set of rules in `sg-ui/src/theme.rs`:
 | Drag over empty timeline | a box: the clips it touches are selected, with Shift added to the selection (feedback F8.1; this drag scrubbed before). At most 2000 clips at once |
 | Click clip | select it with its partner (picture + sound of one take); Shift adds, Alt selects it alone |
 | Drag clip | move (snaps; hold Alt to disable snapping; hold Ctrl to put it over what is in the way, `PROPOSED`, added 2026-11-19) |
-| Left / Right arrow | move the selected clips one frame earlier / later; with Shift ten frames (`PROPOSED`, added 2026-11-19) |
+| Left / Right arrow | move the selected clips one frame earlier / later; with Shift ten frames (`PROPOSED`, added 2026-11-19). In the piano roll: the selected notes a sixteenth, with Shift a beat |
+| Up / Down arrow | in the piano roll: the selected notes a semitone up / down; with Shift an octave (`PROPOSED`, added 2026-11-22) |
 | Drag clip edge | trim (Ctrl = ripple) |
 | Drag the small mark at a top corner of a selected clip | its fade in (left) or fade out (right); all selected clips follow, so picture and sound of a take fade together. The fade is drawn on the clip (`PROPOSED`, added 2026-11-19) |
 | Drag in viewer | move the selected clip's picture or title; its corner handles size it, the knob above it turns it (pictures 2026-11-19, titles 2026-11-20) |

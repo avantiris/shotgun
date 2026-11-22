@@ -467,9 +467,17 @@ chain second version, M16 mixing and mastering.
     playhead (two seconds without a tempo) also when the metronome is
     off: the way into the line is heard, and recorded, but the clip
     begins at the playhead. Checked in the app on a null-sink loop.
-  - Still to do: several takes of the same stretch kept on one track to
-    choose between (now the newer one replaces the older, which only
-    undo brings back); a punch-out point set beforehand.
+  - Takes kept and punching in (night of 2026-11-22, `PROPOSED`): what a
+    take onto a marked track covers is no longer only in the undo
+    history: the covered stretches of recordings are copied onto a muted
+    track beside it, "<track> takes" (a second one if that is taken
+    there), in their place, with the track's settings. And with a
+    stretch marked to be looped (L) that is not behind the playhead, a
+    take replaces only that stretch, however early the playing starts
+    and however long it goes on. Checked: headless flows. Not checked: in
+    the app with sound.
+  - Still to do: choosing between takes in one lane (they are on tracks
+    of their own now, to be dragged or soloed).
 - [ ] M14 Plugins (VST3, Kontakt through the bridge) and notes
   - Built 2026-11-20:
     - `sg-plug`: every plugin runs in a process of its own
@@ -582,7 +590,12 @@ chain second version, M16 mixing and mastering.
     Checked without hardware: `sg-bench midi <client> ...` stands in for
     a keyboard; in the app its two notes sounded and were written into
     the clip with their velocities and lengths. Not checked: a real
-    keyboard. Not built: pedals, pitch bend, a choice of which keyboard.
+    keyboard. Not built: pitch bend, a choice of which keyboard.
+    The sustain pedal (night of 2026-11-22): controller 64 holds the keys
+    that are let go until it comes up, done in the program and not in the
+    instrument (`PROPOSED`), so it works for every instrument and is in
+    what "Record" writes. Checked: a unit test of the holding. Not
+    checked: a real pedal.
   - Notes change while it plays without a new graph (2026-11-21): a
     note written, moved or removed (by hand or by "Record") no longer
     rebuilds the engine's graph, which cut every instrument off and left
@@ -701,7 +714,7 @@ chain second version, M16 mixing and mastering.
     without a new graph. Checked by an engine test and a flow. A group
     has no equaliser, compressor or meter of its own (`PROPOSED`: level
     and mute first).
-  - Still to do: the strip's own stages in another order
-    (plugins on a track can be reordered, M14); a
-    loudness target far above the mix is reached only as far as the
-    limiter allows (the result shows what was reached).
+  - The strip's own stages in another order: done 2026-11-21 (arrows in
+    the chain's list, feedback F16.22).
+  - Still to do: a loudness target far above the mix is reached only as
+    far as the limiter allows (the result shows what was reached).
