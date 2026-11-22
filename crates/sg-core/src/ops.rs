@@ -196,6 +196,11 @@ pub enum Op {
         id: AssetId,
         label: String,
     },
+    /// The words an asset is found by, beside its name.
+    SetAssetTags {
+        id: AssetId,
+        tags: Vec<String>,
+    },
     /// Several ops as one atomic change. Fails as a whole.
     Batch(Vec<Op>),
 }
@@ -260,6 +265,7 @@ impl Op {
             Op::AddAsset { .. } => "import",
             Op::RemoveAsset { .. } => "remove asset",
             Op::SetAssetLabel { .. } => "rename asset",
+            Op::SetAssetTags { .. } => "tag asset",
             // A batch is named after what it mostly is.
             Op::Batch(ops) => match ops.as_slice() {
                 [] => "edit",
@@ -675,6 +681,21 @@ fn apply_inner(p: &Project, op: &Op) -> Result<(Project, Op), OpError> {
             assets.insert(*id, Arc::new(Asset { label: label.clone(), ..Asset::clone(old) }));
             Ok((Project { assets: Arc::new(assets), ..p.clone() }, inverse))
         }
+        Op::SetAssetTags { id, tags } => {
+            let old = p.assets.get(id).ok_or(OpError::NoAsset(*id))?;
+            let inverse = Op::SetAssetTags { id: *id, tags: old.tags.clone() };
+            // Trimmed, none empty, none twice; at most sixteen of forty letters.
+            let mut kept: Vec<String> = Vec::new();
+            for tag in tags.iter().map(|tag| tag.trim()).filter(|tag| !tag.is_empty()) {
+                let tag: String = tag.chars().take(40).collect();
+                if !kept.contains(&tag) && kept.len() < 16 {
+                    kept.push(tag);
+                }
+            }
+            let mut assets = BTreeMap::clone(&p.assets);
+            assets.insert(*id, Arc::new(Asset { tags: kept, ..Asset::clone(old) }));
+            Ok((Project { assets: Arc::new(assets), ..p.clone() }, inverse))
+        }
         Op::Batch(ops) => {
             let mut cur = p.clone();
             let mut inverses = Vec::with_capacity(ops.len());
@@ -1079,6 +1100,13 @@ mod asset_tests {
         let (p2, undo_label) = apply(&p1, &Op::SetAssetLabel { id: AssetId(7), label: "B-roll".into() }).unwrap();
         assert_eq!(p2.assets[&AssetId(7)].label, "B-roll");
         assert_eq!(apply(&p2, &undo_label).unwrap().0, p1);
+        // Tags: tidied as they are set, and gone again with the inverse.
+        let tags = vec![" verse ".to_owned(), String::new(), "good".to_owned(), "verse".to_owned()];
+        let (tagged, undo_tags) = apply(&p2, &Op::SetAssetTags { id: AssetId(7), tags }).unwrap();
+        assert_eq!(tagged.assets[&AssetId(7)].tags, ["verse", "good"]);
+        assert_eq!(apply(&tagged, &undo_tags).unwrap().0, p2);
+        // (They are part of what is written to the project's files.)
+        assert_eq!(from_files(&to_files(&tagged)).unwrap(), *tagged);
         assert_eq!(apply(&p1, &undo_add).unwrap().0, p0);
         let (p3, undo_remove) = apply(&p2, &Op::RemoveAsset { id: AssetId(7) }).unwrap();
         assert!(p3.assets.is_empty());

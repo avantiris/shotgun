@@ -164,6 +164,10 @@ Film look module, "Add the built-in looks": teal and orange, bleach
 bypass, warm film, cold night, faded, black and white). I looked at each
 on one clip; whether they are any good on your footage is for your eye.
 
+Also from the old lists: **tags for assets** (a field under an asset's
+name in the inspector; the search finds them), to keep "verse 2, good"
+on takes.
+
 Done tonight from the "still to do" lists: takes kept, a punch-out
 point, the sustain pedal, and **hearing yourself through the chain**:
 with "Hear" on and a track marked "R", your input is heard through that

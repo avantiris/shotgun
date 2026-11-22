@@ -39,7 +39,10 @@ Status:
   a real drag from a file manager or browser, a real Ctrl+V after copying
   in another application, and the system file picker (the code paths behind
   them are exercised by script). Not built: HTTP resume for direct downloads,
-  Google Photos videos (still unverified, see 01), tags in the UI, the
+  Google Photos videos (still unverified, see 01), tags in the UI (added
+  in the night of 2026-11-22: a field under an asset's name in the
+  inspector, words with commas between, an op of its own; the search
+  above the assets already looked at tags), the
   cancel-and-captured-stderr rule is met but a failed step only shows its
   last error line in the banner.
 

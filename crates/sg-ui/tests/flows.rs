@@ -2976,6 +2976,28 @@ fn a_track_is_moved_up_and_down_among_those_of_its_kind() {
 }
 
 #[test]
+fn an_asset_is_given_tags_in_the_inspector() {
+    let mut harness = editor();
+    click(&mut harness, "first take");
+    harness.run_steps(2);
+    let field = harness.get_by_label("Asset tags");
+    field.focus();
+    field.type_text("verse, good , verse");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    let tags = |harness: &Harness<'_, App>| {
+        harness.state().shell.session().unwrap().project().assets[&AssetId(1)].tags.clone()
+    };
+    assert_eq!(tags(&harness), ["verse", "good"]);
+    // One step back.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert!(tags(&harness).is_empty());
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
+#[test]
 fn a_track_is_renamed_from_its_menu() {
     let mut harness = editor();
     // (A double click on the name does the same; the test's clock cannot make one.)

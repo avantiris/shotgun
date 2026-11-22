@@ -55,6 +55,8 @@ pub struct Editor {
     was_playing: bool,
     /// The label being typed for the selected asset.
     asset_label: Option<(AssetId, String)>,
+    /// The tags of the asset in the inspector as they are being typed.
+    asset_tags: Option<(AssetId, String)>,
     /// Actions whose buttons or menu entries were clicked this frame; the
     /// shell runs them the way it runs their keys.
     pub actions: Vec<Action>,
@@ -914,6 +916,26 @@ impl Editor {
                     *error = Some(e.to_string());
                 }
                 self.asset_label = None;
+            }
+        }
+        // Words to find it by (the search above the assets looks at them
+        // too): "verse 2", "good", "b-roll". Committed like the name.
+        if self.asset_tags.as_ref().is_none_or(|(id, _)| *id != asset.id) {
+            self.asset_tags = Some((asset.id, asset.tags.join(", ")));
+        }
+        if let Some((_, tags)) = &mut self.asset_tags {
+            let field = egui::TextEdit::singleline(tags).hint_text("tags, with commas").desired_width(f32::INFINITY);
+            let response = ui.add(field);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Asset tags"));
+            if response.on_hover_text("Words to find this asset by in the search: verse, good, b-roll").lost_focus() {
+                let wanted: Vec<String> =
+                    tags.split(',').map(|tag| tag.trim().to_owned()).filter(|t| !t.is_empty()).collect();
+                if wanted != asset.tags
+                    && let Err(e) = session.apply(Op::SetAssetTags { id: asset.id, tags: wanted }, None)
+                {
+                    *error = Some(e.to_string());
+                }
+                self.asset_tags = None;
             }
         }
         row(ui, "Kind", asset.kind.dir());
