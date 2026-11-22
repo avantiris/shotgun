@@ -171,6 +171,12 @@ fn a_scenario_is_made_from_the_asset_menu_and_gets_a_look_module() {
     let project = harness.state().shell.session().unwrap().project().clone();
     let scenario = project.scenarios.values().next().unwrap();
     assert!(!scenario.look_on && scenario.look.len() == 1);
+    // A film look module offers the looks that come with the program, until they are among the tables.
+    click(&mut harness, "Add module");
+    click(&mut harness, "Film look (LUT)");
+    harness.run_steps(2);
+    click(&mut harness, "Add the built-in looks");
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::AddBuiltinLooks { .. })));
 }
 
 #[test]

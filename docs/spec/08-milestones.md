@@ -208,7 +208,14 @@ Status:
   layer shader and in the measurement alike. Checked by a round trip: a clip
   converted to HLG with ffmpeg and shown next to its original (average
   colour 72 81 48 against 80 91 53). HDR frames are still decoded to 8 bits
-  first. **Not built**: built-in film looks to choose from (only tables you bring),
+  first. Built-in film looks (night of 2026-11-22, `PROPOSED`): "Add the
+  built-in looks" under a Film look module writes six tables into the
+  project (teal and orange, bleach bypass, warm film, cold night, faded,
+  black and white), made by sums in `sg_core::colour::builtin_look`,
+  not taken from film stocks. Looked at on one clip in a hidden run:
+  each does what its name says and none breaks the picture. Not judged
+  on his footage.
+  **Not built**:
   skin protection in the Colour module (its hue-shift knobs were added; vibrance
   protects what is already saturated, not skin as such), membership per
   clip (it is per asset), analysis

@@ -453,6 +453,32 @@ impl Grade {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_built_in_looks_are_tables_that_keep_black_dark_and_white_light() {
+        for (look, (file, title)) in super::BUILTIN_LOOKS.iter().enumerate() {
+            let table = super::Lut::parse(&super::builtin_cube(look)).unwrap_or_else(|e| panic!("{title}: {e}"));
+            assert_eq!((table.size, table.data.len()), (17, 17 * 17 * 17), "{title}");
+            assert!(file.ends_with(".cube") && file.starts_with("builtin-"));
+            // Black stays dark, white light, and grey goes up with the input:
+            // a look may tint and bend, it does not turn the picture over.
+            let grey = |v: f32| super::builtin_look(look, [v; 3]);
+            let luma = |c: [f32; 3]| super::LUMA[0] * c[0] + super::LUMA[1] * c[1] + super::LUMA[2] * c[2];
+            assert!(luma(grey(0.0)) < 0.1 && luma(grey(1.0)) > 0.85, "{title}: {:?} {:?}", grey(0.0), grey(1.0));
+            let steps: Vec<f32> = (0..=20).map(|n| luma(grey(n as f32 / 20.0))).collect();
+            assert!(steps.windows(2).all(|w| w[1] >= w[0] - 1e-4), "{title}: {steps:?}");
+            // No colour leaves the range a table can hold.
+            assert!(table.data.iter().all(|c| c.iter().all(|v| (0.0..=1.0).contains(v))), "{title}");
+        }
+        // The black-and-white one has no colour; the others keep a red red.
+        let red = [0.8, 0.2, 0.2];
+        let grey = super::builtin_look(5, red);
+        assert!(grey[0] == grey[1] && grey[1] == grey[2]);
+        for look in 0..5 {
+            let out = super::builtin_look(look, red);
+            assert!(out[0] > out[1] && out[0] > out[2], "{look}: {out:?}");
+        }
+    }
+
     use super::*;
 
     /// A picture with a range of brightness and some colour, deterministic.
@@ -539,6 +565,89 @@ mod tests {
         }
         assert_eq!(ColourStats::measure([[0.0; 3]; 100].into_iter()), None);
     }
+}
+
+/// Film looks that come with the program (M9's "built-in film looks to
+/// choose from", built in the night of 2026-11-22; `PROPOSED`, not judged
+/// by eye on real footage): the file each is written as, and its title.
+/// They are made by sums, not taken from any film stock.
+pub const BUILTIN_LOOKS: [(&str, &str); 6] = [
+    ("builtin-teal-orange.cube", "Teal and orange"),
+    ("builtin-bleach.cube", "Bleach bypass"),
+    ("builtin-warm.cube", "Warm film"),
+    ("builtin-cold-night.cube", "Cold night"),
+    ("builtin-faded.cube", "Faded"),
+    ("builtin-black-white.cube", "Black and white"),
+];
+
+/// One of [`BUILTIN_LOOKS`] at a display-referred colour (red, green,
+/// blue from 0 to 1), as a table holds it.
+pub fn builtin_look(look: usize, rgb: [f32; 3]) -> [f32; 3] {
+    let luma = |c: [f32; 3]| LUMA[0] * c[0] + LUMA[1] * c[1] + LUMA[2] * c[2];
+    // More contrast around the middle (`amount` above 0) or less (below).
+    let curve = |v: f32, amount: f32| {
+        let v = v.clamp(0.0, 1.0);
+        let s = v * v * (3.0 - 2.0 * v);
+        v + (s - v) * amount
+    };
+    let saturate = |c: [f32; 3], amount: f32| {
+        let y = luma(c);
+        c.map(|v| y + (v - y) * amount)
+    };
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|n| a[n] + (b[n] - a[n]) * t);
+    let y = luma(rgb);
+    let out = match look {
+        // Shadows towards teal, lights towards orange, a little more contrast.
+        0 => {
+            let c = rgb.map(|v| curve(v, 0.35));
+            let shadows = [c[0] * 0.90, c[1] * 1.00 + 0.012, c[2] * 1.06 + 0.02];
+            let lights = [c[0] * 1.05, c[1] * 1.00, c[2] * 0.90];
+            saturate(mix(shadows, lights, y.clamp(0.0, 1.0)), 1.08)
+        }
+        // Silver left in the film: half the colour, hard contrast.
+        1 => saturate(rgb, 0.5).map(|v| curve(v, 0.75)),
+        // Warm, with soft lights and blacks that are not quite black.
+        2 => {
+            let c = rgb.map(|v| curve(v, 0.15));
+            let warm = [c[0] * 1.04 + 0.015, c[1] * 1.0 + 0.008, c[2] * 0.92];
+            saturate(warm, 0.94).map(|v| 0.025 + v * (0.965 - 0.025))
+        }
+        // Night: darker in the middle, blue in the shadows, less colour.
+        3 => {
+            let c = rgb.map(|v| curve(v.clamp(0.0, 1.0).powf(1.15), 0.3));
+            let cold = [c[0] * 0.90, c[1] * 0.98, c[2] * 1.08 + 0.02 * (1.0 - y)];
+            saturate(cold, 0.8)
+        }
+        // A print that has lost its blacks: low contrast, a green cast below, magenta above.
+        4 => {
+            let c = rgb.map(|v| curve(v, -0.25));
+            let cast = [c[0] + 0.012 * y, c[1] + 0.012 * (1.0 - y), c[2] + 0.006 * y];
+            saturate(cast, 0.82).map(|v| 0.07 + v * (0.95 - 0.07))
+        }
+        // As through a red filter: skin light, skies dark; with contrast.
+        _ => {
+            let grey = curve(0.45 * rgb[0] + 0.45 * rgb[1] + 0.10 * rgb[2], 0.5);
+            [grey; 3]
+        }
+    };
+    out.map(|v| v.clamp(0.0, 1.0))
+}
+
+/// The text of the `.cube` file of one of [`BUILTIN_LOOKS`] (17 steps a channel).
+pub fn builtin_cube(look: usize) -> String {
+    const SIZE: usize = 17;
+    let title = BUILTIN_LOOKS.get(look).map_or("look", |(_, title)| title);
+    let mut text = format!("TITLE \"{title}\"\nLUT_3D_SIZE {SIZE}\n");
+    let at = |n: usize| n as f32 / (SIZE - 1) as f32;
+    for blue in 0..SIZE {
+        for green in 0..SIZE {
+            for red in 0..SIZE {
+                let [r, g, b] = builtin_look(look, [at(red), at(green), at(blue)]);
+                text.push_str(&format!("{r:.5} {g:.5} {b:.5}\n"));
+            }
+        }
+    }
+    text
 }
 
 /// A 3D look-up table as read from a `.cube` file: `size` steps per

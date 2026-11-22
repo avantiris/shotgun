@@ -133,6 +133,11 @@ pub enum Command {
         extension: String,
         bytes: Vec<u8>,
     },
+    /// Write the film looks that come with the program into the
+    /// project's `assets/lut/`; answered with [`Shell::lut_imported`].
+    AddBuiltinLooks {
+        root: PathBuf,
+    },
     /// Copy a font file into `assets/font/`; answered with [`Shell::font_imported`].
     ImportFont {
         root: PathBuf,
@@ -360,6 +365,8 @@ pub enum DevStep {
     Hero,
     /// Show a scale in the piano roll: its root (0 is C) and 1 for minor, 0 for major.
     Scale(u8, u8),
+    /// Put the film looks that come with the program among the project's tables.
+    BuiltinLooks,
     /// Cut the person out of the selected asset.
     CutOut,
     /// A copy of the selected asset's sound: semitones up, times as fast.
@@ -1257,6 +1264,11 @@ impl Shell {
                 }
             }
             DevStep::Scale(root, minor) => self.editor.piano.scale = Some((root % 12, minor != 0)),
+            DevStep::BuiltinLooks => {
+                if let Some(session) = &self.session {
+                    commands.push(Command::AddBuiltinLooks { root: session.root.clone() });
+                }
+            }
             DevStep::CutOut => {
                 let asset = self
                     .editor
@@ -2528,6 +2540,7 @@ impl Shell {
                 }
                 ColourRequest::SaveLook(name, modules) => Command::SaveLook { root: root.clone(), name, modules },
                 ColourRequest::LoadLooks => Command::LoadLooks { root: root.clone() },
+                ColourRequest::AddBuiltinLooks => Command::AddBuiltinLooks { root: root.clone() },
             });
         }
     }
@@ -2769,9 +2782,13 @@ impl Shell {
         let Some(session) = self.session.as_mut().filter(|s| s.root == root) else { return Vec::new() };
         match result {
             Ok(name) => {
-                session.notice = Some(format!(
-                    "{name} is in the project: add a Film look module to a scenario (Colour) and choose it there."
-                ));
+                session.notice = Some(if name.is_empty() {
+                    "The built-in looks are among the project's tables: choose one under Film look.".to_owned()
+                } else {
+                    format!(
+                        "{name} is in the project: add a Film look module to a scenario (Colour) and choose it there."
+                    )
+                });
                 // Read the folder again so that the panel lists it.
                 vec![Command::LoadLooks { root: root.to_owned() }]
             }

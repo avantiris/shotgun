@@ -65,6 +65,7 @@ fn parse_step(text: &str) -> anyhow::Result<Step> {
         "mixer" => Step::Dev(DevStep::Act(Action::Mixer)),
         "chain" => Step::Dev(DevStep::Chain),
         "cutout" => Step::Dev(DevStep::CutOut),
+        "builtinlooks" => Step::Dev(DevStep::BuiltinLooks),
         // scale:<root, 0 is C>:<1 minor, 0 major>
         "scale" => {
             let (root, minor) = arg.split_once(':').ok_or_else(|| anyhow!("scale needs <root>:<minor>"))?;

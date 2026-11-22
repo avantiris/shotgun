@@ -324,6 +324,22 @@ pub fn import_lut(root: &Path, source: &Path) -> Result<String, ToolError> {
     Ok(name)
 }
 
+/// Writes the film looks that come with the program into `assets/lut/`
+/// (those that are not there yet).
+pub fn add_builtin_looks(root: &Path) -> Result<(), ToolError> {
+    let dir = root.join("assets/lut");
+    std::fs::create_dir_all(&dir)?;
+    for (look, (file, _)) in sg_core::colour::BUILTIN_LOOKS.iter().enumerate() {
+        let path = dir.join(file);
+        if !path.is_file() {
+            let temporary = dir.join(format!("{file}.tmp"));
+            std::fs::write(&temporary, sg_core::colour::builtin_cube(look))?;
+            std::fs::rename(&temporary, &path)?;
+        }
+    }
+    Ok(())
+}
+
 /// The fonts in `assets/font/`, by file name.
 pub fn list_fonts(root: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(root.join("assets/font")) else { return Vec::new() };

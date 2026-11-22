@@ -30,6 +30,8 @@ pub enum ColourRequest {
     SaveLook(String, Vec<Module>),
     /// Read the presets in `looks/`.
     LoadLooks,
+    /// Put the film looks that come with the program among the project's tables.
+    AddBuiltinLooks,
 }
 
 #[derive(Default)]
@@ -169,6 +171,20 @@ impl ColourPanel {
             });
             if self.luts.is_empty() {
                 ui.label(RichText::new("No tables yet: drop a .cube file onto the window.").color(theme::DIM));
+            }
+            // The looks that come with the program, once they are not all there.
+            let missing =
+                sg_core::colour::BUILTIN_LOOKS.iter().any(|(file, _)| !self.luts.iter().any(|name| name == file));
+            if missing
+                && ui
+                    .button("Add the built-in looks")
+                    .on_hover_text(
+                        "Six film looks that come with the program (teal and orange, bleach bypass, warm film, cold \
+                         night, faded, black and white) are written into the project's tables, to choose above.",
+                    )
+                    .clicked()
+            {
+                requests.push(ColourRequest::AddBuiltinLooks);
             }
         }
         let mut moved: Option<(usize, isize)> = None;

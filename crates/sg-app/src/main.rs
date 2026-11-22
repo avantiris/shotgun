@@ -515,6 +515,16 @@ impl App {
                         let _ = proxy.send_event(UserEvent::Written { root, result });
                     });
                 }
+                Command::AddBuiltinLooks { root } => {
+                    self.pending_jobs += 1;
+                    self.reads.run(move || {
+                        // (An empty name: the looks that come with the program, not one table.)
+                        let result = sg_project::analysis::add_builtin_looks(&root)
+                            .map(|()| String::new())
+                            .map_err(|e| e.to_string());
+                        let _ = proxy.send_event(UserEvent::LutImported { root, result });
+                    });
+                }
                 Command::ImportFont { root, path } => {
                     self.pending_jobs += 1;
                     self.reads.run(move || {
