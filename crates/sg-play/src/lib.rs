@@ -1290,6 +1290,9 @@ pub fn fit_voice(
     let part = &samples[from..(from + most).min(samples.len())];
     // (The last pass moves nothing but make-up and fader: what it sets is what was measured.)
     const PASSES: usize = 6;
+    // The noise reduction as it was before the last step up, with how clear
+    // the pauses were then; and whether stepping it up has helped so far.
+    let (mut stepped, mut helps): (Option<(f32, f32)>, bool) = (None, true);
     for pass in 0..PASSES {
         let last = pass + 1 == PASSES;
         let mix = set.onto(sg_core::TrackSettings::default());
@@ -1308,8 +1311,20 @@ pub fn fit_voice(
         // Noise that can still be heard in the pauses: more of the noise reduction.
         // (Only under a take that had a floor of noise to begin with: what
         // lies between the phrases of a clean one is breath.)
-        let noisy = stats.noise_db.is_some() && after.noise_db.is_some_and(|noise| after.loudness_db - noise < 50.0);
-        if noisy && set.denoise < 1.0 && !last {
+        let clear = after.noise_db.map(|noise| after.loudness_db - noise);
+        let noisy = stats.noise_db.is_some() && clear.is_some_and(|clear| clear < 45.0);
+        // More of it only as long as more helps: what the reduction does
+        // not take for noise (the tail of a room, another voice, music
+        // that bled in) stays whatever it is set to, and the voice pays.
+        // Found on finished vocals from records, which all ended at 100 %.
+        if let (Some((before, was)), Some(now)) = (stepped.take(), clear)
+            && now < was + 2.0
+        {
+            set.denoise = before;
+            helps = false;
+        }
+        if noisy && helps && set.denoise < 1.0 && !last {
+            stepped = Some((set.denoise, clear.unwrap_or(0.0)));
             set.denoise = (set.denoise + 0.25).min(1.0);
             settled = false;
         }

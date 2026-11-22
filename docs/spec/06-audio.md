@@ -211,6 +211,11 @@ unchanged.
     (`sg_play::fit_voice`). On his two long takes: -17.0 dB (aim -17),
     loud phrases 10.2 dB above the average (aim 12), pauses 68 and 71 dB
     under the voice (before: 15 and 11). About one second per take.
+  - In that checking the noise reduction is stepped up only while a step
+    makes the pauses clearer by 2 dB or more: on six finished vocals from
+    records (whose "pauses" are the tail of a room, 30 to 38 dB under the
+    voice) every one had ended at 100 % for nothing; they end at about
+    half now, his noisy takes still at 100 %.
   - The compressor has a make-up gain (0 to 24 dB, `comp_makeup_db`),
     which the set-up uses instead of pushing the fader to its end.
   - The leveller can be given the level it levels to (`level_ref_db`
