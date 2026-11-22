@@ -6,7 +6,8 @@ Given at 00:35, to be worked on unattended until 08:00. No questions: decisions 
 - Said: "if any milestone or anything in spec / roadmap is not done, do it."
 - Kind: missing
 - Area: other
-- Status: open
+- Status: partly
+- Done from the "still to do" lists of stage 3: takes kept, a punch-out point, the sustain pedal (6f32a63, 0b1cb7a). Not done: hearing the input through the chain, pitch bend, plugin parameters as keyframes, pitch correction by hand per note, LV2, loop points in the sampler; and the older lists of stages 1 and 2 were not gone through.
 
 ### N2.2 The vocal chain and the compressor again; the automatic settings are not good
 - Said: "analyze the full vocalchain and compressor things again for errors and also optimize the autosettings they are really not good they do not avoid whitenoise and do not properly fit (you can use the audiotracks I now recorded with a dogshit mic to test)"
