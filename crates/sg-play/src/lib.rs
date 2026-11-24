@@ -1098,9 +1098,10 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
             pan: track.mix.pan,
             // While any track is soloed, the others are silent.
             mute: track.mix.mute || (any_solo && !track.mix.solo),
-            low_cut_hz: track.mix.low_cut_hz,
-            denoise: track.mix.denoise,
-            tone: tone_of(&track.mix),
+            // (As it is heard: a stage that is switched off does nothing.)
+            low_cut_hz: track.mix.heard().low_cut_hz,
+            denoise: track.mix.heard().denoise,
+            tone: tone_of(&track.mix.heard()),
             plugins: track
                 .plugins
                 .iter()
@@ -1109,6 +1110,8 @@ pub fn audio_mix(root: &std::path::Path, sequence: &Sequence) -> Mix {
                     path: std::path::PathBuf::from(&plugin.path),
                     // In the bundle: a plugin's settings travel with the project.
                     state_file: root.join("plugins").join(plugin.state_file(track.id)),
+                    after: plugin.after,
+                    off: plugin.off,
                 })
                 .collect(),
             notes: track_notes(sequence, track),
@@ -1275,6 +1278,7 @@ fn tone_of(mix: &sg_core::TrackSettings) -> sg_audio::Tone {
 /// with these settings, in place: what the track sounds like before its
 /// plugins and its fader.
 pub fn process_offline(stereo: &mut [f32], mix: &sg_core::TrackSettings) {
+    let mix = &mix.heard();
     sg_audio::process_offline(stereo, mix.low_cut_hz, mix.denoise, &tone_of(mix));
 }
 

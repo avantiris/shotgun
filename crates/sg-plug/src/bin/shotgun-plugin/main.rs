@@ -96,6 +96,29 @@ fn make_window(name: &str, size: (u16, u16)) -> Result<(RustConnection, u32, u32
     Ok((x, window, delete))
 }
 
+/// Brings a plugin's window that is open already to the front (feedback
+/// F18.2: asked for again, it may lie under the editor). A window cannot
+/// put itself in front on every desktop, but one that newly appears is
+/// put there: so it is taken off the screen and put back, and the desktop
+/// is asked the usual way as well.
+pub(crate) fn raise(x: &RustConnection, window: u32) {
+    let asked = (|| {
+        let root = x.setup().roots.first().map(|screen| screen.root).unwrap_or(window);
+        x.unmap_window(window)?;
+        x.map_window(window)?;
+        let active = x.intern_atom(false, b"_NET_ACTIVE_WINDOW")?.reply()?.atom;
+        // (2: the request comes from the user's own doing, not from a program wanting attention.)
+        let event = ClientMessageEvent::new(32, window, active, [2u32, 0, 0, 0, 0]);
+        let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+        x.send_event(false, root, mask, event)?;
+        x.flush()?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+    if let Err(why) = asked {
+        eprintln!("shotgun-plugin: the window could not be brought to the front: {why}");
+    }
+}
+
 struct Host;
 
 impl Class for Host {
@@ -625,7 +648,8 @@ impl Plugin {
     }
 
     fn open_editor(&mut self) -> Result<(), String> {
-        if self.editor.is_some() {
+        if let Some(editor) = &self.editor {
+            raise(&editor.x, editor.window);
             return Ok(());
         }
         let controller = self.controller.clone().ok_or("the plugin has no window of its own")?;

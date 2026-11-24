@@ -271,6 +271,22 @@ M13 on his own recordings; after M14 with a beat from Kontakt.
   semitone (Shift: an octave), left and right a sixteenth (Shift: a
   beat), for the selected notes. Not past the keyboard's ends or the
   clip's start.
+- **The chain in boxes** (feedback F18.1, 2026-11-24; the look and the
+  details `PROPOSED`). In the "Chain" tab every thing the sound goes
+  through is a box. A stage's box has a switch (off: the sound goes past
+  it and it keeps what it is set to; `TrackSettings::off`), its numbers
+  to pull or type, and arrows. A plugin's box has the same switch (off:
+  it stays loaded with its settings), its name (opens its window, or
+  brings it to the front if it is open), "Remove" and arrows. Plugins
+  move among the track's own stages, not only after them: each has the
+  number of stages the sound has been through when it reaches it
+  (`PluginRef::after`; 8, after all, for plugins from before). What a
+  plugin does shows in the picture of the stage after it. An instrument
+  plugin is the source whatever its place. The fader (with mute as its
+  switch) and the sends have boxes with their numbers too.
+- **A colour for each track** (feedback F18.3): "Colour of track ..." in
+  a track's menu, nine colours or that of its kind; its clips and its
+  mark at the left take it (`TrackSettings::colour`).
 - **Tracks in another order.** "Move track up / down" in a track's menu,
   among the tracks of its kind (pictures stay above sound).
 - **Tap tempo.** "Tap" beside the tempo: four clicks or more in time set

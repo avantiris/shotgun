@@ -375,6 +375,27 @@ fn right_click_on_the_empty_timeline_adds_and_removes_tracks() {
     assert_eq!(names, ["V2", "V1"]);
 }
 
+#[test]
+fn a_track_is_given_a_colour_in_its_menu() {
+    let mut harness = editor();
+    let colour = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0].tracks[0].mix.own_colour()
+    };
+    assert_eq!(colour(&harness), None);
+    let row = on_timeline(&harness, 300.0, 0);
+    pointer(&mut harness, row, egui::PointerButton::Secondary);
+    click(&mut harness, "Colour of track V1");
+    click(&mut harness, "Colour Blue");
+    harness.run_steps(2);
+    assert_eq!(colour(&harness), Some([98, 150, 230]));
+    // Undo gives it the colour of its kind back.
+    harness.key_press(Key::Z);
+    harness.run_steps(3);
+    assert_eq!(colour(&harness), None);
+    assert_eq!(harness.state().shell.error_shown(), None);
+}
+
 /// (start, length) of the clips on a track row, in the row's own units.
 fn clips(harness: &Harness<'_, App>, row: usize) -> Vec<(i64, i64)> {
     let project = harness.state().shell.session().unwrap().project().clone();
@@ -1796,6 +1817,83 @@ fn plugins_are_put_on_a_track_from_its_mixer_strip_in_an_order() {
     harness.key_press(Key::Z);
     harness.run_steps(3);
     assert_eq!(plugins_of(&harness).1, ["Wide", "Surge XT Effects"]);
+}
+
+#[test]
+fn stages_and_plugins_are_switched_and_moved_in_their_boxes_of_the_chain() {
+    let mut harness = editor();
+    let track = |harness: &Harness<'_, App>| {
+        let project = harness.state().shell.session().unwrap().project().clone();
+        project.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clone()
+    };
+    // Two effects are put on the track from its strip: they come after its own stages.
+    use sg_project::plugins::{Format, NiState, Plugin};
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Add plugin");
+    let plugin = |name: &str| Plugin {
+        name: name.to_owned(),
+        path: format!("/lib/vst3/{name}.vst3").into(),
+        format: Format::Vst3,
+        bridged: false,
+    };
+    let ni = NiState {
+        tools: true,
+        prefix: "/x".into(),
+        prefix_ready: false,
+        access: false,
+        installed: vec![],
+        bridged: vec![],
+    };
+    let found = vec![plugin("Wide"), plugin("Tape")];
+    harness.state_mut().shell.plugins_update(sg_ui::PluginUpdate::Found { plugins: found, ni });
+    harness.run_steps(3);
+    click(&mut harness, "Wide");
+    click(&mut harness, "Add plugin");
+    click(&mut harness, "Tape");
+    click(&mut harness, "Chain");
+    harness.run_steps(2);
+    let placed = |harness: &Harness<'_, App>| -> Vec<(String, u8, bool)> {
+        track(harness).plugins.iter().map(|p| (p.name.clone(), p.after, p.off)).collect()
+    };
+    assert_eq!(placed(&harness), [("Wide".to_owned(), 8, false), ("Tape".to_owned(), 8, false)]);
+    // A plugin is switched off in its box and stays on the track; and on again.
+    click(&mut harness, "Switch plugin Wide off");
+    harness.run_steps(2);
+    assert_eq!(placed(&harness)[0], ("Wide".to_owned(), 8, true));
+    click(&mut harness, "Switch plugin Wide on");
+    harness.run_steps(2);
+    assert_eq!(placed(&harness)[0], ("Wide".to_owned(), 8, false));
+    // Up among the plugins: the other one comes first.
+    click(&mut harness, "Move plugin Tape up");
+    harness.run_steps(2);
+    assert_eq!(placed(&harness), [("Tape".to_owned(), 8, false), ("Wide".to_owned(), 8, false)]);
+    // Up once more: before the compressor (the seventh of the track's stages), among the track's own.
+    click(&mut harness, "Move plugin Tape up");
+    harness.run_steps(2);
+    assert_eq!(placed(&harness), [("Tape".to_owned(), 6, false), ("Wide".to_owned(), 8, false)]);
+    assert_eq!(track(&harness).mix.order, sg_core::STAGE_ORDER);
+    // The compressor moved up passes the plugin: the plugin is after it now.
+    click(&mut harness, "Move Compressor up");
+    harness.run_steps(2);
+    assert_eq!(placed(&harness)[0], ("Tape".to_owned(), 8, false));
+    assert_eq!(track(&harness).mix.order, sg_core::STAGE_ORDER);
+    // A stage is switched off and keeps what it is set to; the engine is given it as doing nothing.
+    click(&mut harness, "Switch Low cut on");
+    harness.run_steps(2);
+    let mix = track(&harness).mix;
+    assert!(!mix.is_off(0) && mix.low_cut_hz == 80.0, "switched on from nothing, it begins at a mild setting");
+    click(&mut harness, "Switch Low cut off");
+    harness.run_steps(2);
+    let mix = track(&harness).mix;
+    assert!(mix.is_off(0) && mix.low_cut_hz == 80.0 && mix.heard().low_cut_hz == 0.0);
+    // The plugin's name opens its window (or brings it to the front); "Remove" takes it off.
+    click(&mut harness, "Window of plugin Tape");
+    let tape = track(&harness).plugins[0].id;
+    assert!(harness.state().commands.iter().any(|c| matches!(c, Command::PluginEditor { key, .. } if *key == tape)));
+    click(&mut harness, "Remove plugin Tape");
+    harness.run_steps(2);
+    assert_eq!(placed(&harness), [("Wide".to_owned(), 8, false)]);
+    assert_eq!(harness.state().shell.error_shown(), None);
 }
 
 #[test]

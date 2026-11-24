@@ -537,7 +537,8 @@ impl Hosted for ClapPlugin {
     }
 
     fn open_editor(&mut self) -> Result<(), String> {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            crate::raise(&window.x, window.window);
             return Ok(());
         }
         // SAFETY: `gui` is the plugin's own table, checked in `load`.

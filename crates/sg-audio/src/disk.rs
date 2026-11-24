@@ -177,8 +177,9 @@ struct Feed {
     scoped: [i64; crate::SCOPE_TAPS],
     /// What takes the spectra for the equaliser's picture, once this track was watched.
     analysers: Option<Box<[crate::scope::Analyser; 2]>>,
-    /// The keys of the track's plugins that run, in the order of the track.
-    plugins: Vec<u64>,
+    /// The track's plugins that run, in the order of the track: key,
+    /// place among the track's own stages, and whether it is switched off.
+    plugins: Vec<(u64, u8, bool)>,
     /// The track has a plugin that is still starting.
     awaiting: bool,
     /// How often this feed has gone round the loop: a feed that waits for
@@ -490,8 +491,11 @@ impl Disk {
         }
         // (A note that ends where the next of its pitch begins: the end first.)
         self.events.sort_by_key(|e| (e.offset, e.on));
-        let instrument =
-            feed.plugins.iter().copied().find(|key| self.plugins.get(key).is_some_and(|(_, c)| c.loaded.instrument));
+        let instrument = feed
+            .plugins
+            .iter()
+            .map(|(key, ..)| *key)
+            .find(|key| self.plugins.get(key).is_some_and(|(_, c)| c.loaded.instrument));
         let Some((_, client)) = instrument.and_then(|key| self.plugins.get_mut(&key)) else {
             if feed.awaiting {
                 // Its instrument may still be starting: not the built-in one in its place.
@@ -523,14 +527,25 @@ impl Disk {
         }
     }
 
-    /// Runs `block` through the effect plugins of feed `index`, in their order.
-    fn run_effects(&mut self, index: usize, block: &mut [f32]) {
-        for n in 0..self.feeds[index].plugins.len() {
-            let key = self.feeds[index].plugins[n];
-            let Some((_, client)) = self.plugins.get_mut(&key).filter(|(_, c)| !c.loaded.instrument) else { continue };
+    /// Runs `block` through those of a feed's effect plugins (`placed`)
+    /// that stand at `place` among the track's own stages, in their order.
+    /// (Not a method: the feed's stages are borrowed while it is called.)
+    fn run_effects(
+        running: &mut HashMap<u64, (crate::PluginSpec, sg_plug::Client)>,
+        shared: &Shared,
+        placed: &[(u64, u8, bool)],
+        place: usize,
+        block: &mut [f32],
+    ) {
+        for (key, after, off) in placed {
+            // (A place beyond the last stage is the place after it.)
+            if *off || (*after as usize).min(crate::Tone::default().order.len()) != place {
+                continue;
+            }
+            let Some((_, client)) = running.get_mut(key).filter(|(_, c)| !c.loaded.instrument) else { continue };
             let was_dead = client.is_dead();
             if !client.process(block, &[]) && !was_dead {
-                Disk::mourn(&self.shared, &client.loaded.name);
+                Disk::mourn(shared, &client.loaded.name);
             }
         }
     }
@@ -539,7 +554,7 @@ impl Disk {
     /// instrument plugin, or by the built-in instrument when it has none.
     fn is_instrument(&self, index: usize) -> bool {
         let feed = &self.feeds[index];
-        feed.plugins.iter().any(|key| self.plugins.get(key).is_some_and(|(_, c)| c.loaded.instrument))
+        feed.plugins.iter().any(|(key, ..)| self.plugins.get(key).is_some_and(|(_, c)| c.loaded.instrument))
             || !feed.note_ons.is_empty()
             || feed.by_hand
     }
@@ -610,10 +625,13 @@ impl Disk {
             at: start,
             analysers: Some(&mut **feed.analysers.get_or_insert_with(Default::default)),
         });
-        feed.fx.process_watched(block, feed.low_cut_hz, feed.denoise, &feed.tone, probe);
-        if !warm {
-            self.run_effects(index, block);
-        }
+        let (running, shared) = (&mut self.plugins, &self.shared);
+        let placed = &feed.plugins;
+        feed.fx.process_between(block, feed.low_cut_hz, feed.denoise, &feed.tone, probe, &mut |place, block| {
+            if !warm {
+                Disk::run_effects(running, shared, placed, place, block);
+            }
+        });
         self.raw = raw;
     }
 
@@ -736,8 +754,16 @@ impl Disk {
                 self.run_instrument(index, at, &mut block, false, false);
             }
             let feed = &mut self.feeds[index];
-            feed.fx.process(&mut block, feed.low_cut_hz, feed.denoise, &feed.tone);
-            self.run_effects(index, &mut block);
+            let (running, shared) = (&mut self.plugins, &self.shared);
+            let placed = &feed.plugins;
+            feed.fx.process_between(
+                &mut block,
+                feed.low_cut_hz,
+                feed.denoise,
+                &feed.tone,
+                None,
+                &mut |place, block| Disk::run_effects(running, shared, placed, place, block),
+            );
             let feed = &mut self.feeds[index];
             if let Ok(mut chunk) = feed.producer.write_chunk(frames * 2) {
                 let (a, b) = chunk.as_mut_slices();
@@ -829,7 +855,12 @@ impl Disk {
                 ducked_db: 0.0,
                 scoped: [i64::MIN; crate::SCOPE_TAPS],
                 analysers: None,
-                plugins: track.plugins.iter().map(|p| p.key).filter(|key| self.plugins.contains_key(key)).collect(),
+                plugins: track
+                    .plugins
+                    .iter()
+                    .filter(|p| self.plugins.contains_key(&p.key))
+                    .map(|p| (p.key, p.after, p.off))
+                    .collect(),
                 awaiting: track.plugins.iter().any(|p| self.loading.contains_key(&p.key)),
                 laps: 0,
                 by_hand: track.by_hand,

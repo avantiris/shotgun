@@ -365,7 +365,24 @@ impl TrackFx {
         low_cut_hz: f32,
         denoise: f32,
         tone: &Tone,
+        probe: Option<Probe>,
+    ) {
+        self.process_between(block, low_cut_hz, denoise, tone, probe, &mut |_, _| {});
+    }
+
+    /// [`TrackFx::process_watched`], with `between` called with the sound
+    /// as it is before the stage at each place of the track's order
+    /// (0 to 7) and once after the last (8): where a track's effect
+    /// plugins stand among its own stages (feedback F18.1). What a
+    /// plugin does shows in the level noted after the stage that follows it.
+    pub fn process_between(
+        &mut self,
+        block: &mut [f32],
+        low_cut_hz: f32,
+        denoise: f32,
+        tone: &Tone,
         mut probe: Option<Probe>,
+        between: &mut dyn FnMut(usize, &mut [f32]),
     ) {
         // How far the sound trails the block that came in, in frames.
         let mut back = 0;
@@ -380,6 +397,7 @@ impl TrackFx {
         // come unless changed: the tune on the cleaned voice, before tone
         // and level are shaped; the leveller before the compressor.
         for (place, stage) in tone.order.into_iter().enumerate() {
+            between(place, block);
             match stage {
                 0 => {
                     if low_cut_hz > 0.0 {
@@ -568,6 +586,7 @@ impl TrackFx {
             }
             tap(place + 1, back, block);
         }
+        between(tone.order.len(), block);
     }
 }
 
@@ -644,6 +663,29 @@ pub fn response_db(low_cut_hz: f32, tone: &Tone, hz: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugins_stand_between_the_stages_at_every_place_once_and_what_they_do_reaches_the_later_stages() {
+        // A stand-in for a plugin at place 3 that makes the sound far too loud:
+        // saturation (the last stage) after it holds that down, before it would not.
+        let tone = Tone { drive: 1.0, ..Tone::default() };
+        let loud = |place_of_plugin: usize| {
+            let mut fx = TrackFx::new(false, false);
+            let mut block = vec![0.1f32; 512];
+            let mut places = Vec::new();
+            fx.process_between(&mut block, 0.0, 0.0, &tone, None, &mut |place, block| {
+                places.push(place);
+                if place == place_of_plugin {
+                    block.iter_mut().for_each(|sample| *sample *= 50.0);
+                }
+            });
+            assert_eq!(places, (0..=tone.order.len()).collect::<Vec<_>>());
+            block[511]
+        };
+        let (before_the_stages, after_them) = (loud(3), loud(tone.order.len()));
+        assert!(before_the_stages < 0.25, "{before_the_stages}");
+        assert!(after_them > 2.0, "{after_them}");
+    }
 
     /// Something voice-like: harmonics of a gliding pitch that come and go.
     /// (A steady pitch would repeat every few milliseconds and hide the delay.)

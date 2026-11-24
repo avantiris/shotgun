@@ -1534,7 +1534,7 @@ impl Shell {
                             let mut plugins = Vec::clone(&track.plugins);
                             match name.filter(|_| !path.is_empty()) {
                                 Some(name) => {
-                                    plugins.push(sg_core::PluginRef { name, path, id: session.new_plugin_id() });
+                                    plugins.push(sg_core::PluginRef::new(name, path, session.new_plugin_id()));
                                 }
                                 None => plugins.clear(),
                             }
@@ -2334,7 +2334,7 @@ impl Shell {
         let Some(track) = sequence.tracks.iter().rev().find(|t| t.kind == sg_core::TrackKind::Audio) else { return };
         let mut window = None;
         if let Some((name, path)) = &plugin {
-            let plugin = sg_core::PluginRef { name: name.clone(), path: path.clone(), id: session.new_plugin_id() };
+            let plugin = sg_core::PluginRef::new(name.clone(), path.clone(), session.new_plugin_id());
             window = Some(plugin.key(track.id));
             let op = Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins: vec![plugin] };
             if let Err(e) = session.apply(op, None) {

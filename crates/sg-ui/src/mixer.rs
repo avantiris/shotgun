@@ -235,6 +235,166 @@ fn moved(mix: &TrackSettings, stage: Stage, up: bool) -> [u8; sg_core::STAGES] {
     order
 }
 
+/// What can be moved along a track's chain: one of its own stages, or
+/// one of its plugins (by its place in the track's list).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Link {
+    Stage(Stage),
+    Plugin(usize),
+}
+
+/// The stages a track shows and its plugins, in the order the sound
+/// reaches them: each plugin before the stage at its place.
+fn links_of(track: &sg_core::Track) -> Vec<Link> {
+    let mix = &track.mix;
+    let mut links = Vec::new();
+    let at = |place: usize| {
+        let here =
+            move |(_, plugin): &(usize, &sg_core::PluginRef)| (plugin.after as usize).min(sg_core::STAGES) == place;
+        track.plugins.iter().enumerate().filter(here).map(|(index, _)| Link::Plugin(index))
+    };
+    for (place, number) in mix.order.into_iter().enumerate() {
+        links.extend(at(place));
+        links.extend(Stage::numbered(number).filter(|stage| stage.shown_for(mix)).map(Link::Stage));
+    }
+    links.extend(at(sg_core::STAGES));
+    links
+}
+
+/// The track's order of stages and its plugins after the links at `at`
+/// and after it have changed places. Two stages: as the arrows always
+/// moved a stage (past those the track does not show). A plugin and
+/// anything: the order of the stages stays, and each plugin stands
+/// before the next shown stage after it.
+fn relinked(track: &sg_core::Track, links: &[Link], at: usize) -> ([u8; sg_core::STAGES], Vec<sg_core::PluginRef>) {
+    let mut links = links.to_vec();
+    let order = match (links[at], links[at + 1]) {
+        (Link::Stage(_), Link::Stage(later)) => moved(&track.mix, later, true),
+        _ => track.mix.order,
+    };
+    links.swap(at, at + 1);
+    let mut plugins = Vec::new();
+    for (at, link) in links.iter().enumerate() {
+        let Link::Plugin(index) = *link else { continue };
+        let Some(plugin) = track.plugins.get(index) else { continue };
+        let next =
+            links[at..].iter().find_map(|link| if let Link::Stage(stage) = link { stage.number() } else { None });
+        let after = next.and_then(|number| order.iter().position(|n| *n == number)).unwrap_or(sg_core::STAGES);
+        plugins.push(sg_core::PluginRef { after: after as u8, ..plugin.clone() });
+    }
+    (order, plugins)
+}
+
+/// Whether a stage does anything as it is set (switched on or not). The
+/// equaliser counts as working while flat: there is no mild setting to
+/// give it, and flat it is only a switch that is on.
+fn works(stage: Stage, mix: &TrackSettings) -> bool {
+    match stage {
+        Stage::LowCut => mix.low_cut_hz > 0.0,
+        Stage::Denoise => mix.denoise > 0.0,
+        Stage::Tune => mix.tune > 0.0,
+        Stage::Eq => true,
+        Stage::DeEss => mix.deess > 0.0,
+        Stage::Leveller => mix.level > 0.0,
+        Stage::Comp => mix.comp_threshold_db < 0.0,
+        Stage::Drive | Stage::Whole => mix.drive > 0.0,
+    }
+}
+
+/// A stage that is switched on while it is set to nothing would do
+/// nothing: it is given a mild setting to begin from.
+fn switched_on(mix: TrackSettings, stage: Stage, on: bool) -> TrackSettings {
+    if !on {
+        return mix;
+    }
+    match stage {
+        Stage::LowCut if mix.low_cut_hz <= 0.0 => TrackSettings { low_cut_hz: 80.0, ..mix },
+        Stage::Denoise if mix.denoise <= 0.0 => TrackSettings { denoise: 0.4, ..mix },
+        Stage::Tune if mix.tune <= 0.0 => TrackSettings { tune: 0.5, ..mix },
+        Stage::DeEss if mix.deess <= 0.0 => TrackSettings { deess: 0.4, ..mix },
+        Stage::Leveller if mix.level <= 0.0 => TrackSettings { level: 0.5, ..mix },
+        Stage::Comp if mix.comp_threshold_db >= 0.0 => TrackSettings { comp_threshold_db: -18.0, ..mix },
+        Stage::Drive if mix.drive <= 0.0 => TrackSettings { drive: 0.2, ..mix },
+        _ => mix,
+    }
+}
+
+/// A box around one thing of the chain; dimmer when it is switched off.
+fn boxed(ui: &mut egui::Ui, on: bool, inside: impl FnOnce(&mut egui::Ui)) {
+    let fill = if on { theme::RAISED } else { theme::PANEL };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, theme::LINE))
+        .corner_radius(theme::RADIUS)
+        .inner_margin(egui::Margin::symmetric(7, 5))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 3.0;
+            inside(ui);
+        });
+    ui.add_space(1.0);
+}
+
+/// The switch in a box of the chain.
+fn small_toggle(ui: &mut egui::Ui, on: bool, label: &str, tip: &str) -> egui::Response {
+    let text = RichText::new(label).size(10.0).strong().color(if on { theme::BG } else { theme::DIM });
+    let button = egui::Button::new(text).fill(if on { theme::ACCENT } else { theme::BG }).min_size(vec2(28.0, 16.0));
+    ui.add(button).on_hover_text(tip)
+}
+
+/// One number of a stage, to pull or type: `shown` is how many of what
+/// is shown make one of what is kept (100 for a share shown in percent).
+fn knob(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    speed: f32,
+    suffix: &str,
+    shown: f32,
+) {
+    if !label.is_empty() {
+        ui.label(RichText::new(label).size(10.0).color(theme::DIM));
+    }
+    let mut number = *value * shown;
+    let decimals = if speed < 1.0 { 1 } else { 0 };
+    let field = egui::DragValue::new(&mut number).range(range).speed(speed).suffix(suffix).fixed_decimals(decimals);
+    // (Narrow: three of them stand side by side in a box.)
+    ui.spacing_mut().interact_size.x = 30.0;
+    if ui.add(field).on_hover_text("Pull left or right, or double-click to type").changed() {
+        *value = number / shown;
+    }
+}
+
+/// What a stage is set to, in its box of the chain.
+fn stage_knobs(ui: &mut egui::Ui, stage: Stage, mix: &mut TrackSettings) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        match stage {
+            Stage::LowCut => knob(ui, "Below", &mut mix.low_cut_hz, 0.0..=400.0, 1.0, " Hz", 1.0),
+            Stage::Denoise => knob(ui, "Amount", &mut mix.denoise, 0.0..=100.0, 1.0, " %", 100.0),
+            Stage::Tune => {
+                knob(ui, "Amount", &mut mix.tune, 0.0..=100.0, 1.0, " %", 100.0);
+                knob(ui, "Gently", &mut mix.tune_speed, 0.0..=100.0, 1.0, " %", 100.0);
+            }
+            Stage::Eq => {
+                // (In decibels, all three; the box is too narrow to say so three times.)
+                knob(ui, "Low", &mut mix.eq_low_db, -18.0..=18.0, 0.1, "", 1.0);
+                knob(ui, "Mid", &mut mix.eq_mid_db, -18.0..=18.0, 0.1, "", 1.0);
+                knob(ui, "High", &mut mix.eq_high_db, -18.0..=18.0, 0.1, "", 1.0);
+            }
+            Stage::DeEss => knob(ui, "Amount", &mut mix.deess, 0.0..=100.0, 1.0, " %", 100.0),
+            Stage::Leveller => knob(ui, "Amount", &mut mix.level, 0.0..=100.0, 1.0, " %", 100.0),
+            Stage::Comp => {
+                knob(ui, "Above", &mut mix.comp_threshold_db, -60.0..=0.0, 0.1, "", 1.0);
+                knob(ui, "by", &mut mix.comp_ratio, 1.0..=20.0, 0.1, ":1", 1.0);
+                knob(ui, "back", &mut mix.comp_makeup_db, 0.0..=24.0, 0.1, "", 1.0);
+            }
+            Stage::Drive | Stage::Whole => knob(ui, "Amount", &mut mix.drive, 0.0..=100.0, 1.0, " %", 100.0),
+        }
+    });
+}
+
 /// What a track's sound goes through, in the order the engine applies it
 /// (`sg_audio::fx::TrackFx::process`, then the plugins, fader and sends):
 /// name, what it is set to, whether it does anything now, and which of
@@ -441,7 +601,7 @@ impl Mixer {
         egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 if let Some(track) = tracks.iter().find(|t| Some(t.id) == only) {
-                    let width = (ui.available_width() - STRIP_W - 24.0).clamp(140.0, 260.0);
+                    let width = (ui.available_width() - STRIP_W - 24.0).clamp(172.0, 320.0);
                     ui.allocate_ui_with_layout(vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(width);
                         ui.label(RichText::new("What the sound goes through, from the top").size(10.5).color(theme::DIM));
@@ -450,52 +610,182 @@ impl Mixer {
                         if whole.on_hover_text("See the recording against what the whole chain makes of it").clicked() {
                             self.stage = (self.stage != Some(Stage::Whole)).then_some(Stage::Whole);
                         }
-                        let mut order = track.mix.order;
-                        for (place, (name, set, on, stage)) in chain_of(track, sequence).into_iter().enumerate() {
-                            let colour = if on { theme::TEXT } else { theme::DIM };
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.y = 1.0;
-                                ui.label(RichText::new(format!("{:>2}", place + 1)).monospace().size(10.0).color(theme::DIM));
-                                match stage {
-                                    // A stage: a click on its name opens its picture, the arrows move it.
-                                    Some(stage) => {
-                                        ui.scope(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 0.0;
-                                            for up in [true, false] {
-                                                if arrow(ui, up, &name) {
-                                                    order = moved(&track.mix, stage, up);
+                        // One box for each thing the sound goes through. Those that can be
+                        // moved (the track's own stages and its plugins) carry a switch and
+                        // arrows; what a stage is set to is set in its box.
+                        let links = links_of(track);
+                        let mut mix = track.mix;
+                        // (The first of the two links that change places.)
+                        let mut relink: Option<usize> = None;
+                        let mut plugins: Option<Vec<sg_core::PluginRef>> = None;
+                        let fixed = |ui: &mut egui::Ui, name: &str, set: &str, on: bool| {
+                            boxed(ui, on, |ui| {
+                                ui.horizontal(|ui| {
+                                    let colour = if on { theme::TEXT } else { theme::DIM };
+                                    ui.label(RichText::new(name).size(11.5).strong().color(colour));
+                                    ui.label(RichText::new(if on { set } else { "off" }).size(10.5).color(theme::DIM));
+                                });
+                            });
+                        };
+                        let whole = chain_of(track, sequence);
+                        let (source, after) = (&whole[0], &whole[1..]);
+                        fixed(ui, &source.0, &source.1, source.2);
+                        for (at, link) in links.iter().enumerate() {
+                            let swap = |up: bool| if up { at - 1 } else { at };
+                            match *link {
+                                Link::Stage(stage) => {
+                                    let Some(number) = stage.number() else { continue };
+                                    let name = stage.name();
+                                    // (On: not switched off, and set to something that does anything.)
+                                    let on = !mix.is_off(number) && works(stage, &mix);
+                                    boxed(ui, on, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let tip = "Switches this stage off and on; what it is set to is kept.";
+                                            let label = if on { "On" } else { "Off" };
+                                            let switch = small_toggle(ui, on, label, tip);
+                                            switch.widget_info(|| {
+                                                let way = if on { "off" } else { "on" };
+                                                egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Switch {name} {way}"))
+                                            });
+                                            if switch.clicked() {
+                                                mix = switched_on(mix.switched(number, on), stage, !on);
+                                            }
+                                            let open = self.stage == Some(stage);
+                                            let colour = if on { theme::TEXT } else { theme::DIM };
+                                            let text = RichText::new(name).size(11.5).strong().color(colour);
+                                            let chosen = ui.selectable_label(open, text);
+                                            chosen.widget_info(|| {
+                                                egui::WidgetInfo::selected(egui::Role::Button, true, open, format!("See {name}"))
+                                            });
+                                            if chosen.on_hover_text("Open the picture of this stage at work, to see and set it").clicked() {
+                                                self.stage = (!open).then_some(stage);
+                                            }
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.spacing_mut().item_spacing.x = 0.0;
+                                                // (Right to left: down first.)
+                                                if at + 1 < links.len() && arrow(ui, false, name) {
+                                                    relink = Some(swap(false));
                                                 }
+                                                if at > 0 && arrow(ui, true, name) {
+                                                    relink = Some(swap(true));
+                                                }
+                                            });
+                                        });
+                                        ui.add_enabled_ui(!mix.is_off(number), |ui| stage_knobs(ui, stage, &mut mix));
+                                    });
+                                }
+                                Link::Plugin(index) => {
+                                    let Some(plugin) = track.plugins.get(index) else { continue };
+                                    let on = !plugin.off;
+                                    let name = plugin.name.as_str();
+                                    boxed(ui, on, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let tip = "Switches this plugin off and on: off, the sound goes past it, \
+                                                       and it stays on the track with its settings.";
+                                            let switch = small_toggle(ui, on, if on { "On" } else { "Off" }, tip);
+                                            switch.widget_info(|| {
+                                                let way = if on { "off" } else { "on" };
+                                                egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Switch plugin {name} {way}"))
+                                            });
+                                            if switch.clicked() {
+                                                let mut list = Vec::clone(&track.plugins);
+                                                list[index].off = on;
+                                                plugins = Some(list);
+                                            }
+                                            let colour = if on { theme::TEXT } else { theme::DIM };
+                                            let text = RichText::new(name).size(11.5).strong().color(colour);
+                                            let window = ui.add(egui::Button::new(text).truncate());
+                                            window.widget_info(|| {
+                                                egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Window of plugin {name}"))
+                                            });
+                                            let tip = "Opens the plugin's own window, or brings it to the front if it is open.";
+                                            if window.on_hover_text(tip).clicked() {
+                                                self.editor_request = Some((track.id, plugin.key(track.id)));
                                             }
                                         });
-                                        let open = self.stage == Some(stage);
-                                        let text = RichText::new(&name).size(11.5).strong().color(colour);
-                                        let chosen = ui.selectable_label(open, text);
-                                        chosen.widget_info(|| {
-                                            egui::WidgetInfo::selected(egui::Role::Button, true, open, format!("See {name}"))
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new("Plugin").size(10.0).color(theme::DIM));
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.spacing_mut().item_spacing.x = 0.0;
+                                                let moved = format!("plugin {name}");
+                                                if at + 1 < links.len() && arrow(ui, false, &moved) {
+                                                    relink = Some(swap(false));
+                                                }
+                                                if at > 0 && arrow(ui, true, &moved) {
+                                                    relink = Some(swap(true));
+                                                }
+                                                ui.add_space(6.0);
+                                                let off = ui.small_button("Remove");
+                                                off.widget_info(|| {
+                                                    egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Remove plugin {name}"))
+                                                });
+                                                if off.on_hover_text("Takes the plugin off this track").clicked() {
+                                                    let mut list = Vec::clone(&track.plugins);
+                                                    list.remove(index);
+                                                    plugins = Some(list);
+                                                }
+                                            });
                                         });
-                                        if chosen.on_hover_text("Open the picture of this stage at work, to see and set it").clicked() {
-                                            self.stage = (!open).then_some(stage);
-                                        }
-                                        let set = if on { set.as_str() } else { "off" };
-                                        ui.label(RichText::new(set).size(10.5).color(theme::DIM));
-                                    }
-                                    None => {
-                                        ui.label(RichText::new(&name).size(11.5).strong().color(colour));
-                                        let set = if on { set.as_str() } else { "off" };
-                                        ui.label(RichText::new(set).size(10.5).color(theme::DIM));
-                                    }
+                                    });
                                 }
-                            });
+                            }
                         }
-                        if order != track.mix.order {
-                            ops.push(Op::SetTrackMix { seq: sequence.id, track: track.id, mix: TrackSettings { order, ..track.mix } });
+                        // What comes after them: the fader and where the sound is sent.
+                        for (name, set, on, _) in after.iter().filter(|(_, _, _, stage)| stage.is_none()) {
+                            if name == "Plugin" {
+                                continue;
+                            }
+                            match name.as_str() {
+                                "Fader" => boxed(ui, *on, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let tip = "Mutes the track and lets it sound again.";
+                                        let switch = small_toggle(ui, !mix.mute, if mix.mute { "Off" } else { "On" }, tip);
+                                        if switch.clicked() {
+                                            mix.mute = !mix.mute;
+                                        }
+                                        ui.label(RichText::new("Fader").size(11.5).strong());
+                                    });
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 5.0;
+                                        knob(ui, "Level", &mut mix.gain_db, -60.0..=12.0, 0.1, " dB", 1.0);
+                                        knob(ui, "Pan", &mut mix.pan, -100.0..=100.0, 1.0, "", 100.0);
+                                    });
+                                }),
+                                "To the room" => boxed(ui, *on, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("To the room").size(11.5).strong());
+                                        knob(ui, "", &mut mix.reverb, 0.0..=100.0, 1.0, " %", 100.0);
+                                    });
+                                }),
+                                "To the echo" => boxed(ui, *on, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("To the echo").size(11.5).strong());
+                                        knob(ui, "", &mut mix.echo, 0.0..=100.0, 1.0, " %", 100.0);
+                                    });
+                                }),
+                                _ => fixed(ui, name, set, *on),
+                            }
+                        }
+                        if let Some(first) = relink {
+                            let (order, placed) = relinked(track, &links, first);
+                            mix.order = order;
+                            if placed != *track.plugins {
+                                plugins = Some(placed);
+                            }
+                        }
+                        if mix != track.mix {
+                            ops.push(Op::SetTrackMix { seq: sequence.id, track: track.id, mix });
+                        }
+                        if let Some(plugins) = plugins {
+                            ops.push(Op::SetTrackPlugins { seq: sequence.id, track: track.id, plugins });
                         }
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(
-                                "Click a stage to open its picture; the arrows move it up or down the chain. All \
-                                 are also set on the strip to the right. \"Voice\" there sets the whole chain up by \
-                                 listening to the track; \"Add plugin\" puts an effect or an instrument on it.",
+                                "The switch turns a stage or a plugin off and on, the arrows move it up or down \
+                                 the chain, a click on a stage's name opens its picture. \"Voice\" on the strip to \
+                                 the right sets the whole chain up by listening to the track; \"Add plugin\" there \
+                                 puts an effect or an instrument on it.",
                             )
                             .size(10.5)
                             .color(theme::DIM),
@@ -621,11 +911,11 @@ impl Mixer {
                                             for (name, path) in found {
                                                 if ui.button(name).on_hover_text(path).clicked() {
                                                     let mut list = Vec::clone(&track.plugins);
-                                                    list.push(sg_core::PluginRef {
-                                                        name: name.clone(),
-                                                        path: path.clone(),
-                                                        id: session.new_plugin_id(),
-                                                    });
+                                                    list.push(sg_core::PluginRef::new(
+                                                        name.clone(),
+                                                        path.clone(),
+                                                        session.new_plugin_id(),
+                                                    ));
                                                     plugins = Some(list);
                                                     ui.close();
                                                 }
@@ -1143,6 +1433,15 @@ pub fn with_voice(mix: TrackSettings, set: &sg_media::voice::Suggestion) -> Trac
 /// `solo=1`, `lowcut=100`, `denoise=0.8`, `preset=1`.
 pub fn set_field(mix: &mut TrackSettings, name: &str, value: f32) -> bool {
     match name {
+        // (For scripts: red, green and blue as one number, 0 the colour of its kind; a stage by its number.)
+        "colour" => {
+            *mix = mix.coloured((value > 0.0).then_some([
+                (value as u32 >> 16) as u8,
+                (value as u32 >> 8) as u8,
+                value as u32 as u8,
+            ]))
+        }
+        "off" => *mix = mix.switched(value as u8, true),
         "gain" => mix.gain_db = value,
         "pan" => mix.pan = value,
         "mute" => mix.mute = value != 0.0,

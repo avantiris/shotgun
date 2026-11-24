@@ -438,6 +438,27 @@ fn sequence_end(sequence: &Sequence) -> i64 {
     sequence.tracks.iter().map(|t| Lane::of(t, sequence).frame(t.clips.end())).max().unwrap_or(0)
 }
 
+/// The colours a track can be given in its menu.
+const TRACK_COLOURS: [(&str, [u8; 3]); 9] = [
+    ("Red", [222, 92, 92]),
+    ("Orange", [230, 146, 76]),
+    ("Yellow", [222, 198, 88]),
+    ("Green", [110, 192, 126]),
+    ("Teal", [86, 188, 188]),
+    ("Blue", [98, 150, 230]),
+    ("Purple", [168, 128, 228]),
+    ("Pink", [224, 128, 178]),
+    ("White", [238, 238, 238]),
+];
+
+/// The colour of a track: its own if it was given one, else that of its kind.
+fn track_colour(track: &Track) -> Color32 {
+    match track.mix.own_colour() {
+        Some([r, g, b]) => Color32::from_rgb(r, g, b),
+        None => kind_colour(track.kind),
+    }
+}
+
 fn kind_colour(kind: TrackKind) -> Color32 {
     match kind {
         TrackKind::Video => theme::VIDEO,
@@ -1134,6 +1155,28 @@ impl Timeline {
                     self.renaming = Some((track.id, track.name.clone(), true));
                     ui.close();
                 }
+                ui.menu_button(format!("Colour of track {}", track.name), |ui| {
+                    let mut chosen = None;
+                    if ui.selectable_label(track.mix.own_colour().is_none(), "As its kind").clicked() {
+                        chosen = Some(None);
+                    }
+                    for (name, colour) in TRACK_COLOURS {
+                        let [r, g, b] = colour;
+                        let text = egui::RichText::new(name).strong().color(Color32::from_rgb(r, g, b));
+                        let item = ui.selectable_label(track.mix.own_colour() == Some(colour), text);
+                        item.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Colour {name}")));
+                        if item.clicked() {
+                            chosen = Some(Some(colour));
+                        }
+                    }
+                    if let Some(colour) = chosen {
+                        let op = Op::SetTrackMix { seq: sequence.id, track: track.id, mix: track.mix.coloured(colour) };
+                        if let Err(e) = session.apply(op, None) {
+                            *error = Some(e.to_string());
+                        }
+                        ui.close();
+                    }
+                });
                 // Up and down among the tracks of its kind (pictures stay above sound).
                 let at = sequence.tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
                 for (label, to) in [("up", at.checked_sub(1)), ("down", Some(at + 1))] {
@@ -1759,11 +1802,11 @@ impl Timeline {
             if top > rect.bottom() {
                 break;
             }
-            let shade = if row % 2 == 0 { theme::PANEL } else { theme::RAISED.gamma_multiply(0.8) };
+            // (Clearly lighter than the ground around the timeline: where a track is, is seen.)
+            let shade = if row % 2 == 0 { Color32::from_gray(32) } else { Color32::from_gray(38) };
             instances.push(Instance::new(quad(rect.left(), top, rect.right(), top + row_h - 1.0), shade, 0.0, 0.0));
             // A hidden camera angle is drawn faintly: it is material, not picture.
-            let colour =
-                if track.mix.hidden { kind_colour(track.kind).gamma_multiply(0.45) } else { kind_colour(track.kind) };
+            let colour = if track.mix.hidden { track_colour(track).gamma_multiply(0.45) } else { track_colour(track) };
             instances.push(Instance::new(
                 quad(rect.left(), top, rect.left() + 3.0, top + row_h - 1.0),
                 colour,
@@ -1783,7 +1826,7 @@ impl Timeline {
                         x_of(clip.end() as f64 / per).min(lanes.right() + 4.0),
                     );
                     let selected = self.is_selected(track.id, &clip);
-                    let fill = if selected { colour } else { colour.gamma_multiply(0.62) };
+                    let fill = if selected { colour } else { colour.gamma_multiply(0.8) };
                     instances.push(Instance::new(
                         quad(x0, y0, x1, y1),
                         fill,

@@ -95,8 +95,9 @@ pub struct TrackMix {
     pub tone: Tone,
     /// Noise reduction: the share of the treated sound, 0 (off) to 1.
     pub denoise: f32,
-    /// The plugins on the track, in order: effects after the track's own
-    /// stages, and at most one instrument before them, playing `notes`.
+    /// The plugins on the track, in order: effects, each at its place among
+    /// the track's own stages, and at most one instrument before them,
+    /// playing `notes`.
     pub plugins: Vec<PluginSpec>,
     /// Sorted by start.
     pub notes: Vec<NoteSpan>,
@@ -142,6 +143,12 @@ pub struct PluginSpec {
     pub path: PathBuf,
     /// Where its state is kept between sessions.
     pub state_file: PathBuf,
+    /// An effect's place among the track's own stages: how many of them,
+    /// in the track's order, the sound has been through when it reaches
+    /// the plugin (8 or more: after all of them).
+    pub after: u8,
+    /// Switched off: it keeps running with its settings, and the sound goes past it.
+    pub off: bool,
 }
 
 /// A note of an instrument track, in timeline samples.

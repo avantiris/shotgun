@@ -639,7 +639,7 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     let Some(plugin) = test_plugin("Surge XT.vst3") else { return };
     let dir = tempfile::tempdir().unwrap();
     let state_file = dir.path().join("plugins/1.state");
-    let spec = sg_audio::PluginSpec { key: 1, path: plugin, state_file: state_file.clone() };
+    let spec = sg_audio::PluginSpec { key: 1, path: plugin, state_file: state_file.clone(), after: 8, off: false };
     // One note from 0.5 s to 1.0 s.
     let note = sg_audio::NoteSpan { start: 24_000, len: 24_000, pitch: 60, velocity: 100 };
     let mix = Mix {
@@ -685,7 +685,8 @@ fn an_instrument_plugin_plays_a_tracks_notes_and_its_state_is_kept() {
     assert!(std::fs::metadata(&state_file).is_ok_and(|m| m.len() > 1000));
     assert!(engine.plugin_news().is_empty());
     // A plugin that is not there is said so, and the track is silent rather than broken.
-    let missing = sg_audio::PluginSpec { key: 2, path: dir.path().join("nothing.vst3"), state_file };
+    let missing =
+        sg_audio::PluginSpec { key: 2, path: dir.path().join("nothing.vst3"), state_file, after: 8, off: false };
     engine.set_mix(Mix {
         tracks: vec![TrackMix { plugins: vec![missing], notes: vec![note], ..track(Vec::new()) }],
         master_gain: 1.0,

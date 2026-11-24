@@ -1253,14 +1253,14 @@ mod mix_tests {
         assert_eq!(p2.sequences[0].track(A1).unwrap().mix, mix);
         assert_eq!(apply(&p2, &undo).unwrap().0, p);
         // A plugin and the notes of a clip come and go the same way.
-        let surge = crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge XT.vst3".into(), id: 0 };
+        let surge = crate::model::PluginRef::new("Surge XT", "/lib/vst3/Surge XT.vst3", 0);
         let (plugged, unplug) =
             apply(&p2, &Op::SetTrackPlugin { seq: SEQ, track: A1, plugin: Some(surge.clone()) }).unwrap();
         let a1 = |p: &Project| p.sequences[0].tracks.iter().find(|t| t.id == A1).unwrap().clone();
         assert_eq!(*a1(&plugged).plugins, std::slice::from_ref(&surge));
         assert_eq!(apply(&plugged, &unplug).unwrap().0, p2);
         // Several on a track, in an order; the same id is not taken twice.
-        let named = |name: &str, id| crate::model::PluginRef { name: name.into(), path: format!("/{name}.vst3"), id };
+        let named = |name: &str, id| crate::model::PluginRef::new(name, format!("/{name}.vst3"), id);
         let chain = vec![named("Synth", 7), named("Squash", 8), named("Squash again", 8), named("Wide", 9)];
         let (chained, unchain) = apply(&plugged, &Op::SetTrackPlugins { seq: SEQ, track: A1, plugins: chain }).unwrap();
         let names: Vec<String> = a1(&chained).plugins.iter().map(|p| p.name.clone()).collect();

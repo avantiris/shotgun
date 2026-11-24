@@ -571,9 +571,8 @@ mod tests {
         let (p, _) = apply(&p, &Op::SetSpace { id: SEQ, space }).unwrap();
         let quiet = crate::model::Group { gain_db: -4.5, mute: true };
         let (p, _) = apply(&p, &Op::SetGroup { id: SEQ, group: 3, settings: quiet }).unwrap();
-        let surge =
-            crate::model::PluginRef { name: "Surge XT".into(), path: "/lib/vst3/Surge \"XT\".vst3".into(), id: 0 };
-        let wide = crate::model::PluginRef { name: "Wide".into(), path: "/lib/clap/Wide.clap".into(), id: 0xBEEF };
+        let surge = crate::model::PluginRef::new("Surge XT", "/lib/vst3/Surge \"XT\".vst3", 0);
+        let wide = crate::model::PluginRef::new("Wide", "/lib/clap/Wide.clap", 0xBEEF);
         let (p, _) = apply(&p, &Op::SetTrackPlugins { seq: SEQ, track: A1, plugins: vec![surge, wide] }).unwrap();
         let hit = crate::model::Sampler { asset: crate::ids::AssetId(0xABC), root: 36, one_shot: true };
         let (p, _) = apply(&p, &Op::SetTrackSampler { seq: SEQ, track: A1, sampler: Some(hit) }).unwrap();

@@ -155,7 +155,7 @@ pub struct Track {
     /// The plugins on this track (audio tracks), in the order its sound
     /// runs through them. An instrument among them plays the notes of the
     /// track's note clips, before the strip's own stages; the others are
-    /// effects after them.
+    /// effects, each at its place among those stages ([`PluginRef::after`]).
     pub plugins: Arc<Vec<PluginRef>>,
     /// The recording the built-in instrument plays for this track's
     /// notes; `None`: its own tone (the built-in synthesiser).
@@ -193,6 +193,25 @@ pub struct PluginRef {
     /// plugin of a track written before a track could have several.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub id: u64,
+    /// An effect's place in the chain (feedback F18.1): how many of the
+    /// track's own stages, in its order, the sound has been through when
+    /// it reaches the plugin. [`STAGES`]: after all of them, where every
+    /// effect was before it could be moved. Plugins with the same number
+    /// come in the order of the list.
+    #[serde(default = "after_all", skip_serializing_if = "is_after_all")]
+    pub after: u8,
+    /// Switched off: it stays on the track with its settings, and the
+    /// sound goes past it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off: bool,
+}
+
+fn after_all() -> u8 {
+    STAGES as u8
+}
+
+fn is_after_all(after: &u8) -> bool {
+    *after as usize >= STAGES
 }
 
 fn is_zero(id: &u64) -> bool {
@@ -200,6 +219,11 @@ fn is_zero(id: &u64) -> bool {
 }
 
 impl PluginRef {
+    /// A plugin as it is put on a track: on, after the track's own stages.
+    pub fn new(name: impl Into<String>, path: impl Into<String>, id: u64) -> PluginRef {
+        PluginRef { name: name.into(), path: path.into(), id, after: after_all(), off: false }
+    }
+
     /// What its running instance is known by in the engine.
     pub fn key(&self, track: TrackId) -> u64 {
         if self.id == 0 { track.0 } else { self.id }
@@ -409,6 +433,13 @@ pub struct TrackSettings {
     /// The order the sound goes through the stages (feedback F16.22):
     /// each of the numbers of [`STAGES`] once.
     pub order: [u8; STAGES],
+    /// The stages that are switched off (feedback F18.1), one bit for
+    /// each number of [`STAGES`]: such a stage keeps what it is set to
+    /// and the sound goes past it.
+    pub off: u16,
+    /// The track's colour on the timeline (feedback F18.3): 0 is the
+    /// colour of its kind, anything else red, green and blue as 0x01RRGGBB.
+    pub colour: u32,
 }
 
 impl Default for TrackSettings {
@@ -442,6 +473,8 @@ impl Default for TrackSettings {
             echo: 0.0,
             group: 0,
             order: STAGE_ORDER,
+            off: 0,
+            colour: 0,
         }
     }
 }
@@ -449,6 +482,48 @@ impl Default for TrackSettings {
 impl TrackSettings {
     pub fn is_default(&self) -> bool {
         *self == TrackSettings::default()
+    }
+
+    /// The colour the track was given, as red, green and blue.
+    pub fn own_colour(&self) -> Option<[u8; 3]> {
+        (self.colour != 0).then_some([(self.colour >> 16) as u8, (self.colour >> 8) as u8, self.colour as u8])
+    }
+
+    /// The same settings with that colour, or with the colour of its kind.
+    pub fn coloured(self, colour: Option<[u8; 3]>) -> TrackSettings {
+        let colour = colour.map_or(0, |[r, g, b]| 0x0100_0000 | (r as u32) << 16 | (g as u32) << 8 | b as u32);
+        TrackSettings { colour, ..self }
+    }
+
+    /// Whether the stage with this number is switched off.
+    pub fn is_off(&self, stage: u8) -> bool {
+        (stage as usize) < STAGES && self.off & (1 << stage) != 0
+    }
+
+    /// The same settings with the stage switched off or on.
+    pub fn switched(self, stage: u8, off: bool) -> TrackSettings {
+        let bit = if (stage as usize) < STAGES { 1u16 << stage } else { 0 };
+        TrackSettings { off: if off { self.off | bit } else { self.off & !bit }, ..self }
+    }
+
+    /// What is heard of these settings: a stage that is switched off set
+    /// to what does nothing. The engine is given this.
+    pub fn heard(self) -> TrackSettings {
+        let mut heard = self;
+        let default = TrackSettings::default();
+        for stage in (0..STAGES as u8).filter(|stage| self.is_off(*stage)) {
+            match stage {
+                0 => heard.low_cut_hz = 0.0,
+                1 => heard.denoise = 0.0,
+                2 => heard.tune = 0.0,
+                3 => (heard.eq_low_db, heard.eq_mid_db, heard.eq_high_db) = (0.0, 0.0, 0.0),
+                4 => heard.deess = 0.0,
+                5 => heard.level = 0.0,
+                6 => (heard.comp_threshold_db, heard.comp_makeup_db) = (default.comp_threshold_db, 0.0),
+                _ => heard.drive = 0.0,
+            }
+        }
+        heard
     }
 
     /// Values a hand-edited file or a script may not have kept in range.
@@ -480,6 +555,8 @@ impl TrackSettings {
             group: self.group.min(GROUPS as u8),
             // Every stage once, or the usual order.
             order: if (0..STAGES as u8).all(|stage| self.order.contains(&stage)) { self.order } else { STAGE_ORDER },
+            off: self.off & ((1 << STAGES) - 1),
+            colour: self.colour & 0x01ff_ffff,
             ..self
         }
     }
@@ -568,8 +645,53 @@ impl Project {
 }
 
 #[cfg(test)]
-mod tempo_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn a_stage_that_is_switched_off_keeps_its_setting_and_is_heard_as_nothing() {
+        let set = TrackSettings {
+            low_cut_hz: 90.0,
+            comp_threshold_db: -20.0,
+            comp_makeup_db: 6.0,
+            drive: 0.3,
+            ..Default::default()
+        };
+        let off = set.switched(0, true).switched(6, true);
+        assert!(off.is_off(0) && off.is_off(6) && !off.is_off(7));
+        assert_eq!((off.low_cut_hz, off.comp_threshold_db), (90.0, -20.0));
+        let heard = off.heard();
+        assert_eq!(
+            (heard.low_cut_hz, heard.comp_threshold_db, heard.comp_makeup_db, heard.drive),
+            (0.0, 0.0, 0.0, 0.3)
+        );
+        assert_eq!(off.switched(0, false).switched(6, false), set);
+        // (No such stage: nothing happens.)
+        assert_eq!(set.switched(40, true), set);
+    }
+
+    #[test]
+    fn a_track_keeps_a_colour_of_its_own() {
+        let plain = TrackSettings::default();
+        assert_eq!(plain.own_colour(), None);
+        // (Black is a colour too.)
+        assert_eq!(plain.coloured(Some([0, 0, 0])).own_colour(), Some([0, 0, 0]));
+        assert_eq!(plain.coloured(Some([222, 92, 92])).clamped().own_colour(), Some([222, 92, 92]));
+        assert_eq!(plain.coloured(Some([1, 2, 3])).coloured(None), plain);
+    }
+
+    #[test]
+    fn a_plugin_written_before_plugins_could_be_moved_comes_after_the_stages_and_is_on() {
+        let old: PluginRef = serde_json::from_str(r#"{"name":"Wide","path":"/lib/Wide.clap"}"#).unwrap();
+        assert_eq!(old, PluginRef::new("Wide", "/lib/Wide.clap", 0));
+        assert_eq!((old.after as usize, old.off), (STAGES, false));
+        // What says nothing new is not written.
+        assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"name":"Wide","path":"/lib/Wide.clap"}"#);
+        let moved = PluginRef { after: 3, off: true, ..old };
+        let back: PluginRef = serde_json::from_str(&serde_json::to_string(&moved).unwrap()).unwrap();
+        assert_eq!(back, moved);
+    }
+
     use crate::Rate;
 
     #[test]
