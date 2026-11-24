@@ -1789,8 +1789,29 @@ fn plugins_are_put_on_a_track_from_its_mixer_strip_in_an_order() {
     let found = vec![plugin("Surge XT Effects"), plugin("Wide")];
     harness.state_mut().shell.plugins_update(sg_ui::PluginUpdate::Found { plugins: found, ni });
     harness.run_steps(3);
+    // Native Access is not installed here: the entry that only opens it does nothing.
+    click(&mut harness, "Open Native Access");
+    assert!(!harness.state().commands.iter().any(|c| matches!(c, Command::Plugins(sg_ui::PluginRequest::Run(_)))));
+    click(&mut harness, "Add plugin");
     click(&mut harness, "Surge XT Effects");
     assert_eq!(plugins_of(&harness).1, ["Surge XT Effects"]);
+    // Installed, it is opened by that entry alone: no installer, no window of steps.
+    let found = vec![plugin("Surge XT Effects"), plugin("Wide")];
+    let ni = NiState {
+        tools: true,
+        prefix: "/x".into(),
+        prefix_ready: true,
+        access: true,
+        installed: vec![],
+        bridged: vec![],
+    };
+    harness.state_mut().shell.plugins_update(sg_ui::PluginUpdate::Found { plugins: found, ni });
+    click(&mut harness, "Add plugin");
+    click(&mut harness, "Open Native Access");
+    harness.run_steps(2);
+    let asked = &harness.state().commands;
+    assert!(asked.iter().any(|c| matches!(c, Command::Plugins(sg_ui::PluginRequest::Run(sg_ui::NiStep::Launch)))));
+    assert!(harness.query_by_label("PLUGINS").is_none());
     // A second one comes after the first: the sound runs through them in this order.
     click(&mut harness, "Add plugin");
     click(&mut harness, "Wide");

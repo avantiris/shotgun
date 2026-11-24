@@ -71,6 +71,10 @@ pub struct Mixer {
     pub scan_request: bool,
     /// The plugins popover should open (to install some); taken by the shell.
     pub popover_request: bool,
+    /// Native Access is to be opened, and nothing else (feedback F18.4).
+    pub access_request: bool,
+    /// Whether Native Access is installed, as the last search found.
+    pub access: bool,
     /// The window of this track's plugin should be shown; taken by the shell.
     pub editor_request: Option<(sg_core::TrackId, u64)>,
 }
@@ -928,6 +932,15 @@ impl Mixer {
                                     }
                                     if ui.button("Install Native Instruments, find plugins...").clicked() {
                                         self.popover_request = true;
+                                        ui.close();
+                                    }
+                                    let open = ui.add_enabled(self.access, egui::Button::new("Open Native Access"));
+                                    let tip = "Opens Native Access and nothing else: to log in, install or update what \
+                                               you own. Afterwards \"Find the installed plugins\" (in the entry above) \
+                                               makes new ones appear here.";
+                                    let missing = "Native Access is not installed yet: the entry above installs it.";
+                                    if open.on_hover_text(tip).on_disabled_hover_text(missing).clicked() {
+                                        self.access_request = true;
                                         ui.close();
                                     }
                                 });

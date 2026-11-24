@@ -71,6 +71,10 @@ impl PluginsPanel {
         std::mem::take(&mut self.open)
     }
 
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
     pub fn started(&mut self, step: NiStep) {
         self.running = Some(step);
         self.log.clear();

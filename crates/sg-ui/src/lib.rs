@@ -609,6 +609,11 @@ impl Shell {
                     self.plugins.open();
                     commands.push(Command::Plugins(PluginRequest::Scan));
                 }
+                if std::mem::take(&mut self.editor.mixer.access_request) {
+                    self.plugins.started(NiStep::Launch);
+                    commands.push(Command::Plugins(PluginRequest::Run(NiStep::Launch)));
+                    session.notice = Some("Native Access is opening; it can take a moment.".to_owned());
+                }
                 if let Some((track, key)) = self.editor.mixer.editor_request.take() {
                     commands.push(Command::PluginEditor { track, key });
                 }
@@ -1927,10 +1932,15 @@ impl Shell {
 
     /// News from the plugin jobs: a line of a running step, what was found, the end of a step.
     pub fn plugins_update(&mut self, update: PluginUpdate) {
-        if let PluginUpdate::Found { plugins, .. } = &update {
+        if let PluginUpdate::Found { plugins, ni } = &update {
             // The mixer offers them on its strips.
             let listed = plugins.iter().map(|p| (p.name.clone(), p.path.display().to_string())).collect();
             self.editor.mixer.available = Some(listed);
+            self.editor.mixer.access = ni.access;
+        }
+        // (A step started without its window open says here if it failed.)
+        if let (PluginUpdate::Finished(Err(e)), false) = (&update, self.plugins.is_open()) {
+            self.error = Some(format!("Native Access: {e}"));
         }
         self.plugins.update(update);
     }
